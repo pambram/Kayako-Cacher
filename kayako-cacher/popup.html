@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kayako Pagination Cacher</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="header">
+        <h1>📄 Kayako Cacher</h1>
+        <div class="version">v1.0.0</div>
+    </div>
+    
+    <div class="status" id="status-indicator">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Checking...</span>
+    </div>
+
+    <div class="section">
+        <h3>🚀 Pagination Settings</h3>
+        
+        <label for="pagination-limit">Posts per request:</label>
+        <select id="pagination-limit">
+            <option value="30">30 (Default)</option>
+            <option value="50">50</option>
+            <option value="100">100 (Recommended)</option>
+            <option value="200">200</option>
+            <option value="500">500 (Maximum)</option>
+        </select>
+        
+        <div class="info-text">
+            Higher limits mean fewer API requests but larger responses.
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>💾 Cache Settings</h3>
+        
+        <label class="toggle-container">
+            <input type="checkbox" id="enable-cache">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Enable Response Caching</span>
+        </label>
+        
+        <label for="cache-expiry">Cache duration:</label>
+        <select id="cache-expiry">
+            <option value="300000">5 minutes</option>
+            <option value="1800000">30 minutes (Default)</option>
+            <option value="3600000">1 hour</option>
+            <option value="21600000">6 hours</option>
+            <option value="86400000">24 hours</option>
+        </select>
+
+        <label class="toggle-container">
+            <input type="checkbox" id="preload-all">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Auto-preload all posts on page load</span>
+        </label>
+        
+        <div class="info-text">
+            Preloading fetches all posts at once for instant scrolling.
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>📊 Cache Statistics</h3>
+        
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Entries</div>
+                <div class="stat-value" id="cache-entries">-</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Size</div>
+                <div class="stat-value" id="cache-size">-</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Oldest</div>
+                <div class="stat-value" id="cache-oldest">-</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Newest</div>
+                <div class="stat-value" id="cache-newest">-</div>
+            </div>
+        </div>
+        
+        <button id="refresh-stats" class="secondary-btn">🔄 Refresh Stats</button>
+    </div>
+
+    <div class="section">
+        <h3>⚡ Quick Actions</h3>
+        
+        <button id="load-all-posts" class="primary-btn">📥 Load All Posts Now</button>
+        <button id="clear-cache" class="warning-btn">🗑️ Clear Cache</button>
+        
+        <div class="info-text">
+            "Load All Posts" fetches and caches all posts for the current ticket.
+        </div>
+    </div>
+
+    <div class="section advanced-section" id="advanced-section">
+        <h3>🔧 Advanced</h3>
+        
+        <label for="max-cache-size">Max cache size (MB):</label>
+        <input type="number" id="max-cache-size" min="10" max="500" step="10">
+        
+        <div class="debug-info" id="debug-info">
+            <div class="debug-title">Debug Information:</div>
+            <div class="debug-content" id="debug-content">
+                Click "Show Debug Info" to view technical details.
+            </div>
+        </div>
+        
+        <button id="show-debug" class="secondary-btn">🐛 Show Debug Info</button>
+    </div>
+
+    <div class="footer">
+        <div class="footer-text">
+            Made for better Kayako experience 🎯
+        </div>
+        <button id="toggle-advanced" class="link-btn">Advanced Settings</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

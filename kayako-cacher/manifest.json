@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Kayako Pagination Cacher v3",
+  "version": "3.0.0",
+  "description": "Intercepts Kayako API requests to increase pagination limits and cache responses for better performance",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.kayako.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background-v3.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.kayako.com/agent/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["*://*.kayako.com/*"]
+    }
+  ]
+}
