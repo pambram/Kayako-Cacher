@@ -1,7 +1,7 @@
 // Background script for Kayako Pagination Cacher
 // Handles configuration management and communication with content scripts
 
-console.log('🚀 Kayako Pagination Cacher v3.0 service worker started - NUCLEAR CLEAN INSTALL');
+console.log('🚀 Kayako Pagination Cacher v3.2.3 service worker started - XHR FIXED VERSION');
 
 // Default configuration
 const DEFAULT_CONFIG = {

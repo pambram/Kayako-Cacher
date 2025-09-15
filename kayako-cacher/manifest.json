@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako Pagination Cacher v3",
-  "version": "3.0.0",
+  "version": "3.2.3",
   "description": "Intercepts Kayako API requests to increase pagination limits and cache responses for better performance",
   "permissions": [
     "storage",
@@ -24,15 +24,40 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.kayako.com/agent/*"],
-      "js": ["content.js"],
-      "run_at": "document_start"
+      "matches": [
+        "*://*.kayako.com/agent/*",
+        "*://*.gfi.com/agent/*",
+        "*://*.aurea.com/agent/*",
+        "*://*.ignitetech.com/agent/*",
+        "*://*.crossover.com/agent/*",
+        "*://*.totogi.com/agent/*",
+        "*://*.alpha.school/agent/*",
+        "*://*.cloudsense.com/agent/*",
+        "*://*.kandy.io/agent/*",
+        "*://dnnsupport.dnnsoftware.com/agent/*",
+        "*://csai.trilogy.com/agent/*"
+      ],
+      "js": ["content-simple.js"],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inject.js"],
-      "matches": ["*://*.kayako.com/*"]
+      "resources": ["inject.js", "inject-simple.js"],
+      "matches": [
+        "*://*.kayako.com/*",
+        "*://*.gfi.com/*",
+        "*://*.aurea.com/*",
+        "*://*.ignitetech.com/*",
+        "*://*.crossover.com/*",
+        "*://*.totogi.com/*",
+        "*://*.alpha.school/*",
+        "*://*.cloudsense.com/*",
+        "*://*.kandy.io/*",
+        "*://dnnsupport.dnnsoftware.com/*",
+        "*://csai.trilogy.com/*"
+      ]
     }
   ]
 }

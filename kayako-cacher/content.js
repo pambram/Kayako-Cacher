@@ -11,29 +11,79 @@ class KayakoPaginationCacher {
   }
 
   async init() {
-    console.log('🚀 Kayako Pagination Cacher initialized on:', window.location.href);
+    console.log('🚀 Kayako Pagination Cacher initializing on:', window.location.href);
     
-    // Load configuration
-    await this.loadConfig();
-    console.log('✅ Config loaded:', this.config);
+    // Safety check - don't initialize if page is unstable
+    if (this.isPageUnstable()) {
+      console.warn('⚠️ Page appears unstable, aborting initialization');
+      return;
+    }
     
-    // Inject the interceptor script
-    this.injectInterceptor();
-    console.log('✅ Interceptor injected');
-    
-    // Set up message listeners
-    this.setupMessageListeners();
-    console.log('✅ Message listeners set up');
-    
-    // Set up page listeners for intercepted requests
-    this.setupPageListeners();
-    console.log('✅ Page listeners set up');
-    
-    // Add visual indicator
-    this.addVisualIndicator();
-    console.log('✅ Visual indicator added');
-    
-    console.log('🎉 Kayako Pagination Cacher fully initialized');
+    try {
+      // Load configuration
+      await this.loadConfig();
+      console.log('✅ Config loaded:', this.config);
+      
+      // Wait a bit for page to stabilize
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Check again after delay
+      if (this.isPageUnstable()) {
+        console.warn('⚠️ Page became unstable, aborting initialization');
+        return;
+      }
+      
+      // Inject the interceptor script
+      this.injectInterceptor();
+      console.log('✅ Interceptor injected');
+      
+      // Set up message listeners
+      this.setupMessageListeners();
+      console.log('✅ Message listeners set up');
+      
+      // Set up page listeners for intercepted requests
+      this.setupPageListeners();
+      console.log('✅ Page listeners set up');
+      
+      // Add visual indicator
+      this.addVisualIndicator();
+      console.log('✅ Visual indicator added');
+      
+      console.log('🎉 Kayako Pagination Cacher fully initialized');
+    } catch (error) {
+      console.error('❌ Error during initialization:', error);
+      this.showNotification('❌ Extension initialization failed', 'error');
+    }
+  }
+
+  isPageUnstable() {
+    try {
+      // Check for signs of page instability
+      const isLoginPage = window.location.href.includes('/login');
+      const hasLoginForm = !!document.querySelector('input[type="password"], form[action*="login"]');
+      const hasLogoutMessage = !!document.querySelector('[class*="logout"], [class*="expired"]');
+      const isRedirecting = document.readyState !== 'complete';
+      
+      // Check for error messages
+      const hasErrorMessage = !!document.querySelector('[class*="error"], [class*="session-expired"]');
+      
+      const unstable = isLoginPage || hasLoginForm || hasLogoutMessage || isRedirecting || hasErrorMessage;
+      
+      if (unstable) {
+        console.log('🚨 Page instability detected:', {
+          isLoginPage,
+          hasLoginForm, 
+          hasLogoutMessage,
+          isRedirecting,
+          hasErrorMessage
+        });
+      }
+      
+      return unstable;
+    } catch (error) {
+      console.error('Error checking page stability:', error);
+      return true; // Assume unstable if we can't check
+    }
   }
 
   async loadConfig() {
@@ -51,26 +101,50 @@ class KayakoPaginationCacher {
   }
 
   injectInterceptor() {
-    if (this.injected) return;
+    if (this.injected) {
+      console.log('⚠️ Interceptor already injected, skipping');
+      return;
+    }
     
     try {
+      console.log('💉 Injecting interceptor script...');
+      
+      // Check for conflicts with other extensions first
+      if (window.fetch.toString().includes('Kayako') && !window.fetch.toString().includes('Pagination')) {
+        console.warn('⚠️ Another Kayako extension detected! This may cause conflicts.');
+        this.showNotification('⚠️ Multiple Kayako extensions detected - please disable others', 'warning');
+      }
+      
       const script = document.createElement('script');
       script.src = chrome.runtime.getURL('inject.js');
       script.onload = () => {
-        console.log('Interceptor script loaded');
+        console.log('✅ Interceptor script loaded successfully');
         
         // Send initial configuration to injected script
         if (this.config) {
+          console.log('📤 Sending initial config to injected script');
           this.updateInjectedConfig();
         }
+        
+        // Test if interception is working
+        setTimeout(() => {
+          this.testInterception();
+        }, 1000);
         
         script.remove();
       };
       
+      script.onerror = (error) => {
+        console.error('❌ Failed to load interceptor script:', error);
+        this.showNotification('❌ Failed to load interceptor script', 'error');
+      };
+      
       (document.head || document.documentElement).appendChild(script);
       this.injected = true;
+      console.log('💉 Script injection initiated');
     } catch (error) {
-      console.error('Failed to inject interceptor script:', error);
+      console.error('❌ Failed to inject interceptor script:', error);
+      this.showNotification('❌ Script injection failed: ' + error.message, 'error');
     }
   }
 
@@ -127,12 +201,20 @@ class KayakoPaginationCacher {
         case 'KAYAKO_CACHE_HIT':
           this.handleCacheHit(event.data);
           break;
+        case 'KAYAKO_CHECK_PERSISTENT_CACHE':
+          this.handlePersistentCacheCheck(event.data);
+          break;
+        case 'KAYAKO_INJECTION_SUCCESS':
+          console.log('🎉 Inject.js successfully loaded and initialized');
+          this.showNotification('✅ Pagination interceptor active', 'success');
+          break;
       }
     });
   }
 
   async handleApiRequest(data) {
-    console.log('API Request intercepted:', data.url);
+    console.log('🌐 API Request intercepted:', data.url);
+    this.updateIndicatorStats('request');
     
     // Track performance
     chrome.runtime.sendMessage({
@@ -148,6 +230,7 @@ class KayakoPaginationCacher {
     if (this.config?.cacheEnabled) {
       const cached = await this.getFromPersistentCache(data.url);
       if (cached && !this.isCacheExpired(cached.timestamp)) {
+        console.log('📤 Sending cached data to injected script');
         // Send cached data to injected script
         const event = new CustomEvent('KAYAKO_CACHE_RESPONSE', {
           detail: {
@@ -173,7 +256,7 @@ class KayakoPaginationCacher {
   }
 
   handleCacheHit(data) {
-    console.log('Cache hit for:', data.url);
+    console.log('💾 Cache hit for:', data.url);
     this.cacheStats.hits++;
     
     // Track performance
@@ -188,6 +271,54 @@ class KayakoPaginationCacher {
     
     // Update visual indicator
     this.updateIndicatorStats('cache_hit');
+  }
+
+  async handlePersistentCacheCheck(data) {
+    const { url, cacheKey } = data;
+    console.log('🔍 Checking persistent cache for:', cacheKey);
+    
+    try {
+      // Check persistent storage
+      const cached = await this.getFromPersistentCache(url);
+      
+      if (cached && !this.isCacheExpired(cached.timestamp)) {
+        console.log('✅ Found valid cached data for:', cacheKey);
+        
+        // Send cached data back to injected script
+        const event = new CustomEvent('KAYAKO_PERSISTENT_CACHE_RESPONSE', {
+          detail: {
+            cacheKey: cacheKey,
+            data: cached.data,
+            found: true
+          }
+        });
+        window.dispatchEvent(event);
+      } else {
+        console.log('❌ No valid cached data found for:', cacheKey);
+        
+        // Send cache miss response
+        const event = new CustomEvent('KAYAKO_PERSISTENT_CACHE_RESPONSE', {
+          detail: {
+            cacheKey: cacheKey,
+            data: null,
+            found: false
+          }
+        });
+        window.dispatchEvent(event);
+      }
+    } catch (error) {
+      console.error('❌ Error checking persistent cache:', error);
+      
+      // Send error response (treat as cache miss)
+      const event = new CustomEvent('KAYAKO_PERSISTENT_CACHE_RESPONSE', {
+        detail: {
+          cacheKey: cacheKey,
+          data: null,
+          found: false
+        }
+      });
+      window.dispatchEvent(event);
+    }
   }
 
   async getFromPersistentCache(url) {
@@ -292,17 +423,21 @@ class KayakoPaginationCacher {
         right: 10px;
         background: #28a745;
         color: white;
-        padding: 5px 10px;
+        padding: 8px 12px;
         border-radius: 15px;
         font-size: 12px;
         z-index: 10000;
         font-family: Arial, sans-serif;
         box-shadow: 0 2px 5px rgba(0,0,0,0.2);
         cursor: pointer;
+        transition: all 0.3s ease;
       " onclick="this.style.display='none'">
-        📄 Kayako Cacher Active
-        <div id="cache-stats" style="font-size: 10px; margin-top: 2px;">
-          Cache: ${this.cacheStats.hits} hits
+        📄 Kayako Cacher v3 Active
+        <div id="cache-stats" style="font-size: 10px; margin-top: 2px; opacity: 0.9;">
+          Cache: ${this.cacheStats.hits} hits | ${this.cacheStats.misses} misses
+        </div>
+        <div id="last-action" style="font-size: 9px; margin-top: 1px; opacity: 0.7;">
+          Ready
         </div>
       </div>
     `;
@@ -310,20 +445,60 @@ class KayakoPaginationCacher {
     document.body?.appendChild(indicator) || 
     document.documentElement?.appendChild(indicator);
     
-    // Auto-hide after 5 seconds
+    // Auto-hide after 8 seconds
     setTimeout(() => {
       const el = document.getElementById('kayako-cache-indicator');
-      if (el) el.style.opacity = '0.7';
-    }, 5000);
+      if (el) {
+        el.style.opacity = '0.8';
+        el.style.transform = 'scale(0.9)';
+      }
+    }, 8000);
   }
 
-  updateIndicatorStats(type) {
+  updateIndicatorStats(type, details = '') {
     const statsEl = document.getElementById('cache-stats');
+    const actionEl = document.getElementById('last-action');
+    
+    if (type === 'cache_hit') {
+      this.cacheStats.hits++;
+      if (actionEl) actionEl.textContent = `💾 Cache Hit ${new Date().toLocaleTimeString()}`;
+    }
+    if (type === 'response') {
+      this.cacheStats.misses++;
+      if (actionEl) actionEl.textContent = `🌐 Network ${new Date().toLocaleTimeString()}`;
+    }
+    if (type === 'request') {
+      if (actionEl) actionEl.textContent = `🔍 Checking cache...`;
+    }
+    if (type === 'interception') {
+      if (actionEl) actionEl.textContent = `🔄 Intercepting ${new Date().toLocaleTimeString()}`;
+    }
+    
     if (statsEl) {
-      if (type === 'cache_hit') this.cacheStats.hits++;
-      if (type === 'response') this.cacheStats.misses++;
-      
-      statsEl.textContent = `Cache: ${this.cacheStats.hits} hits`;
+      statsEl.textContent = `Cache: ${this.cacheStats.hits} hits | ${this.cacheStats.misses} misses`;
+    }
+  }
+
+  testInterception() {
+    console.log('🧪 Testing fetch interception...');
+    
+    // Check if our interception is working
+    const fetchString = window.fetch.toString();
+    if (fetchString.includes('Kayako Pagination')) {
+      console.log('✅ Fetch interception is active');
+      this.updateIndicatorStats('interception');
+    } else {
+      console.error('❌ Fetch interception not detected!');
+      console.log('Current fetch function:', fetchString.substring(0, 200) + '...');
+      this.showNotification('❌ Fetch interception failed - check console', 'error');
+    }
+    
+    // Check if inject.js functions are available
+    if (typeof window.updateKayakoConfig === 'function') {
+      console.log('✅ Inject.js functions available');
+    } else {
+      console.error('❌ Inject.js functions not available');
+      this.showNotification('❌ Injection script not loaded properly', 'error');
     }
   }
 
@@ -415,33 +590,85 @@ class KayakoPaginationCacher {
 
   showNotification(message, type = 'success') {
     const notification = document.createElement('div');
+    const bgColor = type === 'error' ? '#dc3545' : type === 'warning' ? '#ffc107' : '#28a745';
+    const textColor = type === 'warning' ? '#000' : '#fff';
+    
     notification.style.cssText = `
       position: fixed;
       top: 50px;
       right: 10px;
-      background: ${type === 'error' ? '#dc3545' : '#28a745'};
-      color: white;
+      background: ${bgColor};
+      color: ${textColor};
       padding: 10px 15px;
       border-radius: 5px;
-      font-size: 14px;
+      font-size: 13px;
       z-index: 10001;
-      max-width: 300px;
+      max-width: 320px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      font-family: Arial, sans-serif;
+      line-height: 1.3;
     `;
     notification.textContent = message;
     
-    document.body.appendChild(notification);
+    if (document.body) {
+      document.body.appendChild(notification);
+    } else {
+      document.documentElement.appendChild(notification);
+    }
     
     setTimeout(() => {
-      notification.remove();
-    }, 5000);
+      if (notification.parentNode) {
+        notification.remove();
+      }
+    }, type === 'warning' ? 8000 : 5000);
   }
 }
 
-// Initialize the cacher when the page loads
+// Initialize the cacher safely after page load
 if (window.location.href.includes('kayako.com/agent')) {
-  const cacher = new KayakoPaginationCacher();
+  console.log('🎯 Kayako agent page detected, scheduling safe initialization...');
   
-  // Expose loadAllPosts function globally for manual triggering
-  window.kayakoLoadAllPosts = () => cacher.loadAllPosts();
+  // Wait for page to be fully loaded and stable before initializing
+  function safeInit() {
+    try {
+      // Check if page is in a good state (not redirecting, not in login loop)
+      if (document.readyState === 'complete' && 
+          !window.location.href.includes('/login') &&
+          !document.querySelector('input[type="password"]')) { // No login form visible
+        
+        console.log('✅ Page is stable, initializing Kayako Pagination Cacher...');
+        const cacher = new KayakoPaginationCacher();
+        
+        // Expose loadAllPosts function globally for manual triggering
+        window.kayakoLoadAllPosts = () => cacher.loadAllPosts();
+        
+        return true;
+      } else {
+        console.log('⏳ Page not ready yet, waiting...');
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Error during safe initialization:', error);
+      return false;
+    }
+  }
+  
+  // Try immediate initialization if page is ready
+  if (!safeInit()) {
+    // If not ready, wait and retry
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    const initInterval = setInterval(() => {
+      attempts++;
+      
+      if (safeInit() || attempts >= maxAttempts) {
+        clearInterval(initInterval);
+        
+        if (attempts >= maxAttempts) {
+          console.warn('⚠️ Max initialization attempts reached, page may be unstable');
+        }
+      }
+    }, 1000); // Check every second
+  }
 }

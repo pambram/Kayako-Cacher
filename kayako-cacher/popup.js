@@ -197,12 +197,30 @@ class KayakoCacherPopup {
       const statusDot = document.getElementById('status-dot');
       const statusText = document.getElementById('status-text');
       
-      if (currentTab && currentTab.url && currentTab.url.includes('kayako.com/agent')) {
-        console.log('✅ Active on Kayako page');
+      // Check if on any supported Kayako domain (updated for broader patterns)
+      const supportedDomains = [
+        'kayako.com/agent',
+        '.gfi.com/agent',
+        '.aurea.com/agent', 
+        '.ignitetech.com/agent',
+        '.crossover.com/agent',
+        '.totogi.com/agent',
+        '.alpha.school/agent',
+        '.cloudsense.com/agent',
+        '.kandy.io/agent',
+        'dnnsupport.dnnsoftware.com/agent',
+        'csai.trilogy.com/agent'
+      ];
+      
+      const isOnKayako = currentTab && currentTab.url && 
+        supportedDomains.some(domain => currentTab.url.includes(domain));
+      
+      if (isOnKayako) {
+        console.log('✅ Active on supported Kayako page:', currentTab.url);
         statusDot.className = 'status-dot active';
         statusText.textContent = 'Active on Kayako';
       } else {
-        console.log('❌ Not on Kayako agent page');
+        console.log('❌ Not on supported Kayako page:', currentTab?.url);
         statusDot.className = 'status-dot error';
         statusText.textContent = 'Not on Kayako page';
       }
