@@ -157,7 +157,8 @@ setTimeout(() => {
   `;
   indicator.innerHTML = `
     ✅ Pagination Fixed (100 posts)<br>
-    <small style="opacity: 0.7;">Click to dismiss</small>
+    💾 Cache: <span id="cache-stats-display">Loading...</span><br>
+    <small style="opacity: 0.7;">Click to dismiss • Double-click for debug</small>
   `;
   
   // Click to dismiss completely
@@ -171,15 +172,25 @@ setTimeout(() => {
     }, 300);
   };
   
-  // Double-click for test
+  // Double-click for debug info
   indicator.ondblclick = () => {
-    console.log('🧪 MANUAL TEST: Running pagination test...');
-    if (typeof window.testKayakoPagination === 'function') {
-      const result = window.testKayakoPagination();
-      console.log('🧪 Manual test result:', result);
-      alert('Pagination test: ' + (result ? 'WORKING ✅' : 'FAILED ❌'));
+    console.log('🧪 CACHE DEBUG INFO:');
+    if (typeof window.kayakoCacheStats === 'function') {
+      const stats = window.kayakoCacheStats();
+      const summary = `Cache Debug:
+• Entries: ${stats.size}
+• Memory: ${Math.round(JSON.stringify(stats.entries).length / 1024)}KB
+• Recent entries: ${stats.entries.slice(0, 3).map(e => `${e.key} (${e.age}m old)`).join(', ')}`;
+      alert(summary);
     } else {
-      alert('Test function not available ❌');
+      console.log('🧪 PAGINATION TEST: Running pagination test...');
+      if (typeof window.testKayakoPagination === 'function') {
+        const result = window.testKayakoPagination();
+        console.log('🧪 Manual test result:', result);
+        alert('Pagination test: ' + (result ? 'WORKING ✅' : 'FAILED ❌'));
+      } else {
+        alert('Debug functions not available ❌');
+      }
     }
   };
   
@@ -190,21 +201,96 @@ setTimeout(() => {
     console.log('❌ Could not add visual indicator - no body element');
   }
   
-  // Auto-hide after 8 seconds
+  // Auto-fade after 10 seconds (but keep visible for cache stats)
   setTimeout(() => {
     if (indicator.parentNode) {
-      indicator.style.opacity = '0.6';
-      indicator.style.transform = 'scale(0.9)';
+      indicator.style.opacity = '0.7';
+      indicator.style.transform = 'scale(0.95)';
     }
-  }, 8000);
+  }, 10000);
   
-  // Auto-remove after 30 seconds
+  // Update cache stats display periodically
+  const updateCacheDisplay = () => {
+    const display = document.getElementById('cache-stats-display');
+    if (display && typeof window.kayakoCacheStats === 'function') {
+      try {
+        const stats = window.kayakoCacheStats();
+        display.textContent = `${stats.size} entries (${window.kayakoCacheStats_live?.hits || 0} hits, ${window.kayakoCacheStats_live?.misses || 0} misses)`;
+      } catch (error) {
+        display.textContent = 'Available after first cache activity';
+      }
+    }
+  };
+  
+  // Update stats every 5 seconds
+  const statsInterval = setInterval(updateCacheDisplay, 5000);
+  
+  // Also update when indicator is clicked
+  indicator.onclick = (e) => {
+    updateCacheDisplay();
+    e.currentTarget.style.opacity = '0';
+    e.currentTarget.style.transform = 'scale(0.8)';
+    setTimeout(() => {
+      if (e.currentTarget.parentNode) {
+        e.currentTarget.remove();
+        clearInterval(statsInterval);
+      }
+    }, 300);
+  };
+  
+  // Auto-remove after 60 seconds (longer time since it's useful)
   setTimeout(() => {
     if (indicator.parentNode) {
       indicator.style.opacity = '0';
-      setTimeout(() => indicator.remove(), 300);
+      setTimeout(() => {
+        indicator.remove();
+        clearInterval(statsInterval);
+      }, 300);
     }
-  }, 30000);
+  }, 60000);
   
   console.log('🎉 SIMPLE PAGINATION FIXER READY! Look for network requests with limit=100 when scrolling.');
+  
+  // Load safe optimizations
+  setTimeout(() => {
+    console.log('🚀 Loading safe optimizations...');
+    
+    // Load simple cache strategy (safer)
+    const cacheScript = document.createElement('script');
+    cacheScript.src = chrome.runtime.getURL('simple-cache.js');
+    cacheScript.onload = () => {
+      console.log('✅ Simple cache strategy loaded');
+      
+      // Update cache display after cache system loads
+      setTimeout(() => {
+        const display = document.getElementById('cache-stats-display');
+        if (display) {
+          display.textContent = '0 entries (ready)';
+        }
+      }, 500);
+      
+      cacheScript.remove();
+    };
+    cacheScript.onerror = () => {
+      console.log('❌ Cache script failed to load');
+    };
+    
+    // Load simple image optimizer (safer)
+    const imageScript = document.createElement('script');
+    imageScript.src = chrome.runtime.getURL('simple-image-optimizer.js');
+    imageScript.onload = () => {
+      console.log('✅ Simple image optimizer loaded');
+      imageScript.remove();
+    };
+    imageScript.onerror = () => {
+      console.log('❌ Image script failed to load');
+    };
+    
+    (document.head || document.documentElement).appendChild(cacheScript);
+    setTimeout(() => {
+      (document.head || document.documentElement).appendChild(imageScript);
+    }, 1000);
+    
+  }, 2000); // Load after pagination is stable
+  
 }, 2000);

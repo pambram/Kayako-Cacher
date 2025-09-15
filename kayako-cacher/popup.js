@@ -355,7 +355,34 @@ class KayakoCacherPopup {
       button.textContent = '⏳ Clearing...';
       button.classList.add('loading');
       
-      const response = await chrome.runtime.sendMessage({ action: 'clearCache' });
+      // Try to clear cache via content script first
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      let response = null;
+      
+      if (tabs[0]) {
+        try {
+          // Try content script method
+          await chrome.tabs.sendMessage(tabs[0].id, { 
+            action: 'executeScript',
+            script: `
+              if (typeof window.clearKayakoCache === 'function') {
+                const count = window.clearKayakoCache();
+                console.log('🗑️ Cleared ' + count + ' localStorage entries');
+              } else {
+                console.log('❌ clearKayakoCache function not available');
+              }
+            `
+          });
+          response = { success: true, clearedCount: 'localStorage' };
+        } catch (error) {
+          console.log('Content script clear failed, trying background');
+        }
+      }
+      
+      if (!response) {
+        // Fallback to background script
+        response = await chrome.runtime.sendMessage({ action: 'clearCache' });
+      }
       
       if (response.success) {
         this.showSuccess(`Cleared ${response.clearedCount} cache entries`);
