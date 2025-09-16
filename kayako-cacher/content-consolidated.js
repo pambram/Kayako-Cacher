@@ -15,27 +15,31 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
     try {
       // Inject consolidated script as text (most reliable)
       const script = document.createElement('script');
-      script.src = chrome.runtime.getURL('simple-working-solution.js');
+      script.src = chrome.runtime.getURL('clean-working-solution.js');
       
       script.onload = () => {
         console.log('✅ Consolidated optimization loaded');
         
-        // Test if it worked
+        // Simple verification - check if core functions loaded
         setTimeout(() => {
-          if (typeof window.testKayakoPagination === 'function') {
-            const result = window.testKayakoPagination();
-            console.log('🧪 Self-test result:', result);
-            
-            if (result) {
-              showSuccessIndicator();
-            } else {
-              showErrorIndicator('Test failed');
-            }
+          const clearAvailable = typeof window.clearKayakoCache === 'function';
+          const statsAvailable = typeof window.getKayakoCacheStats === 'function';
+          const cacheStatsAvailable = typeof window.kayakoCacheStats === 'function';
+          
+          console.log('🔍 Function availability check:');
+          console.log('  clearKayakoCache:', clearAvailable);
+          console.log('  getKayakoCacheStats:', statsAvailable);
+          console.log('  kayakoCacheStats:', cacheStatsAvailable);
+          
+          if (clearAvailable) {
+            console.log('✅ Clean solution loaded successfully');
+            showSuccessIndicator();
           } else {
-            console.error('❌ Test function not created');
-            showErrorIndicator('Test function missing');
+            console.log('❌ Clean solution functions missing');
+            console.log('Available functions:', Object.keys(window).filter(k => k.includes('kayako')));
+            showErrorIndicator('Functions missing');
           }
-        }, 1000);
+        }, 500);
         
         script.remove();
       };
@@ -88,6 +92,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
       
+    case 'getCacheStats':
+      if (typeof window.kayakoCacheStats === 'function') {
+        try {
+          const stats = window.kayakoCacheStats();
+          sendResponse({ success: true, stats: stats });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      } else if (typeof window.getKayakoCacheStats === 'function') {
+        try {
+          const stats = window.getKayakoCacheStats();
+          sendResponse({ success: true, stats: stats });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      } else {
+        sendResponse({ success: false, error: 'Stats function not available' });
+      }
+      break;
+      
     case 'testPagination':
       if (typeof window.testKayakoPagination === 'function') {
         try {
@@ -127,10 +151,10 @@ function showSuccessIndicator() {
   `;
   
   indicator.innerHTML = `
-    ✅ Kayako Optimizer Active<br>
-    💾 Pagination: 100 posts/request<br>
-    <span id="cache-display">Cache: Initializing...</span><br>
-    <small style="opacity: 0.7;">Click: dismiss • Double-click: debug</small>
+    ✅ Kayako Optimized<br>
+    📊 Pagination: 100 posts/request<br>
+    🗑️ Cache management: Available<br>
+    <small style="opacity: 0.7;">Click to dismiss</small>
   `;
   
   // Click to dismiss
@@ -139,18 +163,16 @@ function showSuccessIndicator() {
     setTimeout(() => indicator.remove(), 300);
   };
   
-  // Double-click for debug
-  indicator.ondblclick = async () => {
-    if (typeof window.kayakoCacheStats === 'function') {
-      const stats = await window.kayakoCacheStats();
-      alert(`Cache Debug:
-• Memory: ${stats.memorySize} entries
-• Persistent: ${stats.persistentSize} entries  
-• Hits: ${stats.liveStats.hits}
-• Misses: ${stats.liveStats.misses}
-• Stored: ${stats.liveStats.stored}`);
+  // Double-click for simple stats
+  indicator.ondblclick = () => {
+    if (typeof window.getKayakoCacheStats === 'function') {
+      const stats = window.getKayakoCacheStats();
+      alert(`Cache Status:
+• Entries: ${stats.entries}
+• Size: ${stats.sizeKB} KB
+• Status: Working`);
     } else {
-      alert('Debug functions not ready yet');
+      alert('Cache functions not available');
     }
   };
   

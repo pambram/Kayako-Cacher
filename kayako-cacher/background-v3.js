@@ -1,7 +1,7 @@
 // Background script for Kayako Pagination Cacher
 // Handles configuration management and communication with content scripts
 
-console.log('🚀 Kayako Pagination Cacher v5.0.0 service worker started - SIMPLE STABLE VERSION');
+console.log('🚀 Kayako Pagination Cacher v5.3.1 service worker started - DATA URL CACHE APPROACH');
 
 // Default configuration
 const DEFAULT_CONFIG = {

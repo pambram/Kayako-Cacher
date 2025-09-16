@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako Pagination Cacher v3",
-  "version": "5.0.0",
+  "version": "5.3.1",
   "description": "Intercepts Kayako API requests to increase pagination limits and cache responses for better performance",
   "permissions": [
     "storage",
@@ -45,7 +45,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "simple-working-solution.js"
+        "clean-working-solution.js",
+        "fix-json-corruption.js"
       ],
       "matches": [
         "*://*.kayako.com/*",

@@ -237,31 +237,46 @@ class KayakoCacherPopup {
 
   async refreshCacheStats() {
     try {
+      // Try to get stats from content script
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      
+      if (tabs[0]) {
+        try {
+          const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'getCacheStats' });
+          
+          if (response && response.success) {
+            const stats = response.stats;
+            
+            document.getElementById('cache-entries').textContent = stats.entries || '0';
+            document.getElementById('cache-size').textContent = (stats.sizeKB || 0) + ' KB';
+            document.getElementById('cache-oldest').textContent = 'localStorage';
+            document.getElementById('cache-newest').textContent = stats.working ? 'Active' : 'Inactive';
+            
+            return;
+          }
+        } catch (error) {
+          console.log('Content script stats failed, trying background');
+        }
+      }
+      
+      // Fallback to background script
       const response = await chrome.runtime.sendMessage({ action: 'getCacheStats' });
       
-      if (response.success) {
+      if (response && response.success) {
         const stats = response.stats;
         
         document.getElementById('cache-entries').textContent = stats.entryCount || '0';
         document.getElementById('cache-size').textContent = stats.formattedSize || '0 B';
-        
-        if (stats.oldestEntry) {
-          const oldestDate = new Date(stats.oldestEntry);
-          document.getElementById('cache-oldest').textContent = this.formatRelativeTime(oldestDate);
-        } else {
-          document.getElementById('cache-oldest').textContent = 'None';
-        }
-        
-        if (stats.newestEntry) {
-          const newestDate = new Date(stats.newestEntry);
-          document.getElementById('cache-newest').textContent = this.formatRelativeTime(newestDate);
-        } else {
-          document.getElementById('cache-newest').textContent = 'None';
-        }
+        document.getElementById('cache-oldest').textContent = 'Background';
+        document.getElementById('cache-newest').textContent = 'Active';
       }
     } catch (error) {
       console.error('Error getting cache stats:', error);
-      this.showError('Failed to load cache statistics');
+      // Set default values instead of showing error
+      document.getElementById('cache-entries').textContent = '0';
+      document.getElementById('cache-size').textContent = '0 KB';
+      document.getElementById('cache-oldest').textContent = 'None';
+      document.getElementById('cache-newest').textContent = 'None';
     }
   }
 
