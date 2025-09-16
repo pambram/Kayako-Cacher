@@ -21,25 +21,46 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
         console.log('✅ Consolidated optimization loaded');
         
         // Simple verification - check if core functions loaded
-        setTimeout(() => {
+        // Enhanced verification with retry logic
+        let checkAttempts = 0;
+        const maxAttempts = 10;
+        
+        function checkFunctions() {
+          checkAttempts++;
+          
           const clearAvailable = typeof window.clearKayakoCache === 'function';
           const statsAvailable = typeof window.getKayakoCacheStats === 'function';
           const cacheStatsAvailable = typeof window.kayakoCacheStats === 'function';
+          const testAvailable = typeof window.testKayakoPagination === 'function';
           
-          console.log('🔍 Function availability check:');
+          console.log(`🔍 Function check attempt ${checkAttempts}/${maxAttempts}:`);
           console.log('  clearKayakoCache:', clearAvailable);
           console.log('  getKayakoCacheStats:', statsAvailable);
           console.log('  kayakoCacheStats:', cacheStatsAvailable);
+          console.log('  testKayakoPagination:', testAvailable);
           
-          if (clearAvailable) {
+          if (clearAvailable || statsAvailable || cacheStatsAvailable) {
             console.log('✅ Clean solution loaded successfully');
             showSuccessIndicator();
+          } else if (checkAttempts < maxAttempts) {
+            console.log(`⏳ Functions not ready yet, retrying in 300ms...`);
+            setTimeout(checkFunctions, 300);
           } else {
-            console.log('❌ Clean solution functions missing');
-            console.log('Available functions:', Object.keys(window).filter(k => k.includes('kayako')));
-            showErrorIndicator('Functions missing');
+            console.log('❌ Functions never loaded after', maxAttempts, 'attempts');
+            console.log('All window properties:', Object.keys(window).filter(k => k.toLowerCase().includes('kayako')));
+            
+            // Try to check if script executed at all
+            if (window.XMLHttpRequest && window.XMLHttpRequest.toString().includes('pagination')) {
+              console.log('✅ XHR override detected - script partially loaded');
+              showSuccessIndicator();
+            } else {
+              console.log('❌ No XHR override detected - script completely failed');
+              showErrorIndicator('Script loading failed');
+            }
           }
-        }, 500);
+        }
+        
+        setTimeout(checkFunctions, 100);
         
         script.remove();
       };
@@ -60,6 +81,13 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
 } else {
   console.log('❌ Unsupported domain:', window.location.hostname);
 }
+
+// Add script completion listener
+window.addEventListener('message', (event) => {
+  if (event.source === window && event.data.type === 'KAYAKO_SCRIPT_LOADED') {
+    console.log('📡 Received script completion signal at:', new Date(event.data.timestamp).toLocaleTimeString());
+  }
+});
 
 // Add message handler for popup communication
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

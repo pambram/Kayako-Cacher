@@ -9,6 +9,29 @@ console.log('🚀 Clean Kayako optimization starting...');
   
   console.log('📦 Setting up clean XHR override...');
   
+  // Ensure functions are created early and globally accessible
+  window.clearKayakoCache = function() {
+    console.log('🗑️ clearKayakoCache function called');
+    return 'function working';
+  };
+  
+  window.getKayakoCacheStats = function() {
+    console.log('📊 getKayakoCacheStats function called');
+    return { working: true };
+  };
+  
+  window.kayakoCacheStats = function() {
+    console.log('📊 kayakoCacheStats function called');
+    return { working: true };
+  };
+  
+  window.testKayakoPagination = function() {
+    console.log('🧪 testKayakoPagination function called');
+    return true;
+  };
+  
+  console.log('✅ Basic functions created early');
+  
   // Cache storage
   const CACHE_PREFIX = 'kayako_cache_';
   const CACHE_EXPIRY = 30 * 60 * 1000; // 30 minutes
@@ -132,24 +155,116 @@ console.log('🚀 Clean Kayako optimization starting...');
       if (cacheHit && cacheHit.responseText) {
         console.log('💾 Cache hit: Simulating XHR response with cached data');
         
-        // Simulate successful response immediately
-        setTimeout(() => {
-          Object.defineProperty(this, 'status', { value: 200, writable: false });
-          Object.defineProperty(this, 'statusText', { value: 'OK', writable: false });
-          Object.defineProperty(this, 'responseText', { value: cacheHit.responseText, writable: false });
-          Object.defineProperty(this, 'response', { value: cacheHit.responseText, writable: false });
-          Object.defineProperty(this, 'readyState', { value: 4, writable: false });
-          
-          // Trigger the load event
-          if (this.onload) {
-            this.onload.call(this);
-          }
-          
-          // Trigger readystatechange
-          if (this.onreadystatechange) {
-            this.onreadystatechange.call(this);
-          }
-        }, 0);
+         // Simulate successful response immediately
+         setTimeout(() => {
+           try {
+             Object.defineProperty(this, 'status', { value: 200, configurable: true });
+             Object.defineProperty(this, 'statusText', { value: 'OK (Cached)', configurable: true });
+             Object.defineProperty(this, 'responseText', { value: cacheHit.responseText, configurable: true });
+             Object.defineProperty(this, 'response', { value: cacheHit.responseText, configurable: true });
+             Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+             
+             console.log('📤 Triggering cached response handlers');
+             
+             // Trigger the load event
+             if (this.onload) {
+               this.onload.call(this);
+             }
+             
+             // Trigger readystatechange
+             if (this.onreadystatechange) {
+               this.onreadystatechange.call(this);
+             }
+             
+             console.log('✅ Cached response delivered successfully');
+             
+           } catch (error) {
+             console.error('❌ Cache response simulation failed:', error);
+             // Fallback to network request
+             originalSend.apply(this, [data]);
+           }
+         }, 0);
+         
+         // CACHE-THEN-NETWORK: Start background refresh for fresh data
+         setTimeout(() => {
+           console.log('🔄 Starting background refresh for fresh data...');
+           
+           // FIXED: Use modified URL with limit=100 for background refresh too
+           let refreshURL = requestUrl;
+           if (refreshURL.includes('limit=30')) {
+             refreshURL = refreshURL.replace('limit=30', 'limit=100');
+             console.log('🔧 Background refresh using limit=100');
+           }
+           
+           console.log('📋 Background URL:', refreshURL.substring(refreshURL.indexOf('/api')));
+           
+           const backgroundXHR = new OriginalXHR();
+           backgroundXHR.open('GET', refreshURL, true);
+           
+           backgroundXHR.onload = function() {
+             if (this.status === 200) {
+               try {
+                 const freshData = JSON.parse(this.responseText);
+                 const freshPostCount = freshData.data?.length || 0;
+                 
+                 if (freshPostCount > 0) {
+                   const cacheKey = generateCacheKey(requestUrl);
+                   
+                   const freshEntry = {
+                     data: freshData,
+                     timestamp: Date.now(),
+                     url: requestUrl
+                   };
+                   
+                   // Update cache with fresh data
+                   memoryCache.set(cacheKey, freshEntry);
+                   
+                   try {
+                     localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                     console.log(`🔄 Background refresh completed: ${freshPostCount} fresh posts cached`);
+                     showNotification('🔄 Data refreshed', 'info');
+                     
+                     // Dispatch event for UI refresh if data is different
+                     window.dispatchEvent(new CustomEvent('kayako-data-refreshed', {
+                       detail: { cacheKey, freshData, postCount: freshPostCount }
+                     }));
+                     
+                   } catch (quotaError) {
+                     console.warn('📦 Background refresh quota exceeded, attempting cleanup...');
+                     
+                     // Try to free up space for background refresh
+                     const freedSpace = freeUpLocalStorage();
+                     
+                     if (freedSpace > 0) {
+                       try {
+                         localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                         console.log(`🔄 Background refresh cached after cleanup: ${freshPostCount} posts`);
+                         showNotification('🔄 Data refreshed (after cleanup)', 'info');
+                       } catch (stillFullError) {
+                         console.warn('📦 Background data: memory only, localStorage full');
+                       }
+                     } else {
+                       console.warn('📦 Background data: memory only, could not free space');
+                     }
+                   }
+                 } else {
+                   console.log('🚫 Background refresh returned empty data');
+                 }
+                 
+               } catch (error) {
+                 console.warn('Background refresh parse error:', error);
+               }
+             } else {
+               console.warn('Background refresh HTTP error:', this.status);
+             }
+           };
+           
+           backgroundXHR.onerror = function() {
+             console.warn('Background refresh network error');
+           };
+           
+           backgroundXHR.send();
+         }, 50); // Start background refresh after cached response
         
         return;
       }
@@ -182,8 +297,25 @@ console.log('🚀 Clean Kayako optimization starting...');
                   showNotification('💾 Cached', 'info');
                   window.kayakoCacheStats_live.stored++;
                 } catch (quotaError) {
-                  console.warn('📦 Storage quota exceeded, cached in memory only');
-                  window.kayakoCacheStats_live.stored++;
+                  console.warn('📦 Storage quota exceeded, attempting cleanup...');
+                  
+                  // Try to free up space
+                  const freedSpace = freeUpLocalStorage();
+                  
+                  if (freedSpace > 0) {
+                    try {
+                      localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(cacheEntry));
+                      console.log('💾📥 CACHED after cleanup:', cacheKey, `(${postCount} posts)`);
+                      showNotification('💾 Cached (after cleanup)', 'info');
+                      window.kayakoCacheStats_live.stored++;
+                    } catch (stillFullError) {
+                      console.warn('📦 Storage still full after cleanup, memory cache only');
+                      window.kayakoCacheStats_live.stored++;
+                    }
+                  } else {
+                    console.warn('📦 Could not free space, memory cache only');
+                    window.kayakoCacheStats_live.stored++;
+                  }
                 }
               } else {
                 console.log('🚫 Skipping cache - empty response (no posts to cache)');
@@ -283,12 +415,17 @@ console.log('🚀 Clean Kayako optimization starting...');
   
   // === CLEAN CACHE FUNCTIONS (Simple localStorage management) ===
   
-  // Clean clear cache function (for popup)
+  // Enhanced clear cache function (for popup) - OVERRIDE early stub
   window.clearKayakoCache = function() {
     console.log('🗑️ Clearing all Kayako cache...');
     let cleared = 0;
     
-    // Clear all kayako cache entries
+    // Clear memory cache
+    if (typeof memoryCache !== 'undefined' && memoryCache.clear) {
+      memoryCache.clear();
+    }
+    
+    // Clear localStorage cache entries
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
       if (key && key.startsWith('kayako_cache_')) {
@@ -297,12 +434,63 @@ console.log('🚀 Clean Kayako optimization starting...');
       }
     }
     
-    console.log(`✅ Cleared ${cleared} cache entries`);
+    // Reset stats
+    if (typeof window.kayakoCacheStats_live === 'object') {
+      window.kayakoCacheStats_live = { hits: 0, misses: 0, stored: 0 };
+    }
+    
+    console.log(`✅ Cleared ${cleared} cache entries + reset memory cache`);
     return cleared;
   };
   
-  // Simple stats function (for popup)
+  // Free up localStorage space by removing old non-Kayako entries
+  function freeUpLocalStorage() {
+    try {
+      console.log('🧹 Freeing up localStorage space...');
+      let freedSpace = 0;
+      
+      // Remove old entries (keep only last hour)
+      const cutoff = Date.now() - (60 * 60 * 1000); // 1 hour
+      
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key) {
+          try {
+            const value = localStorage.getItem(key);
+            
+            // Try to parse as timestamped data
+            if (value && value.includes('timestamp')) {
+              const parsed = JSON.parse(value);
+              if (parsed.timestamp && parsed.timestamp < cutoff) {
+                localStorage.removeItem(key);
+                freedSpace++;
+              }
+            }
+            
+            // Remove very large entries (>100KB)
+            if (value && value.length > 100000) {
+              localStorage.removeItem(key);
+              freedSpace++;
+            }
+            
+          } catch (e) {
+            // Skip entries that can't be processed
+          }
+        }
+      }
+      
+      console.log(`🧹 Freed ${freedSpace} localStorage entries for space`);
+      return freedSpace;
+      
+    } catch (error) {
+      console.warn('localStorage cleanup error:', error);
+      return 0;
+    }
+  }
+  
+  // Simple stats function (for popup) - OVERRIDE early stub
   window.getKayakoCacheStats = function() {
+    console.log('📊 Getting cache stats...');
     let entries = 0;
     let totalSize = 0;
     
@@ -315,11 +503,14 @@ console.log('🚀 Clean Kayako optimization starting...');
       }
     }
     
-    return {
+    const stats = {
       entries: entries,
       sizeKB: Math.round(totalSize / 1024),
       working: true
     };
+    
+    console.log('📊 Cache stats:', stats);
+    return stats;
   };
   
   // Detailed cache stats function (RESTORED for debugging)
@@ -363,19 +554,127 @@ console.log('🚀 Clean Kayako optimization starting...');
     }
   };
   
-  // Simple test function (for popup compatibility)
+  // Simple test function (for popup compatibility) - OVERRIDE early stub
   window.testKayakoPagination = function() {
     console.log('🧪 Testing pagination...');
-    const xhrModified = window.XMLHttpRequest.toString() !== OriginalXHR.toString();
-    console.log('XMLHttpRequest modified:', xhrModified);
-    console.log('Live stats:', window.kayakoCacheStats_live);
-    return xhrModified;
+    
+    try {
+      const xhrModified = window.XMLHttpRequest.toString() !== OriginalXHR.toString();
+      console.log('XMLHttpRequest modified:', xhrModified);
+      
+      if (typeof window.kayakoCacheStats_live === 'object') {
+        console.log('Live stats:', window.kayakoCacheStats_live);
+      }
+      
+      console.log('Memory cache available:', typeof memoryCache !== 'undefined');
+      
+      return xhrModified;
+    } catch (error) {
+      console.error('Test function error:', error);
+      return false;
+    }
+  };
+  
+  // Debug function to test background refresh manually
+  window.testBackgroundRefresh = function() {
+    console.log('🧪 Testing background refresh manually...');
+    
+    const currentUrl = window.location.href;
+    const caseMatch = currentUrl.match(/\/conversations\/(\d+)/);
+    
+    if (caseMatch) {
+      const caseId = caseMatch[1];
+      const testURL = `/api/v1/cases/${caseId}/posts?include=attachment,case_message,channel,post,user,identity_phone,identity_email,identity_twitter,identity_facebook,note,activity,chat_message,facebook_message,twitter_tweet,twitter_message,comment,event,action,trigger,monitor,engagement,sla_version,activity_object,rating,case_status,activity_actor&fields=%2Boriginal(%2Bobject(%2Boriginal(%2Bform(-fields))))%2C%2Boriginal(%2Bobject(%2Boriginal(-custom_fields)))&filters=all&include=*&limit=100`;
+      
+      console.log('📋 Testing URL:', testURL);
+      
+      const testXHR = new OriginalXHR();
+      testXHR.open('GET', testURL, true);
+      
+      testXHR.onload = function() {
+        console.log('📥 Test background response:');
+        console.log('  Status:', this.status);
+        console.log('  Response length:', this.responseText?.length || 0);
+        
+        if (this.status === 200) {
+          try {
+            const data = JSON.parse(this.responseText);
+            console.log('  Posts found:', data.data?.length || 0);
+            console.log('  Response structure:', Object.keys(data));
+            
+            if (data.data && data.data.length > 0) {
+              console.log('✅ Background refresh would work with this response');
+            } else {
+              console.log('❌ Background refresh getting empty data - this is the problem');
+              console.log('  Raw data:', data.data);
+            }
+          } catch (error) {
+            console.error('❌ Background response parse error:', error);
+          }
+        }
+      };
+      
+      testXHR.send();
+      
+    } else {
+      console.log('❌ Not on a conversation page');
+    }
   };
   
   console.log('✅ Clean Kayako optimization ready');
   console.log('🎯 Features: Pagination (100 posts/request) + Working cache detection + Clean management');
   
+  // Debug: Verify functions are actually created
+  console.log('🔍 Verifying functions created:');
+  console.log('  clearKayakoCache:', typeof window.clearKayakoCache);
+  console.log('  getKayakoCacheStats:', typeof window.getKayakoCacheStats);
+  console.log('  kayakoCacheStats:', typeof window.kayakoCacheStats);
+  console.log('  testKayakoPagination:', typeof window.testKayakoPagination);
+  console.log('  testBackgroundRefresh:', typeof window.testBackgroundRefresh);
+  
+  // ONLY clean up very old cache entries on startup (not recent cache!)
+  setTimeout(() => {
+    console.log('🧹 Checking for very old cache entries...');
+    try {
+      let veryOldCleaned = 0;
+      const veryOldCutoff = Date.now() - (24 * 60 * 60 * 1000); // 24 hours old
+      
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('kayako_cache_')) {
+          const value = localStorage.getItem(key);
+          if (value) {
+            try {
+              const parsed = JSON.parse(value);
+              // Only remove cache older than 24 hours
+              if (parsed.timestamp && parsed.timestamp < veryOldCutoff) {
+                localStorage.removeItem(key);
+                veryOldCleaned++;
+              }
+            } catch (e) {
+              // Remove truly corrupted entries
+              localStorage.removeItem(key);
+              veryOldCleaned++;
+            }
+          }
+        }
+      }
+      
+      if (veryOldCleaned > 0) {
+        console.log(`🧹 Cleaned ${veryOldCleaned} very old cache entries (24h+)`);
+      } else {
+        console.log('✅ No old cache cleanup needed');
+      }
+    } catch (error) {
+      console.warn('Startup cleanup error:', error);
+    }
+  }, 2000);
+  
 })();
+
+// Signal that script has completed execution
+console.log('📡 Signaling script completion...');
+window.postMessage({ type: 'KAYAKO_SCRIPT_LOADED', timestamp: Date.now() }, '*');
 
 // Clean visual indicator
 setTimeout(() => {
