@@ -9,7 +9,12 @@ const DEFAULT_CONFIG = {
   cacheEnabled: true,
   cacheExpiry: 30 * 60 * 1000, // 30 minutes
   preloadAll: false,
-  maxCacheSize: 50 * 1024 * 1024 // 50MB
+  maxCacheSize: 50 * 1024 * 1024, // 50MB
+  imageOptimizationEnabled: true,
+  imageQuality: 0.8,
+  imageMaxWidth: 1920,
+  imageMaxHeight: 1080,
+  imageFormat: 'jpeg'
 };
 
 // Initialize extension

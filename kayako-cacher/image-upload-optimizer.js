@@ -11,6 +11,7 @@ class KayakoImageOptimizer {
       quality: 0.8,
       format: 'jpeg'
     };
+    this.disabled = false;
     
     this.init();
   }
@@ -57,6 +58,7 @@ class KayakoImageOptimizer {
     
     // Add optimized drop handler
     dropzone.addEventListener('drop', (e) => {
+      if (this.disabled) { return; }
       console.log('📁 Optimized drop handler triggered');
       
       const files = Array.from(e.dataTransfer.files);
@@ -75,6 +77,7 @@ class KayakoImageOptimizer {
     
     // Add paste optimization
     dropzone.addEventListener('paste', (e) => {
+      if (this.disabled) { return; }
       const items = Array.from(e.clipboardData.items);
       const imageItems = items.filter(item => item.type.startsWith('image/'));
       
@@ -146,15 +149,16 @@ class KayakoImageOptimizer {
         // Draw and compress
         ctx.drawImage(img, 0, 0, width, height);
         
+        const mime = this.compressionSettings.format === 'jpeg' ? 'image/jpeg' : 'image/png';
         canvas.toBlob((blob) => {
           // Create new file with compressed data
           const compressedFile = new File([blob], file.name, {
-            type: this.compressionSettings.format === 'jpeg' ? 'image/jpeg' : file.type,
+            type: mime,
             lastModified: Date.now()
           });
           
           resolve(compressedFile);
-        }, this.compressionSettings.format === 'jpeg' ? 'image/jpeg' : file.type, this.compressionSettings.quality);
+        }, mime, this.compressionSettings.format === 'jpeg' ? this.compressionSettings.quality : undefined);
       };
       
       img.src = URL.createObjectURL(file);
@@ -333,5 +337,23 @@ class KayakoImageOptimizer {
 
 // Initialize image optimizer
 const imageOptimizer = new KayakoImageOptimizer();
+
+// Listen for config updates from content script
+window.addEventListener('KAYAKO_IMAGE_OPT_CONFIG', (event) => {
+  try {
+    const cfg = event && event.detail ? event.detail : {};
+    if (typeof cfg.enabled === 'boolean') {
+      imageOptimizer.disabled = !cfg.enabled;
+      console.log(`🖼️ Image optimizer ${imageOptimizer.disabled ? 'disabled' : 'enabled'} via config`);
+    }
+    if (typeof cfg.maxWidth === 'number') imageOptimizer.compressionSettings.maxWidth = cfg.maxWidth;
+    if (typeof cfg.maxHeight === 'number') imageOptimizer.compressionSettings.maxHeight = cfg.maxHeight;
+    if (typeof cfg.quality === 'number') imageOptimizer.compressionSettings.quality = cfg.quality;
+    if (typeof cfg.format === 'string') imageOptimizer.compressionSettings.format = cfg.format;
+    console.log('🛠️ Applied image optimization settings:', imageOptimizer.compressionSettings);
+  } catch (e) {
+    console.warn('⚠️ Failed to apply image optimization settings:', e);
+  }
+});
 
 console.log('✅ Image upload optimizer loaded');

@@ -42,6 +42,54 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
           if (clearAvailable || statsAvailable || cacheStatsAvailable) {
             console.log('✅ Clean solution loaded successfully');
             showSuccessIndicator();
+
+            // Inject image upload optimizer after core optimization is ready
+            try {
+              // Fetch current config from background to decide whether to load optimizer
+              chrome.runtime.sendMessage({ action: 'getConfig' }, (resp) => {
+                const enabled = !!(resp && resp.success && resp.config && resp.config.imageOptimizationEnabled);
+                if (enabled) {
+                  const existing = document.getElementById('kayako-image-optimizer-script');
+                  if (!existing) {
+                    console.log('💉 Loading image upload optimizer...');
+                    const imgScript = document.createElement('script');
+                    imgScript.id = 'kayako-image-optimizer-script';
+                    imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
+                    imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
+                    imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
+                    (document.head || document.documentElement).appendChild(imgScript);
+                  } else {
+                    console.log('ℹ️ Image upload optimizer already loaded');
+                  }
+                  // Send settings to optimizer
+                  try {
+                    const cfg = resp.config || {};
+                    const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', {
+                      detail: {
+                        enabled: true,
+                        maxWidth: cfg.imageMaxWidth,
+                        maxHeight: cfg.imageMaxHeight,
+                        quality: cfg.imageQuality,
+                        format: cfg.imageFormat
+                      }
+                    });
+                    window.dispatchEvent(ev);
+                  } catch (e) {
+                    console.warn('⚠️ Failed to dispatch image opt config:', e);
+                  }
+                } else {
+                  console.log('🖼️ Image optimization disabled by config');
+                  const existing = document.getElementById('kayako-image-optimizer-script');
+                  if (existing) existing.remove();
+                  try {
+                    const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', { detail: { enabled: false } });
+                    window.dispatchEvent(ev);
+                  } catch (_) {}
+                }
+              });
+            } catch (e) {
+              console.warn('⚠️ Failed to inject image optimizer:', e);
+            }
           } else if (checkAttempts < maxAttempts) {
             console.log(`⏳ Functions not ready yet, retrying in 300ms...`);
             setTimeout(checkFunctions, 300);
@@ -158,6 +206,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   return true; // Keep message channel open
+});
+
+// React to background config updates at runtime
+chrome.runtime.onMessage.addListener((message) => {
+  if (message && message.action === 'configUpdated') {
+    const enabled = !!(message.config && message.config.imageOptimizationEnabled);
+    const existing = document.getElementById('kayako-image-optimizer-script');
+    if (enabled && !existing) {
+      try {
+        console.log('🔄 Config changed: enabling image upload optimizer');
+        const imgScript = document.createElement('script');
+        imgScript.id = 'kayako-image-optimizer-script';
+        imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
+        imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
+        imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
+        (document.head || document.documentElement).appendChild(imgScript);
+      } catch (e) {
+        console.warn('⚠️ Failed to enable image optimizer on config update:', e);
+      }
+    }
+    if (!enabled && existing) {
+      console.log('🔄 Config changed: disabling image upload optimizer');
+      existing.remove();
+    }
+    // Push latest settings to optimizer regardless
+    try {
+      const cfg = message.config || {};
+      const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', {
+        detail: {
+          enabled: !!cfg.imageOptimizationEnabled,
+          maxWidth: cfg.imageMaxWidth,
+          maxHeight: cfg.imageMaxHeight,
+          quality: cfg.imageQuality,
+          format: cfg.imageFormat
+        }
+      });
+      window.dispatchEvent(ev);
+    } catch (e) {
+      console.warn('⚠️ Failed to update image opt config on message:', e);
+    }
+  }
 });
 
 function showSuccessIndicator() {

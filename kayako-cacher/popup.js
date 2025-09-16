@@ -150,6 +150,57 @@ class KayakoCacherPopup {
     if (toggleAdvanced) {
       toggleAdvanced.addEventListener('click', () => this.toggleAdvancedSection());
     }
+
+    // Image optimization toggle
+    const enableImageOpt = document.getElementById('enable-image-optimization');
+    if (enableImageOpt) {
+      enableImageOpt.addEventListener('change', async (e) => {
+        this.config.imageOptimizationEnabled = e.target.checked;
+        await this.saveConfig();
+      });
+    }
+
+    // Image optimization settings
+    const imageQuality = document.getElementById('image-quality');
+    if (imageQuality) {
+      imageQuality.addEventListener('change', async (e) => {
+        const val = parseFloat(e.target.value);
+        if (!isNaN(val) && val >= 0.1 && val <= 1) {
+          this.config.imageQuality = val;
+          await this.saveConfig();
+        }
+      });
+    }
+
+    const imageFormat = document.getElementById('image-format');
+    if (imageFormat) {
+      imageFormat.addEventListener('change', async (e) => {
+        this.config.imageFormat = e.target.value;
+        await this.saveConfig();
+      });
+    }
+
+    const imageMaxWidth = document.getElementById('image-max-width');
+    if (imageMaxWidth) {
+      imageMaxWidth.addEventListener('change', async (e) => {
+        const val = parseInt(e.target.value, 10);
+        if (!isNaN(val) && val >= 320 && val <= 8192) {
+          this.config.imageMaxWidth = val;
+          await this.saveConfig();
+        }
+      });
+    }
+
+    const imageMaxHeight = document.getElementById('image-max-height');
+    if (imageMaxHeight) {
+      imageMaxHeight.addEventListener('change', async (e) => {
+        const val = parseInt(e.target.value, 10);
+        if (!isNaN(val) && val >= 320 && val <= 8192) {
+          this.config.imageMaxHeight = val;
+          await this.saveConfig();
+        }
+      });
+    }
   }
 
   updateUI() {
@@ -183,6 +234,30 @@ class KayakoCacherPopup {
     const maxCacheSize = document.getElementById('max-cache-size');
     if (maxCacheSize) {
       maxCacheSize.value = Math.round(this.config.maxCacheSize / 1024 / 1024);
+    }
+
+    // Update image optimization toggle
+    const enableImageOpt = document.getElementById('enable-image-optimization');
+    if (enableImageOpt) {
+      enableImageOpt.checked = !!this.config.imageOptimizationEnabled;
+    }
+
+    // Update image optimization inputs
+    const imageQuality = document.getElementById('image-quality');
+    if (imageQuality) {
+      imageQuality.value = (this.config.imageQuality ?? 0.8);
+    }
+    const imageFormat = document.getElementById('image-format');
+    if (imageFormat) {
+      imageFormat.value = (this.config.imageFormat ?? 'jpeg');
+    }
+    const imageMaxWidth = document.getElementById('image-max-width');
+    if (imageMaxWidth) {
+      imageMaxWidth.value = (this.config.imageMaxWidth ?? 1920);
+    }
+    const imageMaxHeight = document.getElementById('image-max-height');
+    if (imageMaxHeight) {
+      imageMaxHeight.value = (this.config.imageMaxHeight ?? 1080);
     }
   }
 

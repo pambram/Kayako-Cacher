@@ -25,6 +25,12 @@ A Chrome extension that intercepts Kayako's API requests to increase pagination 
 - Cache size and entry count tracking
 - Visual indicator showing extension activity
 
+### 🖼️ **Image Upload Optimization**
+- Intercepts drag-and-drop and paste image uploads in the editor
+- Compresses images client-side (max 1920x1080, ~80% JPEG quality) before upload
+- Speeds up uploads and reduces payload size
+- Shows a simple progress indicator during multi-image uploads
+
 ## Installation
 
 1. Download or clone this repository
@@ -82,6 +88,7 @@ kayako-cacher/
 ├── background.js          # Service worker for configuration
 ├── content.js            # Main content script
 ├── inject.js             # Injected fetch interceptor
+├── image-upload-optimizer.js # Optimizes pasted/dropped image uploads
 ├── popup.html/css/js     # Extension popup interface
 └── README.md             # This file
 ```
