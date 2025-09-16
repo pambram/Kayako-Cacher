@@ -184,6 +184,7 @@ class KayakoImageOptimizer {
           'X-CSRF-Token': csrfToken,
           'X-Requested-With': 'XMLHttpRequest'
         },
+        credentials: 'include',
         body: formData
       });
       

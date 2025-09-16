@@ -108,7 +108,22 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
           }
         }
         
-        setTimeout(checkFunctions, 100);
+        // Prefer waiting for the page script completion signal if it already fired
+        let started = false;
+        const onLoaded = () => {
+          if (started) return;
+          started = true;
+          checkFunctions();
+          window.removeEventListener('message', handleMsg);
+        };
+        const handleMsg = (event) => {
+          if (event.source === window && event.data && event.data.type === 'KAYAKO_SCRIPT_LOADED') {
+            onLoaded();
+          }
+        };
+        window.addEventListener('message', handleMsg);
+        // Fallback timer in case the signal is missed
+        setTimeout(() => { if (!started) onLoaded(); }, 300);
         
         script.remove();
       };

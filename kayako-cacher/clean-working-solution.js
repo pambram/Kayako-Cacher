@@ -200,6 +200,19 @@ console.log('🚀 Clean Kayako optimization starting...');
            
            const backgroundXHR = new OriginalXHR();
            backgroundXHR.open('GET', refreshURL, true);
+           try { backgroundXHR.withCredentials = true; } catch (e) {}
+           try { backgroundXHR.setRequestHeader('Accept', 'application/json'); } catch (e) {}
+           try { backgroundXHR.setRequestHeader('X-Requested-With', 'XMLHttpRequest'); } catch (e) {}
+           backgroundXHR.onreadystatechange = function() {
+             try {
+               if (this.readyState === 1) console.log('🔄 BG XHR opened');
+               if (this.readyState === 2) console.log('🔄 BG XHR headers received');
+               if (this.readyState === 3) console.log('🔄 BG XHR loading...');
+               if (this.readyState === 4) console.log('🔄 BG XHR done. Status:', this.status, 'Len:', (this.responseText && this.responseText.length) || 0);
+             } catch (e) {}
+           };
+           backgroundXHR.timeout = 15000;
+           backgroundXHR.ontimeout = function() { console.warn('Background refresh timeout'); };
            
            backgroundXHR.onload = function() {
              if (this.status === 200) {
