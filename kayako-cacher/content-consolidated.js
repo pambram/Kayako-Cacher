@@ -20,110 +20,62 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
       script.onload = () => {
         console.log('✅ Consolidated optimization loaded');
         
-        // Simple verification - check if core functions loaded
-        // Enhanced verification with retry logic
-        let checkAttempts = 0;
-        const maxAttempts = 10;
-        
-        function checkFunctions() {
-          checkAttempts++;
-          
-          const clearAvailable = typeof window.clearKayakoCache === 'function';
-          const statsAvailable = typeof window.getKayakoCacheStats === 'function';
-          const cacheStatsAvailable = typeof window.kayakoCacheStats === 'function';
-          const testAvailable = typeof window.testKayakoPagination === 'function';
-          
-          console.log(`🔍 Function check attempt ${checkAttempts}/${maxAttempts}:`);
-          console.log('  clearKayakoCache:', clearAvailable);
-          console.log('  getKayakoCacheStats:', statsAvailable);
-          console.log('  kayakoCacheStats:', cacheStatsAvailable);
-          console.log('  testKayakoPagination:', testAvailable);
-          
-          if (clearAvailable || statsAvailable || cacheStatsAvailable) {
-            console.log('✅ Clean solution loaded successfully');
-            showSuccessIndicator();
-
-            // Inject image upload optimizer after core optimization is ready
-            try {
-              // Fetch current config from background to decide whether to load optimizer
-              chrome.runtime.sendMessage({ action: 'getConfig' }, (resp) => {
-                const enabled = !!(resp && resp.success && resp.config && resp.config.imageOptimizationEnabled);
-                if (enabled) {
-                  const existing = document.getElementById('kayako-image-optimizer-script');
-                  if (!existing) {
-                    console.log('💉 Loading image upload optimizer...');
-                    const imgScript = document.createElement('script');
-                    imgScript.id = 'kayako-image-optimizer-script';
-                    imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
-                    imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
-                    imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
-                    (document.head || document.documentElement).appendChild(imgScript);
-                  } else {
-                    console.log('ℹ️ Image upload optimizer already loaded');
-                  }
-                  // Send settings to optimizer
-                  try {
-                    const cfg = resp.config || {};
-                    const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', {
-                      detail: {
-                        enabled: true,
-                        maxWidth: cfg.imageMaxWidth,
-                        maxHeight: cfg.imageMaxHeight,
-                        quality: cfg.imageQuality,
-                        format: cfg.imageFormat
-                      }
-                    });
-                    window.dispatchEvent(ev);
-                  } catch (e) {
-                    console.warn('⚠️ Failed to dispatch image opt config:', e);
-                  }
-                } else {
-                  console.log('🖼️ Image optimization disabled by config');
-                  const existing = document.getElementById('kayako-image-optimizer-script');
-                  if (existing) existing.remove();
-                  try {
-                    const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', { detail: { enabled: false } });
-                    window.dispatchEvent(ev);
-                  } catch (_) {}
+        // Wait for the page script completion signal, then proceed without cross-context checks
+        let completed = false;
+        const proceed = () => {
+          if (completed) return;
+          completed = true;
+          console.log('✅ Clean solution reported ready');
+          showSuccessIndicator();
+          // Inject image upload optimizer (config-gated)
+          try {
+            chrome.runtime.sendMessage({ action: 'getConfig' }, (resp) => {
+              const enabled = !!(resp && resp.success && resp.config && resp.config.imageOptimizationEnabled);
+              if (enabled) {
+                const existing = document.getElementById('kayako-image-optimizer-script');
+                if (!existing) {
+                  console.log('💉 Loading image upload optimizer...');
+                  const imgScript = document.createElement('script');
+                  imgScript.id = 'kayako-image-optimizer-script';
+                  imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
+                  imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
+                  imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
+                  (document.head || document.documentElement).appendChild(imgScript);
                 }
-              });
-            } catch (e) {
-              console.warn('⚠️ Failed to inject image optimizer:', e);
-            }
-          } else if (checkAttempts < maxAttempts) {
-            console.log(`⏳ Functions not ready yet, retrying in 300ms...`);
-            setTimeout(checkFunctions, 300);
-          } else {
-            console.log('❌ Functions never loaded after', maxAttempts, 'attempts');
-            console.log('All window properties:', Object.keys(window).filter(k => k.toLowerCase().includes('kayako')));
-            
-            // Try to check if script executed at all
-            if (window.XMLHttpRequest && window.XMLHttpRequest.toString().includes('pagination')) {
-              console.log('✅ XHR override detected - script partially loaded');
-              showSuccessIndicator();
-            } else {
-              console.log('❌ No XHR override detected - script completely failed');
-              showErrorIndicator('Script loading failed');
-            }
-          }
-        }
-        
-        // Prefer waiting for the page script completion signal if it already fired
-        let started = false;
-        const onLoaded = () => {
-          if (started) return;
-          started = true;
-          checkFunctions();
-          window.removeEventListener('message', handleMsg);
+                try {
+                  const cfg = resp.config || {};
+                  const ev = new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', {
+                    detail: {
+                      enabled: true,
+                      maxWidth: cfg.imageMaxWidth,
+                      maxHeight: cfg.imageMaxHeight,
+                      quality: cfg.imageQuality,
+                      format: cfg.imageFormat
+                    }
+                  });
+                  window.dispatchEvent(ev);
+                } catch (e) { console.warn('⚠️ Failed to dispatch image opt config:', e); }
+              } else {
+                const existing = document.getElementById('kayako-image-optimizer-script');
+                if (existing) existing.remove();
+                try { window.dispatchEvent(new CustomEvent('KAYAKO_IMAGE_OPT_CONFIG', { detail: { enabled: false } })); } catch (_) {}
+              }
+            });
+          } catch (e) { console.warn('⚠️ Failed to inject image optimizer:', e); }
         };
         const handleMsg = (event) => {
           if (event.source === window && event.data && event.data.type === 'KAYAKO_SCRIPT_LOADED') {
-            onLoaded();
+            console.log('📡 Page script completion signal received');
+            proceed();
           }
         };
         window.addEventListener('message', handleMsg);
-        // Fallback timer in case the signal is missed
-        setTimeout(() => { if (!started) onLoaded(); }, 300);
+        if (document.readyState === 'complete') {
+          setTimeout(proceed, 200);
+        } else {
+          window.addEventListener('load', proceed, { once: true });
+          setTimeout(proceed, 800);
+        }
         
         script.remove();
       };

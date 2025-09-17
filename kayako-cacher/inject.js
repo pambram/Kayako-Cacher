@@ -88,7 +88,7 @@
     const options = args[1] || {};
     
     // Only intercept posts API calls, avoid auth/session endpoints
-    if (typeof url === 'string' && isPostsApiCall(url) && !isAuthRelatedCall(url)) {
+    if (typeof url === 'string' && isPostsList(url) && !isAuthRelatedCall(url)) {
       console.log('🔍 Intercepted posts API call:', url);
       
       const modifiedUrl = modifyPostsUrl(url);
@@ -193,9 +193,14 @@
   window.XMLHttpRequest = function() {
     const xhr = new originalXMLHttpRequest();
     const originalOpen = xhr.open;
+    const originalSetRequestHeader = xhr.setRequestHeader;
+    let reqMethod = null;
+    let reqUrl = null;
     
     xhr.open = function(method, url, ...rest) {
-      if (typeof url === 'string' && isPostsApiCall(url) && !isAuthRelatedCall(url)) {
+      reqMethod = method;
+      reqUrl = url;
+      if (method === 'GET' && typeof url === 'string' && isPostsApiCall(url) && !isAuthRelatedCall(url) && !isActivitiesCall(url)) {
         console.log('🔍 Intercepted XHR posts API call:', url);
         url = modifyPostsUrl(url);
         
@@ -207,6 +212,11 @@
       }
       
       return originalOpen.apply(this, [method, url, ...rest]);
+    };
+    
+    // Do not attempt to modify headers for non-GET
+    xhr.setRequestHeader = function(name, value) {
+      return originalSetRequestHeader.apply(this, arguments);
     };
     
     return xhr;
@@ -235,6 +245,21 @@
       console.error('Error checking if posts API call:', error);
       return false;
     }
+  }
+
+  function isPostsList(url) {
+    try {
+      const urlObj = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/\d+\/posts$/.test(urlObj.pathname);
+    } catch (e) { return false; }
+  }
+
+  // Never intercept activities or other endpoints
+  function isActivitiesCall(url) {
+    try {
+      const urlObj = new URL(url, window.location.origin);
+      return urlObj.pathname.includes('/api/v1/activities');
+    } catch (e) { return false; }
   }
   
   // Check if this is an auth/session related call that we should NOT intercept

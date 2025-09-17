@@ -45,21 +45,29 @@ console.log('🚀 Clean Kayako optimization starting...');
     const xhr = new OriginalXHR();
     const originalOpen = xhr.open;
     const originalSend = xhr.send;
+    const originalSetRequestHeader = xhr.setRequestHeader;
     let requestUrl = null;
+    let requestMethod = null;
     let cacheHit = null;
     
     xhr.open = function(method, url, ...rest) {
       requestUrl = url;
+      requestMethod = method;
       cacheHit = null;
+      const intercept = (method === 'GET' && isPostsList(url));
+      if (!intercept) {
+        // Pass-through: ensure native send is used so our stack doesn't appear
+        try { this.send = originalSend.bind(this); } catch (e) {}
+      }
       
-      // PAGINATION FIX (PROVEN WORKING)
-      if (typeof url === 'string' && url.includes('/posts') && url.includes('limit=30')) {
+      // PAGINATION FIX (only for GET list endpoint /api/v1/cases/{id}/posts)
+      if (intercept && typeof url === 'string' && url.includes('limit=30')) {
         url = url.replace('limit=30', 'limit=100');
         console.log('✅ Pagination: limit increased to 100');
       }
       
-      // CACHE CHECK (WORKING LOGIC - RESTORED)
-      if (method === 'GET' && url.includes('/posts')) {
+      // CACHE CHECK only for GET list endpoint
+      if (intercept) {
         const cacheKey = generateCacheKey(url);
         console.log('🔍 Cache check for:', cacheKey, '| URL:', url.substring(url.indexOf('/api')));
         
@@ -150,6 +158,22 @@ console.log('🚀 Clean Kayako optimization starting...');
       return originalOpen.apply(this, [method, url, ...rest]);
     };
     
+    // Capture CSRF token from any page XHR headers
+    xhr.setRequestHeader = function(name, value) {
+      try {
+        if (typeof name === 'string' && /^x[-_]csrf[-_]token$/i.test(name) && typeof value === 'string' && value.length > 16) {
+          if (window.kayako_csrf_token !== value) {
+            window.kayako_csrf_token = value;
+            if (!window.__kayako_csrf_logged) {
+              console.log('🔑 Captured CSRF token from XHR header');
+              window.__kayako_csrf_logged = true;
+            }
+          }
+        }
+      } catch (e) {}
+      return originalSetRequestHeader.apply(this, arguments);
+    };
+
     xhr.send = function(data) {
       // Handle cache hit by simulating response
       if (cacheHit && cacheHit.responseText) {
@@ -197,80 +221,156 @@ console.log('🚀 Clean Kayako optimization starting...');
            }
            
            console.log('📋 Background URL:', refreshURL.substring(refreshURL.indexOf('/api')));
+           const refreshURLAbs = (() => { try { return new URL(refreshURL, window.location.origin).toString(); } catch(e){ return refreshURL; } })();
            
            const backgroundXHR = new OriginalXHR();
-           backgroundXHR.open('GET', refreshURL, true);
+           backgroundXHR.open('GET', refreshURLAbs, true);
            try { backgroundXHR.withCredentials = true; } catch (e) {}
            try { backgroundXHR.setRequestHeader('Accept', 'application/json'); } catch (e) {}
            try { backgroundXHR.setRequestHeader('X-Requested-With', 'XMLHttpRequest'); } catch (e) {}
+          // Do not set Referer/Origin: browsers forbid these headers
            backgroundXHR.onreadystatechange = function() {
              try {
                if (this.readyState === 1) console.log('🔄 BG XHR opened');
                if (this.readyState === 2) console.log('🔄 BG XHR headers received');
-               if (this.readyState === 3) console.log('🔄 BG XHR loading...');
+               if (this.readyState === 3) {
+                 let clen = null;
+                 try { clen = this.getResponseHeader && this.getResponseHeader('content-length'); } catch (_) {}
+                 console.log('🔄 BG XHR loading...', clen ? '(content-length ' + clen + ')' : '');
+               }
                if (this.readyState === 4) console.log('🔄 BG XHR done. Status:', this.status, 'Len:', (this.responseText && this.responseText.length) || 0);
              } catch (e) {}
            };
            backgroundXHR.timeout = 15000;
-           backgroundXHR.ontimeout = function() { console.warn('Background refresh timeout'); };
-           
-           backgroundXHR.onload = function() {
-             if (this.status === 200) {
-               try {
-                 const freshData = JSON.parse(this.responseText);
-                 const freshPostCount = freshData.data?.length || 0;
-                 
-                 if (freshPostCount > 0) {
-                   const cacheKey = generateCacheKey(requestUrl);
-                   
-                   const freshEntry = {
-                     data: freshData,
-                     timestamp: Date.now(),
-                     url: requestUrl
-                   };
-                   
-                   // Update cache with fresh data
-                   memoryCache.set(cacheKey, freshEntry);
-                   
-                   try {
-                     localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
-                     console.log(`🔄 Background refresh completed: ${freshPostCount} fresh posts cached`);
-                     showNotification('🔄 Data refreshed', 'info');
-                     
-                     // Dispatch event for UI refresh if data is different
-                     window.dispatchEvent(new CustomEvent('kayako-data-refreshed', {
-                       detail: { cacheKey, freshData, postCount: freshPostCount }
-                     }));
-                     
-                   } catch (quotaError) {
-                     console.warn('📦 Background refresh quota exceeded, attempting cleanup...');
-                     
-                     // Try to free up space for background refresh
-                     const freedSpace = freeUpLocalStorage();
-                     
-                     if (freedSpace > 0) {
-                       try {
-                         localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
-                         console.log(`🔄 Background refresh cached after cleanup: ${freshPostCount} posts`);
-                         showNotification('🔄 Data refreshed (after cleanup)', 'info');
-                       } catch (stillFullError) {
-                         console.warn('📦 Background data: memory only, localStorage full');
-                       }
-                     } else {
-                       console.warn('📦 Background data: memory only, could not free space');
-                     }
-                   }
-                 } else {
-                   console.log('🚫 Background refresh returned empty data');
-                 }
-                 
-               } catch (error) {
-                 console.warn('Background refresh parse error:', error);
-               }
-             } else {
-               console.warn('Background refresh HTTP error:', this.status);
-             }
-           };
+           backgroundXHR.ontimeout = function() {
+            console.warn('Background refresh timeout');
+            try {
+              fetch(refreshURLAbs, {
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest'
+                }
+              }).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+              }).then(freshData => {
+                try {
+                  const freshPostCount = freshData.data?.length || 0;
+                  if (freshPostCount > 0) {
+                    const cacheKey = generateCacheKey(requestUrl);
+                    const freshEntry = { data: freshData, timestamp: Date.now(), url: requestUrl };
+                    memoryCache.set(cacheKey, freshEntry);
+                    try {
+                      localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                      console.log(`🔄 Background refresh (fetch) completed: ${freshPostCount} fresh posts cached`);
+                      showNotification('🔄 Data refreshed', 'info');
+                      window.dispatchEvent(new CustomEvent('kayako-data-refreshed', { detail: { cacheKey, freshData, postCount: freshPostCount } }));
+                    } catch (_) {
+                      console.warn('📦 Background data (fetch): memory only');
+                    }
+                  } else {
+                    console.log('🚫 Background refresh (fetch) returned empty data');
+                  }
+                } catch (e) {
+                  console.warn('Background refresh (fetch) parse error:', e);
+                }
+              }).catch(err => console.warn('Background refresh (fetch) error:', err.message));
+            } catch (e) {}
+          };
+          
+          backgroundXHR.onload = function() {
+            if (this.status === 200) {
+              try {
+                const freshData = JSON.parse(this.responseText);
+                const freshPostCount = freshData.data?.length || 0;
+                
+                if (freshPostCount > 0) {
+                  const cacheKey = generateCacheKey(requestUrl);
+                  
+                  const freshEntry = {
+                    data: freshData,
+                    timestamp: Date.now(),
+                    url: requestUrl
+                  };
+                  
+                  // Update cache with fresh data
+                  memoryCache.set(cacheKey, freshEntry);
+                  
+                  try {
+                    localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                    console.log(`🔄 Background refresh completed: ${freshPostCount} fresh posts cached`);
+                    showNotification('🔄 Data refreshed', 'info');
+                    
+                    // Dispatch event for UI refresh if data is different
+                    window.dispatchEvent(new CustomEvent('kayako-data-refreshed', {
+                      detail: { cacheKey, freshData, postCount: freshPostCount }
+                    }));
+                    
+                  } catch (quotaError) {
+                    console.warn('📦 Background refresh quota exceeded, attempting cleanup...');
+                    
+                    // Try to free up space for background refresh
+                    const freedSpace = freeUpLocalStorage();
+                    
+                    if (freedSpace > 0) {
+                      try {
+                        localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                        console.log(`🔄 Background refresh cached after cleanup: ${freshPostCount} posts`);
+                        showNotification('🔄 Data refreshed (after cleanup)', 'info');
+                      } catch (stillFullError) {
+                        console.warn('📦 Background data: memory only, localStorage full');
+                      }
+                    } else {
+                      console.warn('📦 Background data: memory only, could not free space');
+                    }
+                  }
+                } else {
+                  console.log('🚫 Background refresh returned empty data');
+                }
+                
+              } catch (error) {
+                console.warn('Background refresh parse error:', error);
+              }
+            } else {
+              console.warn('Background refresh HTTP error:', this.status);
+              try {
+                if (!this.status || this.status === 0) {
+                  fetch(refreshURLAbs, {
+                    credentials: 'include',
+                    headers: {
+                      'Accept': 'application/json',
+                      'X-Requested-With': 'XMLHttpRequest'
+                    }
+                  }).then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                  }).then(freshData => {
+                    try {
+                      const freshPostCount = freshData.data?.length || 0;
+                      if (freshPostCount > 0) {
+                        const cacheKey = generateCacheKey(requestUrl);
+                        const freshEntry = { data: freshData, timestamp: Date.now(), url: requestUrl };
+                        memoryCache.set(cacheKey, freshEntry);
+                        try {
+                          localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(freshEntry));
+                          console.log(`🔄 Background refresh (fetch) completed: ${freshPostCount} fresh posts cached`);
+                          showNotification('🔄 Data refreshed', 'info');
+                          window.dispatchEvent(new CustomEvent('kayako-data-refreshed', { detail: { cacheKey, freshData, postCount: freshPostCount } }));
+                        } catch (_) {
+                          console.warn('📦 Background data (fetch): memory only');
+                        }
+                      } else {
+                        console.log('🚫 Background refresh (fetch) returned empty data');
+                      }
+                    } catch (e) {
+                      console.warn('Background refresh (fetch) parse error:', e);
+                    }
+                  }).catch(err => console.warn('Background refresh (fetch) error:', err.message));
+                }
+              } catch (e) {}
+            }
+          };
            
            backgroundXHR.onerror = function() {
              console.warn('Background refresh network error');
@@ -283,7 +383,7 @@ console.log('🚀 Clean Kayako optimization starting...');
       }
       
       // CACHE STORAGE (WORKING LOGIC - RESTORED) - Only for actual network requests
-      if (requestUrl && requestUrl.includes('/posts')) {
+      if (requestMethod === 'GET' && requestUrl && isPostsList(requestUrl)) {
         const originalOnLoad = this.onload;
         this.onload = function() {
           if (this.status === 200) {
@@ -356,6 +456,12 @@ console.log('🚀 Clean Kayako optimization starting...');
   Object.setPrototypeOf(window.XMLHttpRequest.prototype, OriginalXHR.prototype);
   
   // === WORKING UTILITY FUNCTIONS (RESTORED) ===
+  function isPostsList(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/\d+\/posts$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
   function generateCacheKey(url) {
     try {
       const urlObj = new URL(url, window.location.origin);

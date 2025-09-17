@@ -1,0 +1,481 @@
+/* Kayako AI Text Enhancer - Styles */
+
+/* AI Button Wrapper - Match Kayako's style */
+.kayako-ai-wrapper {
+  position: relative;
+  display: inline-block !important;
+  margin: 0 2px !important;
+}
+
+/* AI Dropdown Button - Styled like Kayako buttons */
+.kayako-ai-dropdown {
+  background: #667eea !important;
+  color: white !important;
+  border: none !important;
+  font-weight: 500 !important;
+  font-size: 16px !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: relative !important;
+  z-index: 1001 !important;
+}
+
+.kayako-ai-dropdown:hover {
+  background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+.kayako-ai-dropdown:active {
+  transform: translateY(0);
+}
+
+/* Dropdown Menu */
+.kayako-ai-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  z-index: 10000;
+  min-width: 200px;
+  padding: 8px 0;
+  margin-top: 4px;
+  max-width: 250px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.kayako-ai-dropdown-menu::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  right: 16px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 8px solid white;
+  filter: drop-shadow(0 -2px 2px rgba(0, 0, 0, 0.1));
+}
+
+/* Action Buttons */
+.kayako-ai-action-btn {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: white;
+  color: #333;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  transition: background-color 0.2s ease;
+  line-height: 1.4;
+}
+
+.kayako-ai-action-btn:hover {
+  background-color: #f8f9fa;
+  color: #495057;
+}
+
+.kayako-ai-action-btn:active {
+  background-color: #e9ecef;
+}
+
+/* Notification Animations */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slideOutRight {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .kayako-ai-dropdown-menu {
+    min-width: 160px;
+    right: 0;
+    left: auto;
+  }
+  
+  .kayako-ai-dropdown-menu::before {
+    left: auto;
+    right: 16px;
+  }
+}
+
+/* AI Preview Modal */
+.kayako-ai-preview {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  z-index: 10000;
+  min-width: 500px;
+  max-width: 700px;
+  max-height: 80vh;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.ai-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e1e5e9;
+  background: #f8f9fa;
+  border-radius: 8px 8px 0 0;
+}
+
+.ai-preview-title {
+  font-weight: 600;
+  color: #333;
+  font-size: 16px;
+}
+
+.ai-preview-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.ai-preview-close:hover {
+  background: #e9ecef;
+  color: #333;
+}
+
+.ai-preview-content {
+  padding: 20px;
+}
+
+.ai-preview-section {
+  margin-bottom: 20px;
+}
+
+.ai-preview-section:last-child {
+  margin-bottom: 0;
+}
+
+.ai-preview-label {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #495057;
+  font-size: 14px;
+}
+
+.ai-preview-text {
+  padding: 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-size: 14px;
+  min-height: 60px;
+}
+
+.ai-preview-original {
+  background: #f8f9fa;
+  color: #495057;
+}
+
+.ai-preview-enhanced {
+  background: #e7f3ff;
+  color: #0c5aa6;
+  border-color: #b3d9ff;
+}
+
+.ai-preview-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid #e1e5e9;
+  background: #f8f9fa;
+}
+
+.ai-preview-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ai-preview-cancel {
+  background: #6c757d;
+  color: white;
+}
+
+.ai-preview-cancel:hover {
+  background: #5a6268;
+}
+
+.ai-preview-insert {
+  background: #667eea;
+  color: white;
+}
+
+.ai-preview-insert:hover {
+  background: #5a6fd8;
+}
+
+/* Text highlighting after insert */
+.kayako-ai-highlighted {
+  background-color: rgba(173, 216, 230, 0.3) !important;
+  transition: background-color 0.3s ease;
+}
+
+/* Custom Prompt Modal */
+.kayako-ai-custom-prompt {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  z-index: 10001;
+  min-width: 500px;
+  max-width: 600px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.ai-custom-prompt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e1e5e9;
+  background: #f8f9fa;
+  border-radius: 8px 8px 0 0;
+}
+
+.ai-custom-prompt-title {
+  font-weight: 600;
+  color: #333;
+  font-size: 16px;
+}
+
+.ai-custom-prompt-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.ai-custom-prompt-close:hover {
+  background: #e9ecef;
+  color: #333;
+}
+
+.ai-custom-prompt-content {
+  padding: 20px;
+}
+
+.ai-custom-prompt-input-group {
+  margin-bottom: 0;
+}
+
+.ai-custom-prompt-input-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #495057;
+  font-size: 14px;
+}
+
+.ai-custom-prompt-input-group textarea {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #e9ecef;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+  transition: border-color 0.2s ease;
+}
+
+.ai-custom-prompt-input-group textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.ai-custom-prompt-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid #e1e5e9;
+  background: #f8f9fa;
+}
+
+.ai-custom-prompt-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ai-custom-prompt-cancel {
+  background: #6c757d;
+  color: white;
+}
+
+.ai-custom-prompt-cancel:hover {
+  background: #5a6268;
+}
+
+.ai-custom-prompt-generate {
+  background: #667eea;
+  color: white;
+}
+
+.ai-custom-prompt-generate:hover {
+  background: #5a6fd8;
+}
+
+.ai-preview-append {
+  background: #28a745;
+  color: white;
+}
+
+.ai-preview-append:hover {
+  background: #218838;
+}
+
+.ai-preview-replace {
+  background: #ffc107;
+  color: #212529;
+}
+
+.ai-preview-replace:hover {
+  background: #e0a800;
+}
+
+/* Scrollbar styling for dropdown */
+.kayako-ai-dropdown-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.kayako-ai-dropdown-menu::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.kayako-ai-dropdown-menu::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.kayako-ai-dropdown-menu::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
+}
+
+/* Dark theme support */
+@media (prefers-color-scheme: dark) {
+  .kayako-ai-dropdown-menu {
+    background: #2d3748;
+    border-color: #4a5568;
+    color: #e2e8f0;
+  }
+  
+  .kayako-ai-action-btn {
+    background: #2d3748;
+    color: #e2e8f0;
+  }
+  
+  .kayako-ai-action-btn:hover {
+    background-color: #4a5568;
+    color: #f7fafc;
+  }
+  
+  .kayako-ai-action-btn:active {
+    background-color: #718096;
+  }
+  
+  .kayako-ai-preview {
+    background: #2d3748;
+    border-color: #4a5568;
+    color: #e2e8f0;
+  }
+  
+  .ai-preview-header,
+  .ai-preview-actions {
+    background: #374151;
+    border-color: #4b5563;
+  }
+  
+  .ai-preview-text {
+    border-color: #4b5563;
+  }
+  
+  .ai-preview-original {
+    background: #374151;
+    color: #d1d5db;
+  }
+  
+  .ai-preview-enhanced {
+    background: #1e3a8a;
+    color: #93c5fd;
+    border-color: #3b82f6;
+  }
+}

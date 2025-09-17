@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Kayako AI Text Enhancer",
+  "version": "1.0.13",
+  "description": "AI-powered text enhancement for Kayako editors with Polish, Formalize, Elaborate, and Shorten functionality",
+  "permissions": [
+    "storage",
+    "activeTab", 
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.kayako.com/*",
+    "*://*.gfi.com/*",
+    "*://*.aurea.com/*",
+    "*://*.ignitetech.com/*",
+    "*://*.crossover.com/*",
+    "*://*.totogi.com/*",
+    "*://*.alpha.school/*",
+    "*://*.cloudsense.com/*",
+    "*://*.kandy.io/*",
+    "*://dnnsupport.dnnsoftware.com/*",
+    "*://csai.trilogy.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.kayako.com/agent/*",
+        "*://*.gfi.com/agent/*",
+        "*://*.aurea.com/agent/*",
+        "*://*.ignitetech.com/agent/*",
+        "*://*.crossover.com/agent/*",
+        "*://*.totogi.com/agent/*",
+        "*://*.alpha.school/agent/*",
+        "*://*.cloudsense.com/agent/*",
+        "*://*.kandy.io/agent/*",
+        "*://dnnsupport.dnnsoftware.com/agent/*",
+        "*://csai.trilogy.com/agent/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ]
+}
