@@ -33,6 +33,9 @@ class KayakoAIEnhancer {
       // Set up message listeners
       this.setupMessageListeners();
       
+      // Set up keyboard shortcuts
+      this.setupKeyboardShortcuts();
+      
       console.log('🎉 Kayako AI Text Enhancer fully initialized');
       
       // Show success notification
@@ -224,7 +227,14 @@ class KayakoAIEnhancer {
     dropdownMenu.style.display = 'none';
 
     // Add action buttons to dropdown
-    actions.forEach(action => {
+    actions.forEach((action, index) => {
+      // Add separator before "Help me write" (like Gmail)
+      if (action.id === 'help_write') {
+        const separator = document.createElement('div');
+        separator.className = 'kayako-ai-dropdown-separator';
+        dropdownMenu.appendChild(separator);
+      }
+      
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'kayako-ai-action-btn';
@@ -260,7 +270,13 @@ class KayakoAIEnhancer {
         menu.style.display = 'none';
       });
       
-      dropdownMenu.style.display = isVisible ? 'none' : 'block';
+      if (!isVisible) {
+        // Calculate available space and adjust dropdown height
+        this.adjustDropdownSize(dropdownMenu, dropdownButton);
+        dropdownMenu.style.display = 'block';
+      } else {
+        dropdownMenu.style.display = 'none';
+      }
     });
 
     // Hide dropdown when clicking outside
@@ -461,6 +477,82 @@ class KayakoAIEnhancer {
     setTimeout(() => {
       editorElement.classList.remove('kayako-ai-highlighted');
     }, 3000);
+  }
+
+  adjustDropdownSize(dropdownMenu, dropdownButton) {
+    // Calculate available space below the button
+    const buttonRect = dropdownButton.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const availableHeight = viewportHeight - buttonRect.bottom - 20; // 20px buffer
+    
+    // Calculate natural height of dropdown content
+    dropdownMenu.style.display = 'block';
+    dropdownMenu.style.maxHeight = 'none';
+    const naturalHeight = dropdownMenu.scrollHeight;
+    dropdownMenu.style.display = 'none';
+    
+    console.log('🔍 Dropdown sizing:', {
+      availableHeight,
+      naturalHeight,
+      buttonBottom: buttonRect.bottom,
+      viewportHeight
+    });
+    
+    // Set appropriate max-height with scrollbar if needed
+    if (naturalHeight > availableHeight && availableHeight > 100) {
+      dropdownMenu.style.maxHeight = Math.max(200, availableHeight) + 'px';
+      console.log('📏 Dropdown will scroll, max-height set to:', dropdownMenu.style.maxHeight);
+    } else {
+      dropdownMenu.style.maxHeight = '300px'; // Default
+    }
+  }
+
+  setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      // Option + Shift + H to open "Help me write" 
+      if (e.altKey && e.shiftKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        
+        // Find the active editor (one that's focused or in a focused container)
+        const activeEditor = this.findActiveEditor();
+        if (activeEditor) {
+          console.log('⌨️ Keyboard shortcut triggered: Help me write');
+          this.showCustomPromptModal(activeEditor);
+        } else {
+          this.showNotification('⌨️ Place cursor in a text editor first', 'warning');
+        }
+      }
+    });
+    
+    console.log('⌨️ Keyboard shortcuts registered (Option + Shift + H)');
+  }
+
+  findActiveEditor() {
+    // Try to find the currently focused editor
+    const focusedElement = document.activeElement;
+    
+    // Check if we're in a Froala editor
+    if (focusedElement && focusedElement.classList.contains('fr-element')) {
+      return focusedElement;
+    }
+    
+    // Check if focus is within a Kayako text editor container
+    const editorContainer = focusedElement?.closest('.ko-text-editor__container_1p5g6r');
+    if (editorContainer) {
+      const editor = editorContainer.querySelector('.fr-element');
+      if (editor) return editor;
+    }
+    
+    // Fallback: find the first visible editor on the page
+    const allEditors = document.querySelectorAll('.ko-text-editor__container_1p5g6r .fr-element');
+    for (const editor of allEditors) {
+      const rect = editor.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return editor;
+      }
+    }
+    
+    return null;
   }
 
   showCustomPromptModal(editorElement) {

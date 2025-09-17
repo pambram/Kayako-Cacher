@@ -95,6 +95,14 @@
   background-color: #e9ecef;
 }
 
+/* Dropdown Separator */
+.kayako-ai-dropdown-separator {
+  height: 1px;
+  background: #e1e5e9;
+  margin: 8px 0;
+  border: none;
+}
+
 /* Notification Animations */
 @keyframes slideInRight {
   from {
