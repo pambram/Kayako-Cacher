@@ -856,7 +856,9 @@ window.postMessage({ type: 'KAYAKO_SCRIPT_LOADED', timestamp: Date.now() }, '*')
 
 // Clean visual indicator
 setTimeout(() => {
+  try { const existing = document.getElementById('kayako-opt'); if (existing) existing.remove(); } catch (_) {}
   const indicator = document.createElement('div');
+  indicator.id = 'kayako-opt';
   indicator.style.cssText = `
     position: fixed;
     bottom: 20px;
@@ -884,12 +886,15 @@ setTimeout(() => {
   
   document.body?.appendChild(indicator);
   
-  // Auto-fade after 8 seconds
+  // Auto-remove after ~3 seconds
   setTimeout(() => {
-    if (indicator.parentNode) {
-      indicator.style.opacity = '0.7';
-    }
-  }, 8000);
+    try {
+      if (indicator && indicator.parentNode) {
+        indicator.style.opacity = '0';
+        setTimeout(() => { try { indicator.remove(); } catch(_) {} }, 250);
+      }
+    } catch (_) {}
+  }, 3000);
   
 }, 1000);
 
