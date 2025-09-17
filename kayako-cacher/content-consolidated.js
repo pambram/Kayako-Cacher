@@ -104,6 +104,16 @@ window.addEventListener('message', (event) => {
   }
 });
 
+// Forward cache performance metrics from page to background for aggregation
+window.addEventListener('message', (event) => {
+  try {
+    if (event && event.source === window && event.data && event.data.type === 'KAYAKO_CACHE_PERF') {
+      const detail = event.data.detail || {};
+      chrome.runtime.sendMessage({ action: 'trackPerformance', data: detail });
+    }
+  } catch (_) {}
+});
+
 // Add message handler for popup communication
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('📨 Content script received message:', message.action);
@@ -217,7 +227,12 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 function showSuccessIndicator() {
+  try {
+    const existing = document.getElementById('kayako-opt');
+    if (existing) existing.remove();
+  } catch (_) {}
   const indicator = document.createElement('div');
+  indicator.id = 'kayako-opt';
   indicator.style.cssText = `
     position: fixed;
     bottom: 20px;
@@ -281,12 +296,15 @@ function showSuccessIndicator() {
   // Update after initial load
   setTimeout(updateDisplay, 2000);
   
-  // Auto-fade after 15 seconds
+  // Auto-remove after 3 seconds
   setTimeout(() => {
-    if (indicator.parentNode) {
-      indicator.style.opacity = '0.7';
-    }
-  }, 15000);
+    try {
+      if (indicator && indicator.parentNode) {
+        indicator.style.opacity = '0';
+        setTimeout(() => indicator.remove(), 250);
+      }
+    } catch (_) {}
+  }, 3000);
 }
 
 function showErrorIndicator(error) {

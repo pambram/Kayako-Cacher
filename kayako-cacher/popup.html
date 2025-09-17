@@ -9,7 +9,7 @@
 <body>
     <div class="header">
         <h1>📄 Kayako Cacher</h1>
-        <div class="version">v1.0.0</div>
+        <div class="version">v<span id="version">-</span></div>
     </div>
     
     <div class="status" id="status-indicator">
@@ -35,7 +35,7 @@
     </div>
 
     <div class="section">
-        <h3>💾 Cache Settings</h3>
+        <h3>💾 Cache Module</h3>
         
         <label class="toggle-container">
             <input type="checkbox" id="enable-cache">
@@ -52,19 +52,11 @@
             <option value="86400000">24 hours</option>
         </select>
 
-        <label class="toggle-container">
-            <input type="checkbox" id="preload-all">
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">Auto-preload all posts on page load</span>
-        </label>
         
-        <div class="info-text">
-            Preloading fetches all posts at once for instant scrolling.
-        </div>
     </div>
 
     <div class="section">
-        <h3>🖼️ Image Optimization</h3>
+        <h3>🖼️ Image Optimization Module</h3>
         <label class="toggle-container">
             <input type="checkbox" id="enable-image-optimization">
             <span class="toggle-slider"></span>
@@ -117,27 +109,26 @@
                 <div class="stat-label">Newest</div>
                 <div class="stat-value" id="cache-newest">-</div>
             </div>
+            <div class="stat-item">
+                <div class="stat-label">Saved Time</div>
+                <div class="stat-value" id="cache-saved-seconds">-</div>
+            </div>
         </div>
         
         <button id="refresh-stats" class="secondary-btn">🔄 Refresh Stats</button>
     </div>
 
     <div class="section">
-        <h3>⚡ Quick Actions</h3>
-        
-        <button id="load-all-posts" class="primary-btn">📥 Load All Posts Now</button>
+        <h3>💾 Cache Tools</h3>
         <button id="clear-cache" class="warning-btn">🗑️ Clear Cache</button>
-        
-        <div class="info-text">
-            "Load All Posts" fetches and caches all posts for the current ticket.
-        </div>
+        <div class="info-text">Clears cached posts and stats.</div>
     </div>
 
     <div class="section advanced-section" id="advanced-section">
         <h3>🔧 Advanced</h3>
         
-        <label for="max-cache-size">Max cache size (MB):</label>
-        <input type="number" id="max-cache-size" min="10" max="500" step="10">
+        <label for="max-cache-size">Max cache size (MB) [reserved]:</label>
+        <input type="number" id="max-cache-size" min="10" max="500" step="10" disabled>
         
         <div class="debug-info" id="debug-info">
             <div class="debug-title">Debug Information:</div>

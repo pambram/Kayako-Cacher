@@ -18,17 +18,23 @@ const DEFAULT_CONFIG = {
 };
 
 // Initialize extension
-chrome.runtime.onInstalled.addListener(async () => {
-  console.log('📦 Kayako Pagination Cacher extension installed');
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log('📦 Kayako Pagination Cacher extension installed/updated:', details.reason);
   
   try {
-    // Set default configuration
-    await chrome.storage.local.set({
-      'kayako_config': DEFAULT_CONFIG
-    });
-    console.log('✅ Default configuration set');
+    const existing = await chrome.storage.local.get(['kayako_config']);
+    const current = existing.kayako_config;
+    if (!current) {
+      await chrome.storage.local.set({ 'kayako_config': DEFAULT_CONFIG });
+      console.log('✅ Default configuration set (fresh install)');
+    } else {
+      // Merge in any new defaults without overwriting user values
+      const merged = { ...DEFAULT_CONFIG, ...current };
+      await chrome.storage.local.set({ 'kayako_config': merged });
+      console.log('✅ Configuration preserved across update');
+    }
     
-    // Clean up any expired cache entries on install
+    // Clean up any expired cache entries on install/update
     await cleanupExpiredCache();
     console.log('✅ Initial cache cleanup completed');
   } catch (error) {
@@ -177,12 +183,15 @@ async function handleGetCacheStats(sendResponse) {
       }
     });
     
+    const perf = await chrome.storage.local.get(['kayako_perf']);
+    const savedMs = (perf && perf.kayako_perf && typeof perf.kayako_perf.savedMsTotal === 'number') ? perf.kayako_perf.savedMsTotal : 0;
     const stats = {
       totalSize,
       entryCount,
       oldestEntry: oldestEntry === Date.now() ? null : oldestEntry,
       newestEntry: newestEntry === 0 ? null : newestEntry,
-      formattedSize: formatBytes(totalSize)
+      formattedSize: formatBytes(totalSize),
+      savedMsTotal: savedMs
     };
     
     console.log('✅ Cache stats computed:', stats);
@@ -195,12 +204,19 @@ async function handleGetCacheStats(sendResponse) {
 
 // Track performance metrics
 function handleTrackPerformance(data) {
-  // Log performance data for now, could be extended to send to analytics
-  console.log('📈 Performance:', {
-    url: data.url,
-    fromCache: data.fromCache,
-    timestamp: new Date(data.timestamp).toISOString()
-  });
+  try {
+    const networkMs = typeof data.networkMs === 'number' ? data.networkMs : 0;
+    const savedMs = typeof data.savedMs === 'number' ? data.savedMs : networkMs;
+    chrome.storage.local.get(['kayako_perf']).then(res => {
+      const current = res.kayako_perf || { savedMsTotal: 0, samples: 0 };
+      const updated = {
+        savedMsTotal: current.savedMsTotal + savedMs,
+        samples: current.samples + 1,
+        last: { url: data.url || '', networkMs, ts: Date.now() }
+      };
+      return chrome.storage.local.set({ 'kayako_perf': updated });
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 // Broadcast configuration updates to all Kayako tabs

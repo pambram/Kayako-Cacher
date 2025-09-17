@@ -13,6 +13,13 @@ class KayakoCacherPopup {
     console.log('Initializing Kayako Cacher popup');
     
     try {
+      // Populate version from manifest
+      try {
+        const manifest = chrome.runtime.getManifest();
+        const vEl = document.getElementById('version');
+        if (vEl && manifest && manifest.version) vEl.textContent = manifest.version;
+      } catch (_) {}
+
       // Load current configuration
       await this.loadConfig();
       console.log('Config loaded:', this.config);
@@ -107,29 +114,11 @@ class KayakoCacherPopup {
       });
     }
 
-    // Preload all toggle
-    const preloadAll = document.getElementById('preload-all');
-    if (preloadAll) {
-      preloadAll.addEventListener('change', async (e) => {
-        this.config.preloadAll = e.target.checked;
-        await this.saveConfig();
-      });
-    }
+    // Preload-all deprecated: no handler
 
-    // Max cache size input
-    const maxCacheSize = document.getElementById('max-cache-size');
-    if (maxCacheSize) {
-      maxCacheSize.addEventListener('change', async (e) => {
-        this.config.maxCacheSize = parseInt(e.target.value) * 1024 * 1024; // Convert MB to bytes
-        await this.saveConfig();
-      });
-    }
+    // Max cache size reserved: no handler
 
-    // Action buttons
-    const loadAllPosts = document.getElementById('load-all-posts');
-    if (loadAllPosts) {
-      loadAllPosts.addEventListener('click', () => this.loadAllPosts());
-    }
+    // Removed Load All Posts action
 
     const clearCache = document.getElementById('clear-cache');
     if (clearCache) {
@@ -182,24 +171,48 @@ class KayakoCacherPopup {
 
     const imageMaxWidth = document.getElementById('image-max-width');
     if (imageMaxWidth) {
-      imageMaxWidth.addEventListener('change', async (e) => {
+      let debounceTimerW = null;
+      const persist = async (e) => {
         const val = parseInt(e.target.value, 10);
-        if (!isNaN(val) && val >= 320 && val <= 8192) {
-          this.config.imageMaxWidth = val;
-          await this.saveConfig();
+        if (!isNaN(val)) {
+          const clamped = Math.max(320, Math.min(8192, val));
+          if (this.config.imageMaxWidth !== clamped) {
+            this.config.imageMaxWidth = clamped;
+            await this.saveConfig();
+            this.updateUI();
+          }
         }
-      });
+      };
+      const queuePersist = (e) => {
+        if (debounceTimerW) clearTimeout(debounceTimerW);
+        debounceTimerW = setTimeout(() => persist(e), 400);
+      };
+      imageMaxWidth.addEventListener('input', queuePersist);
+      imageMaxWidth.addEventListener('change', persist);
+      imageMaxWidth.addEventListener('blur', persist);
     }
 
     const imageMaxHeight = document.getElementById('image-max-height');
     if (imageMaxHeight) {
-      imageMaxHeight.addEventListener('change', async (e) => {
+      let debounceTimerH = null;
+      const persistH = async (e) => {
         const val = parseInt(e.target.value, 10);
-        if (!isNaN(val) && val >= 320 && val <= 8192) {
-          this.config.imageMaxHeight = val;
-          await this.saveConfig();
+        if (!isNaN(val)) {
+          const clamped = Math.max(320, Math.min(8192, val));
+          if (this.config.imageMaxHeight !== clamped) {
+            this.config.imageMaxHeight = clamped;
+            await this.saveConfig();
+            this.updateUI();
+          }
         }
-      });
+      };
+      const queuePersistH = (e) => {
+        if (debounceTimerH) clearTimeout(debounceTimerH);
+        debounceTimerH = setTimeout(() => persistH(e), 400);
+      };
+      imageMaxHeight.addEventListener('input', queuePersistH);
+      imageMaxHeight.addEventListener('change', persistH);
+      imageMaxHeight.addEventListener('blur', persistH);
     }
   }
 
@@ -324,10 +337,8 @@ class KayakoCacherPopup {
             
             document.getElementById('cache-entries').textContent = stats.entries || '0';
             document.getElementById('cache-size').textContent = (stats.sizeKB || 0) + ' KB';
-            document.getElementById('cache-oldest').textContent = 'localStorage';
+            document.getElementById('cache-oldest').textContent = '—';
             document.getElementById('cache-newest').textContent = stats.working ? 'Active' : 'Inactive';
-            
-            return;
           }
         } catch (error) {
           console.log('Content script stats failed, trying background');
@@ -342,8 +353,10 @@ class KayakoCacherPopup {
         
         document.getElementById('cache-entries').textContent = stats.entryCount || '0';
         document.getElementById('cache-size').textContent = stats.formattedSize || '0 B';
-        document.getElementById('cache-oldest').textContent = 'Background';
-        document.getElementById('cache-newest').textContent = 'Active';
+        document.getElementById('cache-oldest').textContent = stats.oldestEntry ? new Date(stats.oldestEntry).toLocaleTimeString() : '—';
+        document.getElementById('cache-newest').textContent = stats.newestEntry ? new Date(stats.newestEntry).toLocaleTimeString() : '—';
+        const savedSec = (stats.savedMsTotal || 0) / 1000;
+        document.getElementById('cache-saved-seconds').textContent = savedSec.toFixed(1) + 's';
       }
     } catch (error) {
       console.error('Error getting cache stats:', error);

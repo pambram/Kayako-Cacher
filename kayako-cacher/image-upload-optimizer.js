@@ -444,6 +444,8 @@ class KayakoImageOptimizer {
       </div>`;
     document.body.appendChild(toast);
     toast.onclick = () => this.hideUploadProgress();
+    // Auto-dismiss in case some path misses hide
+    setTimeout(() => this.hideUploadProgress(), 4000);
   }
 
   updateUploadProgress(current, total) {
@@ -462,9 +464,10 @@ class KayakoImageOptimizer {
 
   hideUploadProgress() {
     const toast = document.getElementById('kayako-upload-toast');
-    if (toast) {
+    if (toast && toast.dataset.hiding !== '1') {
+      toast.dataset.hiding = '1';
       toast.style.opacity = '0';
-      setTimeout(() => toast.remove(), 300);
+      setTimeout(() => { try { toast.remove(); } catch(_) {} }, 300);
     }
   }
 
