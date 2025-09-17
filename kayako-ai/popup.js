@@ -21,7 +21,19 @@ class PopupManager {
     // Check extension status
     this.checkStatus();
     
+    // Initialize help section (collapsed by default)
+    this.initHelpSection();
+    
     console.log('Popup initialized');
+  }
+
+  initHelpSection() {
+    const helpContent = document.getElementById('helpContent');
+    const helpIcon = document.querySelector('.help-toggle-icon');
+    
+    // Start collapsed
+    helpContent.style.display = 'none';
+    helpIcon.textContent = '▶';
   }
 
   async loadConfig() {
@@ -72,6 +84,11 @@ class PopupManager {
     document.getElementById('model').addEventListener('change', (e) => {
       this.toggleTemperatureVisibility(e.target.value);
     });
+
+    // Toggle help section
+    document.getElementById('helpToggle').addEventListener('click', () => {
+      this.toggleHelpSection();
+    });
   }
 
   updateUI() {
@@ -110,6 +127,19 @@ class PopupManager {
       temperatureSelect.disabled = false;
       temperatureSelect.style.opacity = '1';
       gpt5Warning.style.display = 'none';
+    }
+  }
+
+  toggleHelpSection() {
+    const helpContent = document.getElementById('helpContent');
+    const helpIcon = document.querySelector('.help-toggle-icon');
+    
+    if (helpContent.style.display === 'none') {
+      helpContent.style.display = 'block';
+      helpIcon.textContent = '▼';
+    } else {
+      helpContent.style.display = 'none'; 
+      helpIcon.textContent = '▶';
     }
   }
 
@@ -189,8 +219,6 @@ class PopupManager {
       if (!tab || !this.isKayakoTab(tab.url)) {
         document.getElementById('extensionStatus').textContent = 'Not on Kayako page';
         document.getElementById('extensionStatus').className = 'status-value error';
-        document.getElementById('enhancedEditors').textContent = 'N/A';
-        document.getElementById('processingStatus').textContent = 'N/A';
         return;
       }
 
@@ -200,8 +228,6 @@ class PopupManager {
       if (response.success) {
         document.getElementById('extensionStatus').textContent = 'Active';
         document.getElementById('extensionStatus').className = 'status-value';
-        document.getElementById('enhancedEditors').textContent = response.status.enhancedEditors.toString();
-        document.getElementById('processingStatus').textContent = response.status.isProcessing ? 'Yes' : 'No';
       } else {
         document.getElementById('extensionStatus').textContent = 'Not loaded';
         document.getElementById('extensionStatus').className = 'status-value error';
@@ -210,8 +236,6 @@ class PopupManager {
       console.log('Status check error (expected on non-Kayako pages):', error);
       document.getElementById('extensionStatus').textContent = 'Not available';
       document.getElementById('extensionStatus').className = 'status-value error';
-      document.getElementById('enhancedEditors').textContent = 'N/A';
-      document.getElementById('processingStatus').textContent = 'N/A';
     }
   }
 

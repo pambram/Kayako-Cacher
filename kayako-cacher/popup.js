@@ -325,46 +325,17 @@ class KayakoCacherPopup {
 
   async refreshCacheStats() {
     try {
-      // Try to get stats from content script
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      if (tabs[0]) {
-        try {
-          const response = await chrome.tabs.sendMessage(tabs[0].id, { action: 'getCacheStats' });
-          
-          if (response && response.success) {
-            const stats = response.stats;
-            
-            document.getElementById('cache-entries').textContent = stats.entries || '0';
-            document.getElementById('cache-size').textContent = (stats.sizeKB || 0) + ' KB';
-            document.getElementById('cache-oldest').textContent = '—';
-            document.getElementById('cache-newest').textContent = stats.working ? 'Active' : 'Inactive';
-          }
-        } catch (error) {
-          console.log('Content script stats failed, trying background');
-        }
-      }
-      
       // Fallback to background script
       const response = await chrome.runtime.sendMessage({ action: 'getCacheStats' });
       
       if (response && response.success) {
         const stats = response.stats;
-        
-        document.getElementById('cache-entries').textContent = stats.entryCount || '0';
-        document.getElementById('cache-size').textContent = stats.formattedSize || '0 B';
-        document.getElementById('cache-oldest').textContent = stats.oldestEntry ? new Date(stats.oldestEntry).toLocaleTimeString() : '—';
-        document.getElementById('cache-newest').textContent = stats.newestEntry ? new Date(stats.newestEntry).toLocaleTimeString() : '—';
         const savedSec = (stats.savedMsTotal || 0) / 1000;
         document.getElementById('cache-saved-seconds').textContent = savedSec.toFixed(1) + 's';
       }
     } catch (error) {
       console.error('Error getting cache stats:', error);
-      // Set default values instead of showing error
-      document.getElementById('cache-entries').textContent = '0';
-      document.getElementById('cache-size').textContent = '0 KB';
-      document.getElementById('cache-oldest').textContent = 'None';
-      document.getElementById('cache-newest').textContent = 'None';
+      document.getElementById('cache-saved-seconds').textContent = '0.0s';
     }
   }
 

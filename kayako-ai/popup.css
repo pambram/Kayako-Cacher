@@ -263,6 +263,29 @@ input:focus + .toggle-slider {
   color: #dc3545;
 }
 
+/* Help Section */
+.help-section-header {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+
+.help-section-header:hover {
+  color: #667eea;
+}
+
+.help-toggle-icon {
+  font-size: 12px;
+  transition: transform 0.2s ease;
+}
+
+.help-content {
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
 /* Help list */
 .help-list {
   margin: 0;

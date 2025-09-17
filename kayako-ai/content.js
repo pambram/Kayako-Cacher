@@ -910,7 +910,13 @@ class KayakoAIEnhancer {
   }
 
   async callAI(prompt, text, ticketContext = '') {
-    const systemPrompt = this.config.systemPrompt || 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary.';
+    // Base system prompt
+    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary.';
+    
+    // Append custom instructions if provided (don't override)
+    if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
+      systemPrompt += '\n\nAdditional instructions: ' + this.config.systemPrompt.trim();
+    }
     
     const model = this.config.model || 'gpt-5-mini';
     
