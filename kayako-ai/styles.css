@@ -53,8 +53,9 @@
   padding: 8px 0;
   margin-top: 4px;
   max-width: 250px;
-  max-height: 300px;
+  max-height: 400px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .kayako-ai-dropdown-menu::before {

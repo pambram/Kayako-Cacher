@@ -312,10 +312,13 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing AI action: ${action.id} on text:`, textData.extractedText.substring(0, 100) + '...');
 
     this.isProcessing = true;
-    this.showNotification(`🤖 ${action.title}...`, 'info');
+    const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info');
 
     try {
       const enhancedText = await this.callAI(action.prompt, textData.extractedText);
+      
+      // Remove processing notification before showing modal
+      processingNotification.remove();
       
       if (enhancedText && enhancedText !== textData.extractedText) {
         // Show preview with Insert/Cancel options instead of direct replacement
@@ -324,6 +327,8 @@ class KayakoAIEnhancer {
         this.showNotification('❌ No enhancement was generated', 'error');
       }
     } catch (error) {
+      // Remove processing notification on error
+      processingNotification.remove();
       console.error('AI processing error:', error);
       this.showNotification(`❌ AI enhancement failed: ${error.message}`, 'error');
     } finally {
@@ -332,12 +337,12 @@ class KayakoAIEnhancer {
   }
 
   getEditorText(editorElement) {
-    // Try different methods to get text content from Froala
+    // Get text content preserving line breaks
     let fullText = '';
     if (editorElement.innerText) {
-      fullText = editorElement.innerText.trim();
+      fullText = editorElement.innerText;
     } else if (editorElement.textContent) {
-      fullText = editorElement.textContent.trim();
+      fullText = editorElement.textContent;
     } else {
       // Fallback to getting text from HTML
       const tempDiv = document.createElement('div');
@@ -345,59 +350,71 @@ class KayakoAIEnhancer {
       fullText = tempDiv.textContent || tempDiv.innerText || '';
     }
 
+    console.log('🔍 Raw extracted text (first 300 chars):', JSON.stringify(fullText.substring(0, 300)));
+
     // Look for PR template pattern
-    return this.extractFromTemplate(fullText);
+    return this.extractFromTemplate(fullText, editorElement);
   }
 
-  extractFromTemplate(text) {
-    console.log('🔍 Full text content for template detection:', JSON.stringify(text));
+  extractFromTemplate(text, editorElement) {
+    console.log('🔍 Full text content for template detection:', JSON.stringify(text.substring(0, 500)));
     
-    // Look for the PR template pattern - more flexible with whitespace
-    const prPattern = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i;
-    const match = text.match(prPattern);
+    // Try multiple patterns to catch the PR template
+    const patterns = [
+      /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i,
+      /What is the PR to the customer\?\s*([\s\S]*?)\s*Best regards,/i,
+      /PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i
+    ];
     
-    console.log('🔍 Regex match result:', match);
-    
-    if (match && match[1]) {
-      const extractedText = match[1].trim();
-      console.log('🎯 Extracted text from PR template:', extractedText);
+    for (let i = 0; i < patterns.length; i++) {
+      const match = text.match(patterns[i]);
+      console.log(`🔍 Pattern ${i + 1} match result:`, match ? 'FOUND' : 'NOT FOUND');
       
-      // Find the positions more carefully
-      const beforeMatch = text.substring(0, match.index);
-      const questionPart = match[0].substring(0, match[0].indexOf(match[1]));
-      const afterMatch = text.substring(match.index + match[0].length);
-      
-      return {
-        hasTemplate: true,
-        extractedText: extractedText,
-        fullText: text,
-        beforeText: beforeMatch + questionPart,
-        afterText: '\n\nBest regards,' + afterMatch
-      };
+      if (match && match[1]) {
+        const extractedText = match[1].trim();
+        console.log('🎯 Extracted text from PR template:', JSON.stringify(extractedText));
+        
+        return {
+          hasTemplate: true,
+          extractedText: extractedText,
+          fullText: text,
+          editorElement: editorElement, // Store reference for DOM manipulation
+          originalHTML: editorElement.innerHTML // Store original HTML
+        };
+      }
     }
     
-    console.log('📝 No PR template found, using full text');
-    console.log('🔍 Text length:', text.length, 'Text preview:', text.substring(0, 200));
+    console.log('📝 No PR template found with any pattern, using full text');
     return {
       hasTemplate: false,
-      extractedText: text,
+      extractedText: text.trim(),
       fullText: text
     };
   }
 
   setEditorText(editorElement, textData, newText) {
-    let finalText;
-    
     if (textData.hasTemplate) {
-      // Replace only the content between template markers
-      finalText = textData.beforeText + newText + textData.afterText;
+      // Use innerHTML replacement with regex to preserve HTML structure perfectly  
+      console.log('🔧 Performing HTML-based surgical replacement');
+      console.log('🔍 Looking for text to replace:', JSON.stringify(textData.extractedText));
+      console.log('🔍 New text:', JSON.stringify(newText));
+      
+      // Escape special regex characters in the original text
+      const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Replace in the original HTML, preserving all formatting
+      const newHTML = textData.originalHTML.replace(
+        new RegExp(escapedOriginalText, 'g'),
+        newText.replace(/\n/g, '<br>')
+      );
+      
+      console.log('✅ HTML replacement completed');
+      editorElement.innerHTML = newHTML;
+      
     } else {
       // Replace entire text
-      finalText = newText;
+      editorElement.innerHTML = newText.replace(/\n/g, '<br>');
     }
-    
-    // Set the text content in the Froala editor
-    editorElement.innerHTML = finalText.replace(/\n/g, '<br>');
     
     // Trigger input event to notify Froala of the change
     const inputEvent = new Event('input', { bubbles: true });
@@ -407,6 +424,7 @@ class KayakoAIEnhancer {
     const changeEvent = new Event('fr-change', { bubbles: true });
     editorElement.dispatchEvent(changeEvent);
   }
+
 
   showAIPreview(editorElement, originalTextData, enhancedText, actionTitle) {
     // Remove any existing preview
@@ -499,11 +517,27 @@ class KayakoAIEnhancer {
     });
     
     // Set appropriate max-height with scrollbar if needed
-    if (naturalHeight > availableHeight && availableHeight > 100) {
-      dropdownMenu.style.maxHeight = Math.max(200, availableHeight) + 'px';
-      console.log('📏 Dropdown will scroll, max-height set to:', dropdownMenu.style.maxHeight);
+    if (naturalHeight > availableHeight && availableHeight > 150) {
+      const maxHeight = Math.max(200, Math.min(400, availableHeight));
+      dropdownMenu.style.maxHeight = maxHeight + 'px';
+      dropdownMenu.style.overflowY = 'auto';
+      console.log('📏 Dropdown will scroll, max-height set to:', maxHeight + 'px');
+    } else if (availableHeight <= 150) {
+      // Very limited space - position above button instead
+      dropdownMenu.style.top = 'auto';
+      dropdownMenu.style.bottom = '100%';
+      dropdownMenu.style.marginTop = '0';
+      dropdownMenu.style.marginBottom = '4px';
+      dropdownMenu.style.maxHeight = '300px';
+      console.log('📏 Limited space, positioning dropdown above button');
     } else {
-      dropdownMenu.style.maxHeight = '300px'; // Default
+      dropdownMenu.style.maxHeight = '400px'; // Default
+      dropdownMenu.style.overflowY = 'auto';
+      // Reset position to default
+      dropdownMenu.style.top = '100%';
+      dropdownMenu.style.bottom = 'auto';
+      dropdownMenu.style.marginTop = '4px';
+      dropdownMenu.style.marginBottom = '0';
     }
   }
 
@@ -633,7 +667,7 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing custom prompt:`, customPrompt);
 
     this.isProcessing = true;
-    this.showNotification(`🤖 Generating content...`, 'info');
+    const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info');
 
     try {
       // For custom prompts, we don't extract from template - we generate new content
@@ -648,6 +682,9 @@ class KayakoAIEnhancer {
 
       const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt);
       
+      // Remove processing notification before showing modal
+      processingNotification.remove();
+      
       if (generatedText) {
         // For custom prompts, show preview with option to replace or append
         this.showCustomWritePreview(editorElement, textData, generatedText, customPrompt, contextText);
@@ -655,6 +692,8 @@ class KayakoAIEnhancer {
         this.showNotification('❌ No content was generated', 'error');
       }
     } catch (error) {
+      // Remove processing notification on error
+      processingNotification.remove();
       console.error('Custom prompt error:', error);
       this.showNotification(`❌ Content generation failed: ${error.message}`, 'error');
     } finally {
@@ -752,34 +791,31 @@ class KayakoAIEnhancer {
   }
 
   insertCustomText(editorElement, originalTextData, generatedText, action) {
-    let finalText;
-    
     if (action === 'insert' || !originalTextData.extractedText.trim()) {
       // Insert new content (for empty editor or explicit insert)
       if (originalTextData.hasTemplate) {
-        finalText = originalTextData.beforeText + generatedText + originalTextData.afterText;
+        // Use the same surgical approach as regular text replacement
+        this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
-        finalText = generatedText;
+        editorElement.innerHTML = generatedText.replace(/\n/g, '<br>');
       }
     } else if (action === 'replace') {
       // Replace existing content
-      if (originalTextData.hasTemplate) {
-        finalText = originalTextData.beforeText + generatedText + originalTextData.afterText;
-      } else {
-        finalText = generatedText;
-      }
+      this.setEditorText(editorElement, originalTextData, generatedText);
     } else if (action === 'append') {
       // Append to existing content
+      const currentText = editorElement.textContent || editorElement.innerText || '';
+      
       if (originalTextData.hasTemplate) {
+        // Replace the template content with original + new content
         const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
-        finalText = originalTextData.beforeText + appendedContent + originalTextData.afterText;
+        const newTextData = { ...originalTextData, extractedText: appendedContent };
+        this.setEditorText(editorElement, newTextData, appendedContent);
       } else {
-        finalText = originalTextData.fullText + '\n\n' + generatedText;
+        const newFullText = currentText + '\n\n' + generatedText;
+        editorElement.innerHTML = newFullText.replace(/\n/g, '<br>');
       }
     }
-    
-    // Set the text content in the Froala editor
-    editorElement.innerHTML = finalText.replace(/\n/g, '<br>');
     
     // Trigger input event to notify Froala of the change
     const inputEvent = new Event('input', { bubbles: true });
@@ -863,6 +899,10 @@ class KayakoAIEnhancer {
   }
 
   showNotification(message, type = 'info') {
+    return this.showPersistentNotification(message, type, type === 'error' ? 5000 : 3000);
+  }
+
+  showPersistentNotification(message, type = 'info', autoRemoveDelay = null) {
     // Remove existing notifications
     const existing = document.querySelector('.kayako-ai-notification');
     if (existing) {
@@ -901,13 +941,17 @@ class KayakoAIEnhancer {
 
     document.body.appendChild(notification);
 
-    // Auto remove after delay
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.style.animation = 'slideOutRight 0.3s ease-out';
-        setTimeout(() => notification.remove(), 300);
-      }
-    }, type === 'error' ? 5000 : 3000);
+    // Auto remove after delay if specified
+    if (autoRemoveDelay) {
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.style.animation = 'slideOutRight 0.3s ease-out';
+          setTimeout(() => notification.remove(), 300);
+        }
+      }, autoRemoveDelay);
+    }
+
+    return notification; // Return reference so it can be manually removed
   }
 }
 
