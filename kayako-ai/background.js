@@ -5,7 +5,8 @@ const DEFAULT_CONFIG = {
   apiKey: '',
   provider: 'openai',
   model: 'gpt-5-mini',
-  enabled: true
+  enabled: true,
+  useTicketContext: false
 };
 
 // Initialize extension on install

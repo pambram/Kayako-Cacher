@@ -63,8 +63,8 @@ class PopupManager {
       e.target.style.borderColor = isValid ? '#28a745' : '#e9ecef';
     });
 
-    // Auto-save enabled state
-    document.getElementById('enabled').addEventListener('change', () => {
+    // Auto-save ticket context state
+    document.getElementById('useTicketContext').addEventListener('change', () => {
       this.saveConfig();
     });
 
@@ -80,7 +80,7 @@ class PopupManager {
     // Update form fields
     document.getElementById('apiKey').value = this.config.apiKey || '';
     document.getElementById('model').value = this.config.model || 'gpt-5-mini';
-    document.getElementById('enabled').checked = this.config.enabled !== false;
+    document.getElementById('useTicketContext').checked = this.config.useTicketContext === true;
     document.getElementById('systemPrompt').value = this.config.systemPrompt || '';
     document.getElementById('temperature').value = this.config.temperature || '0.7';
 
@@ -118,7 +118,8 @@ class PopupManager {
       const newConfig = {
         apiKey: document.getElementById('apiKey').value.trim(),
         model: document.getElementById('model').value,
-        enabled: document.getElementById('enabled').checked,
+        enabled: true, // Always enabled - remove if you want to disable
+        useTicketContext: document.getElementById('useTicketContext').checked,
         systemPrompt: document.getElementById('systemPrompt').value.trim(),
         temperature: parseFloat(document.getElementById('temperature').value),
         provider: 'openai' // Currently only supporting OpenAI

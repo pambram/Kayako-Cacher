@@ -58,6 +58,23 @@ console.log('🚀 Clean Kayako optimization starting...');
       if (!intercept) {
         // Pass-through: ensure native send is used so our stack doesn't appear
         try { this.send = originalSend.bind(this); } catch (e) {}
+        // For writes to posts endpoints, invalidate caches and pause cache simulation briefly
+        try {
+          const m = (method || '').toUpperCase();
+          const u = typeof url === 'string' ? url : '';
+          if ((m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE') && isPostsWrite(u)) {
+            this.addEventListener('load', function() {
+              try {
+                if (this.status >= 200 && this.status < 300) {
+                  const cid = getCurrentCaseId();
+                  if (cid) invalidateCaseCache(cid);
+                  window.__kayako_blockCacheUntil = Date.now() + 5000;
+                  console.log('🧹 Posts write detected → invalidated cache and paused cache simulation');
+                }
+              } catch (_) {}
+            });
+          }
+        } catch (_) {}
       }
       
       // PAGINATION FIX (only for GET list endpoint /api/v1/cases/{id}/posts)
@@ -177,6 +194,12 @@ console.log('🚀 Clean Kayako optimization starting...');
     xhr.send = function(data) {
       // Handle cache hit by simulating response
       if (cacheHit && cacheHit.responseText) {
+        try {
+          if (window.__kayako_blockCacheUntil && Date.now() < window.__kayako_blockCacheUntil) {
+            console.log('⏳ Cache simulation temporarily disabled');
+            return originalSend.apply(this, [data]);
+          }
+        } catch (_) {}
         console.log('💾 Cache hit: Simulating XHR response with cached data');
         
          // Simulate successful response immediately
@@ -462,6 +485,12 @@ console.log('🚀 Clean Kayako optimization starting...');
       return /\/api\/v1\/cases\/\d+\/posts$/.test(u.pathname);
     } catch (e) { return false; }
   }
+  function isPostsWrite(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/posts(\/\d+)?$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
   function generateCacheKey(url) {
     try {
       const urlObj = new URL(url, window.location.origin);
@@ -482,6 +511,36 @@ console.log('🚀 Clean Kayako optimization starting...');
       return `posts_${caseId}_${afterId}_${limit}`;
     } catch (error) {
       return 'fallback_' + Date.now();
+    }
+  }
+  function getCurrentCaseId() {
+    try {
+      const href = window.location.href;
+      let m = href.match(/\/conversations\/(\d+)/);
+      if (m) return m[1];
+      m = href.match(/\/cases\/(\d+)/);
+      if (m) return m[1];
+      return null;
+    } catch (e) { return null; }
+  }
+  function invalidateCaseCache(caseId) {
+    try {
+      const needle = `posts_${caseId}_`;
+      if (memoryCache && memoryCache.size) {
+        for (const key of memoryCache.keys()) {
+          try { if (String(key).includes(needle)) memoryCache.delete(key); } catch (_) {}
+        }
+      }
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('kayako_cache_')) {
+          const ck = k.replace('kayako_cache_', '');
+          if (ck.includes(needle)) localStorage.removeItem(k);
+        }
+      }
+      console.log(`🧹 Invalidated cache for case ${caseId}`);
+    } catch (e) {
+      console.warn('Cache invalidation error:', e);
     }
   }
   

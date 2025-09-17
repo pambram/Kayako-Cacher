@@ -54,7 +54,8 @@ class KayakoAIEnhancer {
         apiKey: '',
         provider: 'openai', // openai, anthropic, etc
         model: 'gpt-5-mini',
-        enabled: true
+        enabled: true,
+        useTicketContext: false
       };
     } catch (error) {
       console.error('Error loading config:', error);
@@ -123,7 +124,7 @@ class KayakoAIEnhancer {
   }
 
   enhanceKayakoToolbar(kayakoHeader, container) {
-    if (kayakoHeader.dataset.aiEnhanced || !this.config?.enabled) {
+    if (kayakoHeader.dataset.aiEnhanced) {
       return;
     }
 
@@ -315,7 +316,14 @@ class KayakoAIEnhancer {
     const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info');
 
     try {
-      const enhancedText = await this.callAI(action.prompt, textData.extractedText);
+      // Get ticket context if enabled
+      let ticketContext = '';
+      if (this.config?.useTicketContext) {
+        ticketContext = this.extractTicketContext();
+        console.log('🎯 Extracted ticket context:', ticketContext ? 'Found context' : 'No context found');
+      }
+      
+      const enhancedText = await this.callAI(action.prompt, textData.extractedText, ticketContext);
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -680,7 +688,14 @@ class KayakoAIEnhancer {
         fullPrompt = `${customPrompt}\n\nCurrent text for context:\n${contextText}`;
       }
 
-      const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt);
+      // Get ticket context if enabled
+      let ticketContext = '';
+      if (this.config?.useTicketContext) {
+        ticketContext = this.extractTicketContext();
+        console.log('🎯 Extracted ticket context for custom prompt:', ticketContext ? 'Found context' : 'No context found');
+      }
+
+      const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt, ticketContext);
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -803,17 +818,17 @@ class KayakoAIEnhancer {
       // Replace existing content
       this.setEditorText(editorElement, originalTextData, generatedText);
     } else if (action === 'append') {
-      // Append to existing content
-      const currentText = editorElement.textContent || editorElement.innerText || '';
-      
+      // Append to existing content - preserve HTML formatting
       if (originalTextData.hasTemplate) {
-        // Replace the template content with original + new content
+        // For templates, append to the extracted content area
         const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
         const newTextData = { ...originalTextData, extractedText: appendedContent };
         this.setEditorText(editorElement, newTextData, appendedContent);
       } else {
-        const newFullText = currentText + '\n\n' + generatedText;
-        editorElement.innerHTML = newFullText.replace(/\n/g, '<br>');
+        // For non-templates, append to the end preserving HTML structure
+        const currentHTML = editorElement.innerHTML;
+        const newContentHTML = generatedText.replace(/\n/g, '<br>');
+        editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
       }
     }
     
@@ -831,10 +846,81 @@ class KayakoAIEnhancer {
     }, 100);
   }
 
-  async callAI(prompt, text) {
+  extractTicketContext() {
+    try {
+      // Find all message/note items in the timeline
+      const messageItems = document.querySelectorAll('.message-or-note .ko-timeline-2_list_item__post_1oksrd, .message-or-note .ko-timeline-2_list_item__note_1oksrd');
+      
+      console.log(`🔍 Found ${messageItems.length} messages/notes in timeline`);
+      
+      const messages = [];
+      
+      messageItems.forEach((item, index) => {
+        try {
+          // Extract author
+          const authorElement = item.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+          const author = authorElement ? authorElement.textContent.trim() : 'Unknown';
+          
+          // Extract content
+          const contentElement = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
+          let content = '';
+          
+          if (contentElement) {
+            // Get clean text content, removing HTML
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = contentElement.innerHTML;
+            content = tempDiv.textContent || tempDiv.innerText || '';
+            content = content.trim().replace(/\s+/g, ' '); // Normalize whitespace
+          }
+          
+          // Extract time (optional)
+          const timeElement = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+          const time = timeElement ? timeElement.textContent.trim() : '';
+          
+          if (content && content.length > 10) { // Only include substantial messages
+            messages.push({
+              author,
+              content: content.substring(0, 500), // Limit length to manage tokens
+              time,
+              index
+            });
+          }
+        } catch (error) {
+          console.warn('Error extracting message at index', index, error);
+        }
+      });
+      
+      console.log(`📋 Extracted ${messages.length} substantial messages for context`);
+      
+      if (messages.length === 0) {
+        return '';
+      }
+      
+      // Format as conversation context
+      const contextLines = messages.map(msg => 
+        `${msg.author} (${msg.time}): ${msg.content}`
+      );
+      
+      return `TICKET CONVERSATION HISTORY:\n${contextLines.join('\n\n')}\n\n---\n\n`;
+      
+    } catch (error) {
+      console.error('Error extracting ticket context:', error);
+      return '';
+    }
+  }
+
+  async callAI(prompt, text, ticketContext = '') {
     const systemPrompt = this.config.systemPrompt || 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary.';
     
     const model = this.config.model || 'gpt-5-mini';
+    
+    let userContent = `${prompt}\n\nText to enhance:\n${text}`;
+    
+    // Add ticket context if provided
+    if (ticketContext) {
+      userContent = `${ticketContext}${userContent}`;
+    }
+    
     const requestBody = {
       model: model,
       messages: [
@@ -844,10 +930,10 @@ class KayakoAIEnhancer {
         },
         {
           role: 'user',
-          content: `${prompt}\n\nText to enhance:\n${text}`
+          content: userContent
         }
       ],
-      max_completion_tokens: 2000
+      max_completion_tokens: ticketContext ? 3000 : 2000 // More tokens when using context
     };
 
     // Only add temperature for models that support it (not GPT-5)

@@ -56,12 +56,17 @@
           </small>
         </div>
 
-        <div class="form-group checkbox-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="enabled" checked />
-            <span class="checkbox-custom"></span>
-            Enable AI Enhancement
+        <div class="form-group toggle-group">
+          <label class="toggle-label-container">
+            <span class="toggle-label-text">Include Ticket Context (Experimental)</span>
+            <div class="toggle-switch">
+              <input type="checkbox" id="useTicketContext" />
+              <span class="toggle-slider"></span>
+            </div>
           </label>
+          <small class="help-text">
+            <strong>ℹ️ Info:</strong> This provides conversation history to the AI for more accurate responses, but uses more tokens and takes longer to process.
+          </small>
         </div>
 
         <div class="button-group">
@@ -110,7 +115,7 @@
     </main>
 
     <footer class="footer">
-      <div class="version">v1.0.18</div>
+      <div class="version">v1.1.2</div>
       <div class="links">
         <a href="#" id="refreshPage">Refresh Current Tab</a>
       </div>
