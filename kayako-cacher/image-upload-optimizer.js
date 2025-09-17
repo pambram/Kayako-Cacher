@@ -322,7 +322,17 @@ class KayakoImageOptimizer {
       const $editor = window.jQuery(activeEditor);
       if ($editor.data('froala.editor')) {
         console.log('📝 Inserting image into active editor');
-        const url = attachment && (attachment.contentUrl || attachment.url || attachment.link || attachment.downloadUrl || (attachment.data && attachment.data[0] && attachment.data[0].contentUrl));
+        let url = null;
+        if (typeof attachment === 'string') {
+          url = attachment;
+        } else if (attachment && typeof attachment === 'object') {
+          url = attachment.contentUrl || attachment.content_url || attachment.content_url_https ||
+                attachment.url_download || attachment.url || attachment.downloadUrl || attachment.download_url ||
+                (attachment.data && Array.isArray(attachment.data) && attachment.data[0] && (attachment.data[0].contentUrl || attachment.data[0].url));
+          if (!url && typeof this.resolveImageUrl === 'function') {
+            try { url = await this.resolveImageUrl(attachment); } catch (_) {}
+          }
+        }
         if (url) {
           $editor.froalaEditor('image.insert', url, true, null, null, null);
           $editor.froalaEditor('events.trigger', 'contentChanged');
@@ -337,7 +347,7 @@ class KayakoImageOptimizer {
     }
 
     // Fallback: Kayako custom editor (visible contenteditable or textbox)
-    const url = attachment && (attachment.contentUrl || attachment.url || attachment.link || attachment.downloadUrl || (attachment.data && attachment.data[0] && attachment.data[0].contentUrl));
+    const url = (typeof attachment === 'string') ? attachment : (attachment && (attachment.contentUrl || attachment.content_url || attachment.content_url_https || attachment.url_download || attachment.url || attachment.downloadUrl || attachment.download_url || (attachment.data && Array.isArray(attachment.data) && attachment.data[0] && (attachment.data[0].contentUrl || attachment.data[0].url))));
     if (!url) return;
     const selectors = ['[contenteditable="true"]', 'div[role="textbox"]', '.ko-text-editor_textarea', '.ko-composer [contenteditable="true"]'];
     let editable = null;
