@@ -305,9 +305,16 @@ class KayakoAIEnhancer {
     }
 
     const textData = this.getEditorText(editorElement);
-    if (!textData.extractedText || textData.extractedText.trim().length === 0) {
+    
+    // For templates, allow empty content (placeholder area might be empty)
+    if (!textData.hasTemplate && (!textData.extractedText || textData.extractedText.trim().length === 0)) {
       this.showNotification('❌ No text found to enhance', 'error');
       return;
+    }
+    
+    // If template is detected but placeholder is empty, inform user
+    if (textData.hasTemplate && (!textData.extractedText || textData.extractedText.trim().length === 0)) {
+      console.log('🎯 Template detected with empty placeholder - will use template structure');
     }
 
     console.log(`🤖 Processing AI action: ${action.id} on text:`, textData.extractedText.substring(0, 100) + '...');
@@ -419,13 +426,15 @@ class KayakoAIEnhancer {
       const match = text.match(patterns[i]);
       console.log(`🔍 Pattern ${i + 1} match result:`, match ? 'FOUND' : 'NOT FOUND');
       
-      if (match && match[1]) {
-        const extractedText = match[1].trim();
-        console.log('🎯 Extracted text from PR template:', JSON.stringify(extractedText));
+      if (match) {
+        // Extract the content between the markers (can be empty/whitespace)
+        const extractedText = match[1] ? match[1].trim() : '';
+        console.log('🎯 Extracted text from PR template (can be empty):', JSON.stringify(extractedText));
+        console.log('🎯 Template detected with', extractedText.length, 'characters of content');
         
         return {
           hasTemplate: true,
-          extractedText: extractedText,
+          extractedText: extractedText, // Allow empty content
           fullText: text,
           editorElement: editorElement, // Store reference for DOM manipulation
           originalHTML: editorElement.innerHTML // Store original HTML
@@ -1048,28 +1057,65 @@ class KayakoAIEnhancer {
         editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
       }
     } else if (action === 'replace') {
-      // Replace existing content - use surgical template replacement if available
-      if (originalTextData.hasTemplate) {
-        console.log('🔧 Help me write REPLACE: Using template-aware replacement');
-        this.setEditorText(editorElement, originalTextData, generatedText);
+      // Replace existing content - ALWAYS check for template first
+      console.log('🔧 Help me write REPLACE: Checking for template...');
+      
+      // Re-extract text to check for template (since custom prompts might not have detected it)
+      const currentTextData = this.getEditorText(editorElement);
+      
+      if (currentTextData.hasTemplate) {
+        console.log('🎯 Template detected! Using surgical replacement within template');
+        this.setEditorText(editorElement, currentTextData, generatedText);
       } else {
-        console.log('🔧 Help me write REPLACE: Full content replacement');
+        console.log('📝 No template detected, replacing full content');
         const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
         editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
       }
     } else if (action === 'append') {
-      // Append to existing content - preserve HTML formatting
-      if (originalTextData.hasTemplate) {
-        // For templates, append to the extracted content area
-        const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
-        const newTextData = { ...originalTextData, extractedText: appendedContent };
-        this.setEditorText(editorElement, newTextData, appendedContent);
+      // Append at cursor position, not at the end
+      console.log('🔧 Help me write APPEND: Inserting at cursor position');
+      
+      // Try to insert at cursor position
+      const selection = window.getSelection();
+      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      
+      if (range && editorElement.contains(range.commonAncestorContainer)) {
+        // Insert at cursor position
+        console.log('📍 Inserting at cursor position');
+        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+        
+        // Create a document fragment with the new content
+        const fragment = document.createDocumentFragment();
+        const wrapper = document.createElement('span');
+        wrapper.innerHTML = '<br><br>' + textWithRestoredLinks.replace(/\n/g, '<br>');
+        
+        // Move all child nodes to the fragment
+        while (wrapper.firstChild) {
+          fragment.appendChild(wrapper.firstChild);
+        }
+        
+        // Insert at cursor
+        range.deleteContents();
+        range.insertNode(fragment);
+        
+        // Move cursor to end of inserted content
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        
       } else {
-      // For non-templates, append to the end preserving HTML structure  
-      const currentHTML = editorElement.innerHTML;
-      const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-      const newContentHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
-      editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
+        // Fallback: append at end if no cursor position detected
+        console.log('📍 No cursor detected, appending at end');
+        if (originalTextData.hasTemplate) {
+          const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
+          const newTextData = { ...originalTextData, extractedText: appendedContent };
+          this.setEditorText(editorElement, newTextData, appendedContent);
+        } else {
+          const currentHTML = editorElement.innerHTML;
+          const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+          const newContentHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+          editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
+        }
       }
     }
     
