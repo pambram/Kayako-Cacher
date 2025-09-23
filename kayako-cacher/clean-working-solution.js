@@ -202,13 +202,27 @@ console.log('🚀 Clean Kayako optimization starting...');
         } catch (_) {}
         console.log('💾 Cache hit: Simulating XHR response with cached data');
         
+        // FIX: Remove 'included' field to prevent 400 errors on /activities/ and /messages/
+        let cleanedResponseText = cacheHit.responseText;
+        try {
+          const parsed = JSON.parse(cleanedResponseText);
+          if (parsed && parsed.included) {
+            console.log('🧹 Removing included field to prevent 400 errors');
+            delete parsed.included;
+            cleanedResponseText = JSON.stringify(parsed);
+          }
+        } catch (e) {
+          // If parsing fails, use original
+          cleanedResponseText = cacheHit.responseText;
+        }
+        
          // Simulate successful response immediately
          setTimeout(() => {
            try {
              Object.defineProperty(this, 'status', { value: 200, configurable: true });
              Object.defineProperty(this, 'statusText', { value: 'OK (Cached)', configurable: true });
-             Object.defineProperty(this, 'responseText', { value: cacheHit.responseText, configurable: true });
-             Object.defineProperty(this, 'response', { value: cacheHit.responseText, configurable: true });
+             Object.defineProperty(this, 'responseText', { value: cleanedResponseText, configurable: true });
+             Object.defineProperty(this, 'response', { value: cleanedResponseText, configurable: true });
              Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
              
              console.log('📤 Triggering cached response handlers');
@@ -279,6 +293,10 @@ console.log('🚀 Clean Kayako optimization starting...');
                 return r.json();
               }).then(freshData => {
                 try {
+                  // FIX: Remove 'included' field before caching
+                  if (freshData && freshData.included) {
+                    delete freshData.included;
+                  }
                   const freshPostCount = freshData.data?.length || 0;
                   if (freshPostCount > 0) {
                     const cacheKey = generateCacheKey(requestUrl);
@@ -307,6 +325,12 @@ console.log('🚀 Clean Kayako optimization starting...');
               try {
                 const freshData = JSON.parse(this.responseText);
                 const freshPostCount = freshData.data?.length || 0;
+                
+                // FIX: Remove 'included' field before caching to prevent future 400 errors
+                if (freshData && freshData.included) {
+                  console.log('🧹 Removing included field from background refresh data');
+                  delete freshData.included;
+                }
                 
                 if (freshPostCount > 0) {
                   const cacheKey = generateCacheKey(requestUrl);
@@ -413,6 +437,12 @@ console.log('🚀 Clean Kayako optimization starting...');
             try {
               const responseData = JSON.parse(this.responseText);
               const postCount = responseData.data?.length || 0;
+              
+              // FIX: Remove 'included' field before caching to prevent 400 errors
+              if (responseData && responseData.included) {
+                console.log('🧹 Removing included field before caching');
+                delete responseData.included;
+              }
               
               // Only cache responses with actual posts
               if (postCount > 0) {
