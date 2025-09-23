@@ -329,8 +329,11 @@ class KayakoAIEnhancer {
       processingNotification.remove();
       
       if (enhancedText && enhancedText !== textData.extractedText) {
+        // Clean up the enhanced text before showing preview
+        const cleanEnhancedText = enhancedText.trim().replace(/^\s+/gm, '');
+        
         // Show preview with Insert/Cancel options instead of direct replacement
-        this.showAIPreview(editorElement, textData, enhancedText, action.title);
+        this.showAIPreview(editorElement, textData, cleanEnhancedText, action.title);
       } else {
         this.showNotification('❌ No enhancement was generated', 'error');
       }
@@ -345,23 +348,61 @@ class KayakoAIEnhancer {
   }
 
   getEditorText(editorElement) {
-    // Get text content preserving line breaks
-    let fullText = '';
-    if (editorElement.innerText) {
-      fullText = editorElement.innerText;
-    } else if (editorElement.textContent) {
-      fullText = editorElement.textContent;
-    } else {
-      // Fallback to getting text from HTML
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = editorElement.innerHTML;
-      fullText = tempDiv.textContent || tempDiv.innerText || '';
-    }
+    // Preserve links by replacing them with placeholders before text extraction
+    const { textWithPlaceholders, linkMap } = this.extractTextWithLinkPlaceholders(editorElement);
 
-    console.log('🔍 Raw extracted text (first 300 chars):', JSON.stringify(fullText.substring(0, 300)));
+    console.log('🔍 Raw extracted text (first 300 chars):', JSON.stringify(textWithPlaceholders.substring(0, 300)));
+    console.log('🔗 Found links:', Object.keys(linkMap).length);
 
     // Look for PR template pattern
-    return this.extractFromTemplate(fullText, editorElement);
+    const templateData = this.extractFromTemplate(textWithPlaceholders, editorElement);
+    
+    // Add link information to the template data
+    templateData.linkMap = linkMap;
+    
+    return templateData;
+  }
+
+  extractTextWithLinkPlaceholders(editorElement) {
+    // Clone the element to avoid modifying the original
+    const clonedElement = editorElement.cloneNode(true);
+    
+    // Find all links and replace with placeholders
+    const links = clonedElement.querySelectorAll('a[href]');
+    const linkMap = {};
+    
+    links.forEach((link, index) => {
+      const placeholder = `[LINK${index + 1}]`;
+      const linkInfo = {
+        href: link.href,
+        text: link.textContent || link.innerText || '',
+        title: link.title || '',
+        target: link.target || ''
+      };
+      
+      linkMap[placeholder] = linkInfo;
+      
+      // Replace the link with just the placeholder text
+      const textNode = document.createTextNode(placeholder);
+      link.parentNode.replaceChild(textNode, link);
+    });
+    
+    // Extract text content from the modified clone
+    let textContent = '';
+    if (clonedElement.innerText) {
+      textContent = clonedElement.innerText;
+    } else if (clonedElement.textContent) {
+      textContent = clonedElement.textContent;
+    } else {
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = clonedElement.innerHTML;
+      textContent = tempDiv.textContent || tempDiv.innerText || '';
+    }
+    
+    return {
+      textWithPlaceholders: textContent,
+      linkMap: linkMap
+    };
   }
 
   extractFromTemplate(text, editorElement) {
@@ -401,11 +442,14 @@ class KayakoAIEnhancer {
   }
 
   setEditorText(editorElement, textData, newText) {
+    // Restore links in the enhanced text
+    const textWithRestoredLinks = this.restoreLinksInText(newText, textData.linkMap);
+    
     if (textData.hasTemplate) {
       // Use innerHTML replacement with regex to preserve HTML structure perfectly  
       console.log('🔧 Performing HTML-based surgical replacement');
       console.log('🔍 Looking for text to replace:', JSON.stringify(textData.extractedText));
-      console.log('🔍 New text:', JSON.stringify(newText));
+      console.log('🔍 New text with links restored:', JSON.stringify(textWithRestoredLinks));
       
       // Escape special regex characters in the original text
       const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -413,15 +457,15 @@ class KayakoAIEnhancer {
       // Replace in the original HTML, preserving all formatting
       const newHTML = textData.originalHTML.replace(
         new RegExp(escapedOriginalText, 'g'),
-        newText.replace(/\n/g, '<br>')
+        textWithRestoredLinks.replace(/\n/g, '<br>')
       );
       
-      console.log('✅ HTML replacement completed');
+      console.log('✅ HTML replacement completed with links restored');
       editorElement.innerHTML = newHTML;
       
     } else {
       // Replace entire text
-      editorElement.innerHTML = newText.replace(/\n/g, '<br>');
+      editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
     }
     
     // Trigger input event to notify Froala of the change
@@ -431,6 +475,25 @@ class KayakoAIEnhancer {
     // Also try to trigger Froala's change event
     const changeEvent = new Event('fr-change', { bubbles: true });
     editorElement.dispatchEvent(changeEvent);
+  }
+
+  restoreLinksInText(text, linkMap) {
+    if (!linkMap || Object.keys(linkMap).length === 0) {
+      return text;
+    }
+    
+    let restoredText = text;
+    
+    // Replace each placeholder with proper HTML link
+    Object.entries(linkMap).forEach(([placeholder, linkInfo]) => {
+      const linkHTML = `<a href="${linkInfo.href}"${linkInfo.title ? ` title="${linkInfo.title}"` : ''}${linkInfo.target ? ` target="${linkInfo.target}"` : ''}>${linkInfo.text}</a>`;
+      
+      // Replace placeholder with actual link HTML
+      restoredText = restoredText.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), linkHTML);
+    });
+    
+    console.log('🔗 Links restored:', Object.keys(linkMap).length, 'links');
+    return restoredText;
   }
 
 
@@ -457,7 +520,14 @@ class KayakoAIEnhancer {
         </div>
         <div class="ai-preview-section">
           <div class="ai-preview-label">Enhanced:</div>
-          <div class="ai-preview-text ai-preview-enhanced">${enhancedText}</div>
+          <button class="ai-preview-copy-btn" type="button" title="Copy text">
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+              <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+            </svg>
+            Copy
+          </button>
+          <div class="ai-preview-text ai-preview-enhanced">${enhancedText.replace(/^\s+/gm, '').trim()}</div>
         </div>
       </div>
       <div class="ai-preview-actions">
@@ -482,6 +552,42 @@ class KayakoAIEnhancer {
     preview.querySelector('.ai-preview-cancel').addEventListener('click', () => {
       preview.remove();
     });
+
+    // Copy button functionality
+    const copyBtn = preview.querySelector('.ai-preview-copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        try {
+          // Get clean text content (remove HTML but preserve line breaks)
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = enhancedText;
+          const cleanText = (tempDiv.textContent || tempDiv.innerText || enhancedText).trim();
+          
+          await navigator.clipboard.writeText(cleanText);
+          
+          // Visual feedback - just change to checkmark
+          const originalText = copyBtn.innerHTML;
+          copyBtn.innerHTML = `
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+            </svg>
+          `;
+          copyBtn.style.color = '#28a745';
+          
+          setTimeout(() => {
+            copyBtn.innerHTML = originalText;
+            copyBtn.style.color = '';
+          }, 1000);
+          
+        } catch (error) {
+          console.error('Copy failed:', error);
+          this.showNotification('❌ Copy failed', 'error');
+        }
+      });
+    }
 
     preview.querySelector('.ai-preview-insert').addEventListener('click', () => {
       this.setEditorText(editorElement, originalTextData, enhancedText);
@@ -608,7 +714,7 @@ class KayakoAIEnhancer {
     const modal = document.createElement('div');
     modal.className = 'kayako-ai-custom-prompt';
     
-    modal.innerHTML = `
+        modal.innerHTML = `
       <div class="ai-custom-prompt-header">
         <span class="ai-custom-prompt-title">✍️ Help me write</span>
         <button class="ai-custom-prompt-close" type="button">×</button>
@@ -616,7 +722,10 @@ class KayakoAIEnhancer {
       <div class="ai-custom-prompt-content">
         <div class="ai-custom-prompt-input-group">
           <label for="customPromptInput">What would you like help writing?</label>
-          <textarea id="customPromptInput" placeholder="Describe what you want to write, e.g., 'Write a professional follow-up email asking for a project update'" rows="3"></textarea>
+          <textarea id="customPromptInput" placeholder="e.g., 'Follow-up asking for project status', 'Thank you for reporting the issue', 'Request additional information about the problem'" rows="3"></textarea>
+          <small style="color: #6c757d; font-size: 11px; margin-top: 4px; display: block;">
+            💡 Tip: Responses will automatically start with "Dear [Customer]," and include relevant product context if available.
+          </small>
         </div>
       </div>
       <div class="ai-custom-prompt-actions">
@@ -627,6 +736,9 @@ class KayakoAIEnhancer {
 
     // Position the modal
     document.body.appendChild(modal);
+    
+    // Make modal draggable
+    this.makeDraggable(modal);
 
     // Focus the textarea
     setTimeout(() => {
@@ -682,17 +794,32 @@ class KayakoAIEnhancer {
       const textData = this.getEditorText(editorElement);
       let contextText = textData.extractedText.trim();
       
+      // Enhanced prompt with customer context and product detection
+      let enhancedPrompt = customPrompt;
+      
+      // Add DEAR customer context
+      if (!customPrompt.toLowerCase().includes('dear')) {
+        enhancedPrompt = `Write a professional customer support response starting with "Dear [Customer Name]," for the following request: ${customPrompt}`;
+      }
+      
       // If there's existing text, include it as context
-      let fullPrompt = customPrompt;
+      let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${customPrompt}\n\nCurrent text for context:\n${contextText}`;
+        fullPrompt = `${enhancedPrompt}\n\nCurrent text for context:\n${contextText}`;
       }
 
       // Get ticket context if enabled
       let ticketContext = '';
+      let productInfo = '';
       if (this.config?.useTicketContext) {
         ticketContext = this.extractTicketContext();
+        productInfo = this.extractProductInfo(ticketContext);
         console.log('🎯 Extracted ticket context for custom prompt:', ticketContext ? 'Found context' : 'No context found');
+        console.log('🏷️ Detected product:', productInfo || 'None detected');
+        
+        if (productInfo) {
+          fullPrompt += `\n\nProduct context: We are supporting ${productInfo}. Please ensure the response and signature are relevant to this product.`;
+        }
       }
 
       const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt, ticketContext);
@@ -701,8 +828,11 @@ class KayakoAIEnhancer {
       processingNotification.remove();
       
       if (generatedText) {
+        // Clean up the generated text before showing preview
+        const cleanGeneratedText = generatedText.trim().replace(/^\s+/gm, '');
+        
         // For custom prompts, show preview with option to replace or append
-        this.showCustomWritePreview(editorElement, textData, generatedText, customPrompt, contextText);
+        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, contextText);
       } else {
         this.showNotification('❌ No content was generated', 'error');
       }
@@ -745,7 +875,14 @@ class KayakoAIEnhancer {
         </div>` : ''}
         <div class="ai-preview-section">
           <div class="ai-preview-label">Generated content:</div>
-          <div class="ai-preview-text ai-preview-enhanced">${generatedText}</div>
+          <button class="ai-preview-copy-btn" type="button" title="Copy text">
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+              <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+            </svg>
+            Copy
+          </button>
+          <div class="ai-preview-text ai-preview-enhanced">${generatedText.replace(/^\s+/gm, '').trim()}</div>
         </div>
       </div>
       <div class="ai-preview-actions">
@@ -803,6 +940,101 @@ class KayakoAIEnhancer {
         preview.remove();
       });
     }
+
+    // Copy button functionality for custom write preview
+    const customCopyBtn = preview.querySelector('.ai-preview-copy-btn');
+    if (customCopyBtn) {
+      customCopyBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        try {
+          // Get clean text content (remove HTML but preserve line breaks)
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = generatedText;
+          const cleanText = (tempDiv.textContent || tempDiv.innerText || generatedText).trim();
+          
+          await navigator.clipboard.writeText(cleanText);
+          
+          // Visual feedback - just change to checkmark
+          const originalText = customCopyBtn.innerHTML;
+          customCopyBtn.innerHTML = `
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+            </svg>
+          `;
+          customCopyBtn.style.color = '#28a745';
+          
+          setTimeout(() => {
+            customCopyBtn.innerHTML = originalText;
+            customCopyBtn.style.color = '';
+          }, 1000);
+          
+        } catch (error) {
+          console.error('Copy failed:', error);
+          this.showNotification('❌ Copy failed', 'error');
+        }
+      });
+    }
+  }
+
+  makeDraggable(modal) {
+    let isDragging = false;
+    let startX, startY, initialX, initialY;
+
+    const header = modal.querySelector('.ai-preview-header, .ai-custom-prompt-header');
+    if (!header) return;
+
+    header.style.cursor = 'move';
+
+    header.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      
+      const rect = modal.getBoundingClientRect();
+      initialX = rect.left;
+      initialY = rect.top;
+      
+      modal.style.transform = 'none';
+      modal.style.left = initialX + 'px';
+      modal.style.top = initialY + 'px';
+      
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+      
+      let newX = initialX + deltaX;
+      let newY = initialY + deltaY;
+      
+      // Keep modal within viewport bounds
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight
+      };
+      
+      const modalRect = {
+        width: modal.offsetWidth,
+        height: modal.offsetHeight
+      };
+      
+      newX = Math.max(10, Math.min(newX, viewport.width - modalRect.width - 10));
+      newY = Math.max(10, Math.min(newY, viewport.height - modalRect.height - 10));
+      
+      modal.style.left = newX + 'px';
+      modal.style.top = newY + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+      }
+    });
   }
 
   insertCustomText(editorElement, originalTextData, generatedText, action) {
@@ -812,11 +1044,19 @@ class KayakoAIEnhancer {
         // Use the same surgical approach as regular text replacement
         this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
-        editorElement.innerHTML = generatedText.replace(/\n/g, '<br>');
+        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+        editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
       }
     } else if (action === 'replace') {
-      // Replace existing content
-      this.setEditorText(editorElement, originalTextData, generatedText);
+      // Replace existing content - use surgical template replacement if available
+      if (originalTextData.hasTemplate) {
+        console.log('🔧 Help me write REPLACE: Using template-aware replacement');
+        this.setEditorText(editorElement, originalTextData, generatedText);
+      } else {
+        console.log('🔧 Help me write REPLACE: Full content replacement');
+        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+        editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+      }
     } else if (action === 'append') {
       // Append to existing content - preserve HTML formatting
       if (originalTextData.hasTemplate) {
@@ -825,10 +1065,11 @@ class KayakoAIEnhancer {
         const newTextData = { ...originalTextData, extractedText: appendedContent };
         this.setEditorText(editorElement, newTextData, appendedContent);
       } else {
-        // For non-templates, append to the end preserving HTML structure
-        const currentHTML = editorElement.innerHTML;
-        const newContentHTML = generatedText.replace(/\n/g, '<br>');
-        editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
+      // For non-templates, append to the end preserving HTML structure  
+      const currentHTML = editorElement.innerHTML;
+      const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+      const newContentHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+      editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
       }
     }
     
@@ -907,6 +1148,36 @@ class KayakoAIEnhancer {
       console.error('Error extracting ticket context:', error);
       return '';
     }
+  }
+
+  extractProductInfo(ticketContext) {
+    if (!ticketContext) return '';
+    
+    // Common product patterns to look for
+    const productPatterns = [
+      /\b([A-Z][a-z]+ [A-Z][a-z]+)\s+Support Team/gi,
+      /{{case\.custom_fields\.Product\.value}}/gi,
+      /supporting\s+([A-Z][a-zA-Z\s]+)/gi,
+      /\b(Khoros|Meta|Telus|GFI|Aurea|Kayako|Salesforce|Microsoft|Google|Adobe)\b/gi,
+      /\b([A-Z]{2,})\s+(Care|Support|Platform|Portal)/gi
+    ];
+    
+    const detectedProducts = new Set();
+    
+    productPatterns.forEach(pattern => {
+      const matches = ticketContext.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1] && match[1].length > 2) {
+          detectedProducts.add(match[1].trim());
+        }
+      }
+    });
+    
+    if (detectedProducts.size > 0) {
+      return Array.from(detectedProducts).join(', ');
+    }
+    
+    return '';
   }
 
   async callAI(prompt, text, ticketContext = '') {

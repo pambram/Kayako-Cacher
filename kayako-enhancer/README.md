@@ -1,6 +1,6 @@
-# Kayako Enhancer Chrome Extension
+# Kayako QoL Enhancer Chrome Extension
 
-The Kayako Resizer is a browser extension designed to enhance the agent experience in Kayako by allowing for dynamic and persistent resizing of the text editors, as well as keeping you logged in across multiple Kayako brands. Take control of your workspace to fit your workflow.
+A comprehensive browser extension designed to enhance the agent experience in Kayako with productivity improvements, editor enhancements, and interface optimizations. Take control of your workspace to fit your workflow.
 
 ## Features
 
@@ -22,9 +22,15 @@ This extension provides several ways to customize your Kayako experience:
         - **Events**: Show/hide system events
         - **Internal Notes**: Toggle internal notes
         - **Date Separators**: Show/hide date dividers
+    * **Enhanced Readability**: Automatically removes max-width constraints from timeline items for better reading experience
     * Note: Hiding many elements may affect infinite scroll. If content doesn't load, try showing elements, scrolling to load more, then re-hiding.
 
-3.  **Persistent Login**:
+3.  **Smart Hyperlinking**:
+    * **Auto-Hyperlink on Paste**: When you select text and paste a URL, it automatically creates a hyperlink
+    * **Cmd+K / Ctrl+K Shortcut**: Quick hyperlink insertion with familiar keyboard shortcut
+    * **Clipboard Integration**: Automatically detects URLs in clipboard and pre-fills hyperlink dialog
+
+4.  **Persistent Login**:
     * When you log in to the Central Kayako brand (e.g., central-supportdesk.kayako.com), the extension keeps you logged in across all your configured Kayako brands automatically. You only need to log in once, and your session is synchronized everywhere.
 
 ## How to Use
@@ -41,6 +47,25 @@ This extension provides several ways to customize your Kayako experience:
 
 - To resize, simply drag the edge of the main editor or side conversation panel. This override lasts until you leave the conversation, switch away from the side panel, or reload the page.
 - Dragging always takes priority over popup or default settings for the current session.
+
+### Smart Hyperlinking
+
+**Auto-Hyperlink on Paste:**
+1. Select any text in a Kayako editor
+2. Copy a URL to your clipboard
+3. Paste (Cmd+V / Ctrl+V) - the selected text automatically becomes a hyperlink
+
+**Quick Hyperlink Insertion:**
+1. Select text in a Kayako editor (optional)
+2. Press **Cmd+K** (Mac) or **Ctrl+K** (Windows/Linux)
+3. A dialog appears with the selected text pre-filled
+4. Enter the URL (or it auto-fills from clipboard if it contains a URL)
+5. Press Enter or click "Insert Link"
+
+### Timeline Improvements
+
+- **Enhanced Readability**: Timeline items automatically expand to full width (no more cramped max-width)
+- **Element Visibility**: Use the popup to toggle various timeline elements for cleaner view
 
 ## Installation
 

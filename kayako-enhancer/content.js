@@ -305,6 +305,455 @@ function toggleDaySeparators(hide) {
 
 // --- VISIBILITY FUNCTIONALITY ENDS HERE ---
 
+// --- QOL IMPROVEMENTS START HERE ---
+
+// Function to remove max-width from timeline items for better readability
+function removeTimelineMaxWidth() {
+    const styleId = 'kayako-timeline-max-width-removal';
+    let style = document.getElementById(styleId);
+    
+    if (!style) {
+        style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = `
+            /* Aggressive max-width removal with high specificity to override Kayako styles */
+            body [class*="ko-timeline-2_list_item__note"],
+            body [class*="ko-timeline-2_list_item__post"],
+            body [class*="ko-timeline-2_list_item__content"],
+            body .ko-timeline-2_list_item__note_1oksrd,
+            body .ko-timeline-2_list_item__post_1oksrd,
+            body .ko-timeline-2_list_item__content_1oksrd,
+            body div[class*="ko-timeline-2_list_item__note"],
+            body div[class*="ko-timeline-2_list_item__post"],
+            body div[class*="ko-timeline-2_list_item__content"] {
+                max-width: none !important;
+                width: 100% !important;
+            }
+            
+            /* Parent containers with high specificity */
+            body [class*="ko-timeline-2__previous-activities-container"],
+            body .ko-timeline-2__previous-activities-container-wrapper_vlsdot,
+            body div[class*="ko-timeline-2__previous-activities-container"] {
+                max-width: none !important;
+                width: 100% !important;
+            }
+            
+            /* Timeline body and content areas */
+            body [class*="ko-timeline-2_list_item__body"],
+            body div[class*="ko-timeline-2_list_item__body"] {
+                max-width: none !important;
+                width: 100% !important;
+            }
+            
+            /* Target the specific element from your example with maximum specificity */
+            body .message-or-note .ko-timeline-2_list_item__note_1oksrd,
+            body .ko-timeline-2_list_post__post_1nm4l4 .ko-timeline-2_list_item__note_1oksrd,
+            body div[data-id][class*="ko-timeline-2_list_item__note"],
+            body div[data-id][data-status][class*="ko-timeline-2_list_item__note"] {
+                max-width: none !important;
+                width: 100% !important;
+                flex: 1 !important;
+            }
+            
+            /* Also target any container that might be limiting width */
+            body [class*="ko-timeline-2_list_item__item"],
+            body div[class*="ko-timeline-2_list_item__item"] {
+                max-width: none !important;
+                width: 100% !important;
+            }
+            
+            /* Force full width on content divs */
+            body .ko-timeline-2_list_item__content_1oksrd,
+            body div[class*="ko-timeline-2_list_item__content"] {
+                max-width: none !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }
+        `;
+        document.head.appendChild(style);
+        console.log('✅ Timeline max-width constraints removed');
+        
+        // Debug: Check if our styles are being applied
+        setTimeout(() => {
+            const timelineItems = document.querySelectorAll('[class*="ko-timeline-2_list_item__note"]');
+            console.log('🔍 Found timeline items after CSS application:', timelineItems.length);
+            timelineItems.forEach((item, index) => {
+                const computedStyle = window.getComputedStyle(item);
+                console.log(`🔍 Timeline item ${index} max-width:`, computedStyle.maxWidth);
+                console.log(`🔍 Timeline item ${index} width:`, computedStyle.width);
+                console.log(`🔍 Timeline item ${index} classes:`, item.className);
+            });
+        }, 1000);
+    }
+    
+    // Add animations for notifications if not already present
+    if (!document.getElementById('kayako-qol-animations')) {
+        const animationStyle = document.createElement('style');
+        animationStyle.id = 'kayako-qol-animations';
+        animationStyle.textContent = `
+            @keyframes slideInRight {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOutRight {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(animationStyle);
+    }
+}
+
+// Function to setup auto-hyperlinking when pasting URLs
+function setupAutoHyperlinking() {
+    console.log('🔗 Setting up auto-hyperlinking functionality');
+    
+    // Listen for paste events on all Kayako editors
+    document.addEventListener('paste', async (e) => {
+        const target = e.target;
+        
+        // Check if we're in a Kayako editor
+        if (!target.closest('.fr-element, [contenteditable="true"]')) {
+            return;
+        }
+        
+        // Check if text is selected
+        const selection = window.getSelection();
+        if (!selection.rangeCount || selection.isCollapsed) {
+            return;
+        }
+        
+        // Get the selected text and range BEFORE we check clipboard
+        const selectedText = selection.toString();
+        const range = selection.getRangeAt(0).cloneRange();
+        
+        try {
+            // Get clipboard text
+            const clipboardText = await navigator.clipboard.readText();
+            
+            // Check if clipboard contains a URL
+            if (isValidURL(clipboardText)) {
+                console.log('🔗 Auto-hyperlinking detected');
+                console.log('🔗 Selected text:', selectedText);
+                console.log('🔗 URL from clipboard:', clipboardText);
+                
+                // PREVENT the default paste behavior
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Create hyperlink element
+                const link = document.createElement('a');
+                link.href = clipboardText;
+                link.textContent = selectedText; // Keep the original selected text
+                link.target = '_blank';
+                
+                // Replace selection with link
+                range.deleteContents();
+                range.insertNode(link);
+                
+                // Move cursor after the link
+                range.setStartAfter(link);
+                range.setEndAfter(link);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                
+                console.log('✅ Auto-hyperlinked:', selectedText, '->', clipboardText);
+                
+                // Show brief success notification
+                showQuickNotification('🔗 Auto-hyperlinked!', 'success');
+                
+                // Trigger change events to notify Kayako
+                const changeEvent = new Event('input', { bubbles: true });
+                target.dispatchEvent(changeEvent);
+                
+                return;
+            }
+        } catch (error) {
+            console.log('Could not access clipboard for auto-hyperlinking:', error.message);
+        }
+        
+        // If we get here, it's not a URL - let normal paste happen
+    });
+}
+
+// Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
+function setupHyperlinkShortcut() {
+    console.log('⌨️ Setting up Cmd+K / Ctrl+K hyperlink shortcut');
+    
+    document.addEventListener('keydown', (e) => {
+        // Check for Cmd+K (Mac) or Ctrl+K (Windows/Linux)
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+            const target = e.target;
+            
+            // Check if we're in a Kayako editor
+            if (!target.closest('.fr-element, [contenteditable="true"]')) {
+                return;
+            }
+            
+            e.preventDefault();
+            
+            // Get current selection
+            const selection = window.getSelection();
+            let selectedText = '';
+            
+            if (selection.rangeCount && !selection.isCollapsed) {
+                selectedText = selection.toString();
+            }
+            
+            // Show hyperlink dialog
+            showHyperlinkDialog(selectedText, target);
+        }
+    });
+}
+
+// Helper function to validate URLs
+function isValidURL(string) {
+    try {
+        new URL(string);
+        return true;
+    } catch (_) {
+        // Try with common prefixes if not already present
+        if (!string.match(/^https?:\/\//)) {
+            try {
+                new URL('http://' + string);
+                return string.includes('.') && string.length > 4;
+            } catch (_) {
+                return false;
+            }
+        }
+        return false;
+    }
+}
+
+// Function to show hyperlink insertion dialog
+function showHyperlinkDialog(selectedText, targetEditor) {
+    // Remove any existing dialog
+    const existingDialog = document.querySelector('.kayako-hyperlink-dialog');
+    if (existingDialog) {
+        existingDialog.remove();
+    }
+    
+    // Create dialog
+    const dialog = document.createElement('div');
+    dialog.className = 'kayako-hyperlink-dialog';
+    dialog.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+        padding: 24px;
+        z-index: 10000;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        min-width: 400px;
+        max-width: 500px;
+    `;
+    
+    dialog.innerHTML = `
+        <div style="margin-bottom: 20px;">
+            <h3 style="margin: 0 0 16px 0; color: #333; font-size: 16px;">🔗 Insert Hyperlink</h3>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+            <label for="hyperlinkText" style="display: block; margin-bottom: 4px; font-weight: 500; color: #555;">Display Text:</label>
+            <input type="text" id="hyperlinkText" value="${selectedText}" placeholder="Link text" style="
+                width: 100%;
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 14px;
+                outline: none;
+            ">
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <label for="hyperlinkURL" style="display: block; margin-bottom: 4px; font-weight: 500; color: #555;">URL:</label>
+            <input type="url" id="hyperlinkURL" placeholder="https://example.com" style="
+                width: 100%;
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 14px;
+                outline: none;
+            ">
+        </div>
+        
+        <div style="display: flex; gap: 12px; justify-content: flex-end;">
+            <button id="cancelHyperlink" style="
+                padding: 8px 16px;
+                border: 1px solid #ddd;
+                background: white;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+            ">Cancel</button>
+            <button id="insertHyperlink" style="
+                padding: 8px 16px;
+                background: #007bff;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+            ">Insert Link</button>
+        </div>
+    `;
+    
+    document.body.appendChild(dialog);
+    
+    // Focus URL field and try to populate from clipboard
+    const urlField = dialog.querySelector('#hyperlinkURL');
+    const textField = dialog.querySelector('#hyperlinkText');
+    
+    // Try to get URL from clipboard
+    navigator.clipboard.readText().then(clipboardText => {
+        if (isValidURL(clipboardText)) {
+            urlField.value = clipboardText;
+            if (!selectedText) {
+                textField.focus();
+            } else {
+                document.querySelector('#insertHyperlink').focus();
+            }
+        } else {
+            urlField.focus();
+        }
+    }).catch(() => {
+        urlField.focus();
+    });
+    
+    // Handle button clicks
+    dialog.querySelector('#cancelHyperlink').addEventListener('click', () => {
+        dialog.remove();
+    });
+    
+    dialog.querySelector('#insertHyperlink').addEventListener('click', () => {
+        const text = textField.value.trim();
+        const url = urlField.value.trim();
+        
+        if (!text || !url) {
+            return;
+        }
+        
+        insertHyperlinkIntoEditor(text, url, targetEditor);
+        dialog.remove();
+    });
+    
+    // Handle Enter key
+    dialog.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            dialog.querySelector('#insertHyperlink').click();
+        } else if (e.key === 'Escape') {
+            dialog.remove();
+        }
+    });
+    
+    // Close dialog when clicking outside
+    setTimeout(() => {
+        document.addEventListener('click', function closeDialog(e) {
+            if (!dialog.contains(e.target)) {
+                dialog.remove();
+                document.removeEventListener('click', closeDialog);
+            }
+        });
+    }, 100);
+}
+
+// Function to insert hyperlink into editor
+function insertHyperlinkIntoEditor(text, url, targetEditor) {
+    try {
+        // Create link element
+        const link = document.createElement('a');
+        link.href = url;
+        link.textContent = text;
+        link.target = '_blank';
+        
+        // Get current selection or create one at cursor position
+        const selection = window.getSelection();
+        
+        if (selection.rangeCount) {
+            const range = selection.getRangeAt(0);
+            
+            // If text was selected, replace it
+            if (!selection.isCollapsed) {
+                range.deleteContents();
+            }
+            
+            range.insertNode(link);
+            
+            // Move cursor after the link
+            range.setStartAfter(link);
+            range.setEndAfter(link);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        } else {
+            // Fallback: append to editor
+            targetEditor.appendChild(link);
+        }
+        
+        // Trigger change events to notify Kayako
+        const changeEvent = new Event('input', { bubbles: true });
+        targetEditor.dispatchEvent(changeEvent);
+        
+        console.log('🔗 Hyperlink inserted:', text, '->', url);
+        
+    } catch (error) {
+        console.error('Error inserting hyperlink:', error);
+    }
+}
+
+// Function to show quick notifications
+function showQuickNotification(message, type = 'info') {
+    // Remove existing notifications
+    const existing = document.querySelector('.kayako-qol-notification');
+    if (existing) {
+        existing.remove();
+    }
+
+    const notification = document.createElement('div');
+    notification.className = 'kayako-qol-notification';
+    notification.textContent = message;
+    
+    const colors = {
+        success: { bg: '#28a745', text: '#fff' },
+        error: { bg: '#dc3545', text: '#fff' },
+        info: { bg: '#17a2b8', text: '#fff' }
+    };
+    
+    const color = colors[type] || colors.info;
+    
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${color.bg};
+        color: ${color.text};
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        z-index: 10000;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        animation: slideInRight 0.3s ease-out;
+    `;
+
+    document.body.appendChild(notification);
+
+    // Auto remove after 2 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.style.animation = 'slideOutRight 0.3s ease-out';
+            setTimeout(() => notification.remove(), 300);
+        }
+    }, 2000);
+}
+
+// --- QOL IMPROVEMENTS END HERE ---
+
 // Listen for messages from popup.js
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "resize") {
@@ -335,6 +784,8 @@ const observer = new MutationObserver(() => {
     applyAllEditorSizes();
     // Attach the interactive draggable listeners
     attachAllListeners();
+    // Ensure QOL improvements are applied to new content
+    removeTimelineMaxWidth();
 });
 
 // Start observing when the script loads
@@ -343,6 +794,11 @@ observer.observe(document.body, { childList: true, subtree: true });
 // Also run once on initial load
 applyAllEditorSizes();
 attachAllListeners();
+
+// Initialize QOL improvements
+removeTimelineMaxWidth();
+setupAutoHyperlinking();
+setupHyperlinkShortcut();
 
 // Apply saved visibility states on load
 chrome.storage.local.get(["hideEvents", "hideInternalNotes", "hideDates"], (data) => {

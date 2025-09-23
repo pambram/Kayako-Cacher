@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Kayako QoL Enhancer",
-  "version": "1.4.0",
-  "description": "Resize editors with popup controls (persistent) or drag-to-resize (overrides all sizes until refresh). Hide ticket elements and stay logged in across brands.",
+  "version": "1.5.1",
+  "description": "Kayako QoL improvements: resize editors, hide elements, remove timeline max-width, auto-hyperlink URLs, and Cmd+K shortcuts for better productivity.",
   "permissions": ["cookies", "scripting", "activeTab", "storage"],
   "optional_host_permissions": ["<all_urls>"],
   "host_permissions": [
