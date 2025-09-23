@@ -12,6 +12,7 @@ class KayakoImageOptimizer {
       format: 'jpeg'
     };
     this.disabled = false;
+    this.caretMarkerId = null;
     
     this.init();
   }
@@ -73,6 +74,11 @@ class KayakoImageOptimizer {
     dropzone.addEventListener('drop', (e) => {
       if (this.disabled) { return; }
       console.log('📁 Optimized drop handler triggered');
+      // Try to remember caret if there is a selection before drop
+      try { this.saveCaretPosition(); } catch (_) {}
+      // Block native handlers that also insert
+      try { e.preventDefault(); } catch (_) {}
+      try { e.stopPropagation(); } catch (_) {}
       
       const files = Array.from(e.dataTransfer.files);
       const imageFiles = files.filter(file => file.type.startsWith('image/'));
@@ -96,14 +102,17 @@ class KayakoImageOptimizer {
       
       if (imageItems.length > 0) {
         console.log('📋 Optimizing pasted images...');
+        // Save caret so we can insert at exact cursor position after upload
+        try { this.saveCaretPosition(); } catch (_) {}
         
         // Visual confirmation that optimized path is active
         try {
           this.showUploadProgress(imageItems.length);
         } catch (_) {}
         
-        e.preventDefault();
-        e.stopImmediatePropagation();
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopImmediatePropagation(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
         
         imageItems.forEach(item => {
           const file = item.getAsFile();
@@ -334,14 +343,20 @@ class KayakoImageOptimizer {
           }
         }
         if (url) {
-          $editor.froalaEditor('image.insert', url, true, null, null, null);
+          // First try to insert exactly at saved caret marker
+          const placed = this.tryInsertAtCaretMarker(url);
+          if (!placed) {
+            $editor.froalaEditor('image.insert', url, true, null, null, null);
+          }
           $editor.froalaEditor('events.trigger', 'contentChanged');
           try {
             const html = $editor.froalaEditor('html.get');
             $editor.froalaEditor('html.set', html);
           } catch (_) {}
+          return; // Avoid fallback path duplicating insertion
         } else {
           console.warn('⚠️ No contentUrl on attachment; skipping insert');
+          return;
         }
       }
     }
@@ -361,6 +376,10 @@ class KayakoImageOptimizer {
     if (editable) {
       try {
         editable.focus();
+        // Try to use saved caret marker first
+        if (this.tryInsertAtCaretMarker(url)) {
+          return;
+        }
         // Try execCommand insertImage
         const inserted = document.execCommand && document.execCommand('insertImage', false, url);
         if (!inserted) {
@@ -375,6 +394,63 @@ class KayakoImageOptimizer {
         console.warn('⚠️ Fallback insert failed:', e);
       }
     }
+  }
+
+  saveCaretPosition() {
+    try {
+      const selection = window.getSelection && window.getSelection();
+      if (!selection || selection.rangeCount === 0) { return; }
+      const range = selection.getRangeAt(0).cloneRange();
+      const marker = document.createElement('span');
+      this.caretMarkerId = 'kayako-caret-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      marker.id = this.caretMarkerId;
+      marker.style.cssText = 'display:inline-block;width:0;height:0;line-height:0;';
+      range.collapse(true);
+      range.insertNode(marker);
+      // Move caret after marker
+      selection.removeAllRanges();
+      const after = document.createRange();
+      after.setStartAfter(marker);
+      after.collapse(true);
+      selection.addRange(after);
+      console.log('📍 Saved caret position');
+    } catch (_) {}
+  }
+
+  tryInsertAtCaretMarker(url) {
+    try {
+      if (!this.caretMarkerId) return false;
+      const marker = document.getElementById(this.caretMarkerId);
+      if (!marker) { this.caretMarkerId = null; return false; }
+      const img = document.createElement('img');
+      img.src = url;
+      marker.parentNode.insertBefore(img, marker);
+      marker.remove();
+      this.caretMarkerId = null;
+      // Bubble change signals
+      const editable = this.findEditableContainer(img);
+      if (editable) {
+        editable.dispatchEvent(new Event('input', { bubbles: true }));
+        editable.dispatchEvent(new Event('keyup', { bubbles: true }));
+      }
+      console.log('📍 Inserted image at saved caret');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  findEditableContainer(node) {
+    try {
+      let current = node;
+      while (current) {
+        if (current.nodeType === 1 && (current.getAttribute && current.getAttribute('contenteditable') === 'true')) {
+          return current;
+        }
+        current = current.parentNode;
+      }
+    } catch (_) {}
+    return null;
   }
 
   extractCSRFFromDOM() {
