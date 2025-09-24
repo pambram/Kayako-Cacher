@@ -834,6 +834,9 @@ function setupEditorAutoSizing() {
             handleEditorBlur(editor);
         });
         
+        // Always keep toolbar interactions expanding the editor
+        setupToolbarButtonListeners(editor);
+
         // Set initial size based on current focus state and content
         if (document.activeElement === editor) {
             // Check if this is an empty editor on page load
@@ -1024,52 +1027,46 @@ function setupToolbarButtonListeners(editor) {
         console.log('📏 Could not find editor container for toolbar listeners');
         return;
     }
-    
+
     const toolbar = container.querySelector('.ko-text-editor__header_1p5g6r');
     if (!toolbar) {
         console.log('📏 Could not find toolbar for editor');
         return;
     }
-    
-    // Don't setup if already done
+
+    // Don't setup twice
     if (toolbar.dataset.autoSizeListenersSetup === 'true') {
         return;
     }
-    
-    console.log('📏 Setting up toolbar button listeners for auto-sizing');
-    
-    // Find all interactive elements in the toolbar
-    const toolbarButtons = toolbar.querySelectorAll(`
-        .ko-text-editor__itemWrap_1p5g6r,
-        button,
-        [role="button"],
-        [tabindex],
-        .ember-basic-dropdown-trigger
-    `);
-    
-    console.log('📏 Found', toolbarButtons.length, 'toolbar buttons');
-    
-    // Create click handler for toolbar buttons
-    const toolbarClickHandler = (e) => {
-        console.log('📏 Toolbar button clicked:', e.target, '- activating editor');
-        
-        // Don't interfere with the button's normal function
-        // Just activate the editor after a brief delay
-        setTimeout(() => {
-            activateEditor(editor);
-            cleanupToolbarListeners(toolbar, toolbarButtons, toolbarClickHandler);
-        }, 0);
+
+    console.log('📏 Setting up toolbar listeners (delegated, capture)');
+
+    // Helper to determine if an element within the toolbar should trigger expansion
+    const isInteractive = (el) => {
+        return !!el.closest(`
+            .kayako-ai-dropdown,
+            .ko-case_macro-selector__trigger_ltxhiw,
+            .ko-case_macro-selector_trigger__trigger_7wpnlb,
+            .ember-basic-dropdown-trigger,
+            .ko-text-editor__itemWrap_1p5g6r,
+            button,
+            [role="button"],
+            [tabindex]
+        `);
     };
-    
-    // Add listeners to all toolbar buttons
-    toolbarButtons.forEach(button => {
-        button.addEventListener('click', toolbarClickHandler);
-    });
-    
-    // Mark as setup and store handler for cleanup
+
+    const delegatedHandler = (e) => {
+        if (isInteractive(e.target)) {
+            // Ensure the editor stays expanded even if it blurs
+            setTimeout(() => activateEditor(editor), 0);
+        }
+    };
+
+    // Use capture so we run before other handlers that might stop propagation
+    toolbar.addEventListener('mousedown', delegatedHandler, true);
+    toolbar.addEventListener('click', delegatedHandler, true);
+
     toolbar.dataset.autoSizeListenersSetup = 'true';
-    toolbar._autoSizeHandler = toolbarClickHandler;
-    toolbar._autoSizeButtons = toolbarButtons;
 }
 
 // Clean up toolbar listeners after activation
