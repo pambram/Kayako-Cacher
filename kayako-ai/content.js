@@ -154,6 +154,7 @@ class KayakoAIEnhancer {
       console.log('🔧 Adding AI button to end of Kayako header');
       kayakoHeader.appendChild(aiButtonGroup);
     }
+    // Removed quick Beautify icon to avoid duplication; Beautify is in AI dropdown only
     
     // Debug: Check if button was added
     const addedButton = kayakoHeader.querySelector('.kayako-ai-dropdown');
@@ -181,36 +182,49 @@ class KayakoAIEnhancer {
     buttonWrapper.className = 'ko-text-editor__item_1p5g6r ko-text-editor__itemWrap_1p5g6r kayako-ai-wrapper';
     
     // Define AI enhancement actions
+    const formatHint = 'Additionally, format the output using only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where appropriate; no headings, tables, images, or Markdown. Return only the HTML.';
     const actions = [
       {
         id: 'polish',
         icon: '✨',
         title: 'Polish',
-        prompt: 'Polish and improve the following text while maintaining its original meaning and tone:'
+        prompt: 'Polish and improve the following text while maintaining its original meaning and tone: ' + formatHint,
+        tooltip: 'Improve grammar and readability; keep meaning intact.'
       },
       {
         id: 'formalize',
         icon: '👔',
         title: 'Formalize',
-        prompt: 'Rewrite the following text to be more formal and professional:'
+        prompt: 'Rewrite the following text to be more formal and professional: ' + formatHint,
+        tooltip: 'Make tone professional; do not change meaning.'
       },
       {
         id: 'elaborate',
         icon: '📝',
         title: 'Elaborate',
-        prompt: 'Expand and elaborate on the following text with more details and context:'
+        prompt: 'Expand and elaborate on the following text with more details and context: ' + formatHint,
+        tooltip: 'Add helpful detail and context; preserve intent.'
       },
       {
         id: 'shorten',
         icon: '✂️',
         title: 'Shorten',
-        prompt: 'Rewrite the following text to be more concise while keeping the key information:'
+        prompt: 'Rewrite the following text to be more concise while keeping the key information: ' + formatHint,
+        tooltip: 'Make concise; keep key information.'
+      },
+      {
+        id: 'beautify',
+        icon: '🎛️',
+        title: 'Beautify',
+        prompt: 'FORMAT-ONLY TRANSFORM. Do not add, remove, reorder, or alter ANY words or punctuation. Do not change casing or correct typos. Use the exact original text, only wrapping/structuring with simple HTML. Constraints: NO Markdown, NO code blocks, NO tables, NO images, NO headings. Use only <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] placeholders intact. You may split paragraphs and group lines into bullet lists without changing the text itself. Return ONLY the HTML.',
+        tooltip: 'Format-only: exact words preserved; structure with paragraphs and lists.'
       },
       {
         id: 'help_write',
         icon: '✍️',
         title: 'Help me write',
-        prompt: 'custom' // Special marker for custom prompt handling
+        prompt: 'custom', // Special marker for custom prompt handling
+        tooltip: 'Open custom prompt to generate new content.'
       }
     ];
 
@@ -230,7 +244,7 @@ class KayakoAIEnhancer {
     // Add action buttons to dropdown
     actions.forEach((action, index) => {
       // Add separator before "Help me write" (like Gmail)
-      if (action.id === 'help_write') {
+      if (action.id === 'beautify' || action.id === 'help_write') {
         const separator = document.createElement('div');
         separator.className = 'kayako-ai-dropdown-separator';
         dropdownMenu.appendChild(separator);
@@ -241,7 +255,7 @@ class KayakoAIEnhancer {
       button.className = 'kayako-ai-action-btn';
       button.dataset.action = action.id;
       button.innerHTML = `${action.icon} ${action.title}`;
-      button.title = action.title;
+      button.title = action.tooltip || action.title;
       
       button.addEventListener('click', (e) => {
         e.preventDefault();
@@ -330,14 +344,19 @@ class KayakoAIEnhancer {
         console.log('🎯 Extracted ticket context:', ticketContext ? 'Found context' : 'No context found');
       }
       
-      const enhancedText = await this.callAI(action.prompt, textData.extractedText, ticketContext);
+      let enhancedText = await this.callAI(action.prompt, textData.extractedText, ticketContext);
+      
+      // For Beautify, sanitize to the limited HTML the editor supports
+      if (action.id === 'beautify' && enhancedText) {
+        enhancedText = this.sanitizeBeautifyHTML(enhancedText);
+      }
       
       // Remove processing notification before showing modal
       processingNotification.remove();
       
       if (enhancedText && enhancedText !== textData.extractedText) {
         // Clean up the enhanced text before showing preview
-        const cleanEnhancedText = enhancedText.trim().replace(/^\s+/gm, '');
+        const cleanEnhancedText = this.normalizeHTMLForInsert(enhancedText.trim().replace(/^\s+/gm, ''));
         
         // Show preview with Insert/Cancel options instead of direct replacement
         this.showAIPreview(editorElement, textData, cleanEnhancedText, action.title);
@@ -455,26 +474,25 @@ class KayakoAIEnhancer {
     const textWithRestoredLinks = this.restoreLinksInText(newText, textData.linkMap);
     
     if (textData.hasTemplate) {
-      // Use innerHTML replacement with regex to preserve HTML structure perfectly  
-      console.log('🔧 Performing HTML-based surgical replacement');
-      console.log('🔍 Looking for text to replace:', JSON.stringify(textData.extractedText));
-      console.log('🔍 New text with links restored:', JSON.stringify(textWithRestoredLinks));
-      
-      // Escape special regex characters in the original text
-      const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      // Replace in the original HTML, preserving all formatting
-      const newHTML = textData.originalHTML.replace(
-        new RegExp(escapedOriginalText, 'g'),
-        textWithRestoredLinks.replace(/\n/g, '<br>')
-      );
-      
-      console.log('✅ HTML replacement completed with links restored');
-      editorElement.innerHTML = newHTML;
+      // Prefer DOM Range replacement between template markers for robustness
+      const inserted = this.replaceTemplatePlaceholder(editorElement, textWithRestoredLinks);
+      if (!inserted) {
+        console.warn('⚠️ Could not locate template markers reliably; falling back to regex replace');
+        // Use innerHTML replacement with regex to preserve HTML structure
+        console.log('🔧 Performing HTML-based surgical replacement (fallback)');
+        console.log('🔍 Looking for text to replace:', JSON.stringify(textData.extractedText));
+        console.log('🔍 New text with links restored:', JSON.stringify(textWithRestoredLinks));
+        const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const newHTML = textData.originalHTML.replace(
+          new RegExp(escapedOriginalText, 'g'),
+          this.normalizeHTMLForInsert(textWithRestoredLinks)
+        );
+        editorElement.innerHTML = newHTML;
+      }
       
     } else {
       // Replace entire text
-      editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+      editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
     }
     
     // Trigger input event to notify Froala of the change
@@ -505,6 +523,214 @@ class KayakoAIEnhancer {
     return restoredText;
   }
 
+  // Replace content between PR template markers when placeholder is empty
+  replaceTemplatePlaceholder(editorElement, newTextHTML) {
+    try {
+      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i;
+      const endRe = /Best\s+regards,/i;
+      
+      const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
+      let startNode = null, startOffset = 0, endNode = null, endOffset = 0;
+      
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const val = node.nodeValue;
+        if (!startNode) {
+          const m = val.match(startRe);
+          if (m) {
+            startNode = node;
+            startOffset = m.index + m[0].length;
+          }
+        } else {
+          const m2 = val.match(endRe);
+          if (m2) {
+            endNode = node;
+            endOffset = m2.index;
+            break;
+          }
+        }
+      }
+      
+      if (!startNode || !endNode) {
+        console.warn('⚠️ Could not find both template markers for insertion');
+        return false;
+      }
+      
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.setEnd(endNode, endOffset);
+      
+      // Delete existing (empty/whitespace) content between markers
+      range.deleteContents();
+      
+      // Prepare fragment from new HTML (convert if needed)
+      const fragment = document.createDocumentFragment();
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = this.normalizeHTMLForInsert(newTextHTML);
+      while (wrapper.firstChild) {
+        fragment.appendChild(wrapper.firstChild);
+      }
+      
+      // Insert at caret position (between markers)
+      range.insertNode(fragment);
+      
+      return true;
+    } catch (e) {
+      console.error('Template placeholder replacement failed:', e);
+      return false;
+    }
+  }
+
+  // Sanitize Beautify output to a safe subset for Froala/Kayako
+  sanitizeBeautifyHTML(html) {
+    try {
+      const container = document.createElement('div');
+      container.innerHTML = html;
+      
+      const allowed = new Set(['p', 'br', 'strong', 'em', 'b', 'i', 'ul', 'ol', 'li', 'a', 'div']);
+      
+      const cleanNode = (node) => {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          let tag = node.tagName.toLowerCase();
+          
+          // Normalize tags
+          if (tag === 'b') { tag = 'strong'; const repl = document.createElement('strong'); moveChildren(node, repl); node.replaceWith(repl); node = repl; }
+          if (tag === 'i') { tag = 'em'; const repl = document.createElement('em'); moveChildren(node, repl); node.replaceWith(repl); node = repl; }
+          if (tag === 'div') { /* div is fine; Froala often uses div */ }
+          
+          // Headings and other blocks -> convert to <p><strong>text</strong></p>
+          if (/^h[1-6]$/.test(tag)) {
+            const p = document.createElement('p');
+            const strong = document.createElement('strong');
+            strong.textContent = node.textContent.trim();
+            p.appendChild(strong);
+            node.replaceWith(p);
+            cleanNode(p);
+            return;
+          }
+          
+          // Disallowed tags -> unwrap contents
+          if (!allowed.has(tag)) {
+            const parent = node.parentNode;
+            while (node.firstChild) parent.insertBefore(node.firstChild, node);
+            parent.removeChild(node);
+            return;
+          }
+          
+          // Strip attributes
+          const attrs = Array.from(node.attributes || []);
+          attrs.forEach(attr => {
+            const name = attr.name.toLowerCase();
+            if (tag === 'a') {
+              if (!['href', 'title', 'target'].includes(name)) node.removeAttribute(name);
+            } else {
+              node.removeAttribute(name);
+            }
+          });
+          
+          // Validate anchor href
+          if (tag === 'a') {
+            const href = node.getAttribute('href') || '';
+            if (!this.isSafeHref(href)) {
+              // Unsafe: unwrap
+              const parent = node.parentNode;
+              while (node.firstChild) parent.insertBefore(node.firstChild, node);
+              parent.removeChild(node);
+              return;
+            }
+            if (!node.getAttribute('target')) node.setAttribute('target', '_blank');
+          }
+          
+          // Recurse
+          let child = node.firstChild;
+          while (child) {
+            const next = child.nextSibling;
+            cleanNode(child);
+            child = next;
+          }
+        } else if (node.nodeType === Node.TEXT_NODE) {
+          // Normalize whitespace (keep single spaces; remove tabs/newlines - LLM should structure with tags)
+          node.nodeValue = node.nodeValue.replace(/[\t\r\n]+/g, ' ').replace(/\s{2,}/g, ' ');
+        }
+      };
+      
+      const moveChildren = (from, to) => {
+        while (from.firstChild) to.appendChild(from.firstChild);
+      };
+      
+      // Clean children of container
+      let child = container.firstChild;
+      while (child) {
+        const next = child.nextSibling;
+        cleanNode(child);
+        child = next;
+      }
+      
+      // Convert stray text nodes at root into paragraphs
+      const wrapTextNodes = () => {
+        const nodes = Array.from(container.childNodes);
+        nodes.forEach(n => {
+          if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim()) {
+            const p = document.createElement('p');
+            p.textContent = n.nodeValue.trim();
+            container.replaceChild(p, n);
+          }
+        });
+      };
+      wrapTextNodes();
+      
+      return container.innerHTML;
+    } catch (e) {
+      console.warn('Beautify sanitization failed, returning raw text');
+      return (html || '').toString();
+    }
+  }
+
+  isSafeHref(href) {
+    try {
+      const u = new URL(href, window.location.origin);
+      return ['http:', 'https:'].includes(u.protocol);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Decide how to inject AI output: keep allowed HTML as-is; otherwise
+  // convert plaintext bullets to lists or map newlines to <br>
+  normalizeHTMLForInsert(html) {
+    const hasTags = /<(p|ul|ol|li|strong|em|a)\b/i.test(html || '');
+    if (!hasTags) {
+      const listified = this.convertPlaintextListToHTML(html || '');
+      if (listified) return listified;
+      return (html || '').replace(/\n/g, '<br>');
+    }
+    return html;
+  }
+
+  // Convert plaintext lines starting with -, *, •, or 1. into simple lists (markup only; keep text as-is)
+  convertPlaintextListToHTML(text) {
+    const lines = (text || '').split(/\r?\n/).map(l => l.trimEnd());
+    if (lines.length < 3) return '';
+    const bulletRe = /^\s*([\-\*•])\s+/;
+    const numRe = /^\s*(\d+)\.[\)\.]?\s+/;
+    const nonEmptyLines = lines.filter(l => l.trim().length > 0);
+    const bulletCount = nonEmptyLines.filter(l => bulletRe.test(l)).length;
+    const numCount = nonEmptyLines.filter(l => numRe.test(l)).length;
+    if (nonEmptyLines.length === 0) return '';
+    const isBulletList = bulletCount >= Math.max(3, Math.ceil(nonEmptyLines.length * 0.6));
+    const isNumList = !isBulletList && (numCount >= Math.max(3, Math.ceil(nonEmptyLines.length * 0.6)));
+    if (!isBulletList && !isNumList) return '';
+    const tag = isNumList ? 'ol' : 'ul';
+    const items = nonEmptyLines.map(l => `<li>${this.escapeHTML(l)}</li>`).join('');
+    return `<${tag}>${items}</${tag}>`;
+  }
+
+  escapeHTML(s) {
+    return (s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
 
   showAIPreview(editorElement, originalTextData, enhancedText, actionTitle) {
     // Remove any existing preview
@@ -831,6 +1057,9 @@ class KayakoAIEnhancer {
         }
       }
 
+      // Append formatting guidance for limited HTML output
+      fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Return only the HTML.';
+
       const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt, ticketContext);
       
       // Remove processing notification before showing modal
@@ -838,7 +1067,7 @@ class KayakoAIEnhancer {
       
       if (generatedText) {
         // Clean up the generated text before showing preview
-        const cleanGeneratedText = generatedText.trim().replace(/^\s+/gm, '');
+        const cleanGeneratedText = this.normalizeHTMLForInsert(generatedText.trim().replace(/^\s+/gm, ''));
         
         // For custom prompts, show preview with option to replace or append
         this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, contextText);
@@ -1054,7 +1283,7 @@ class KayakoAIEnhancer {
         this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
         const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-        editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
       }
     } else if (action === 'replace') {
       // Replace existing content - ALWAYS check for template first
@@ -1069,7 +1298,7 @@ class KayakoAIEnhancer {
       } else {
         console.log('📝 No template detected, replacing full content');
         const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-        editorElement.innerHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
       }
     } else if (action === 'append') {
       // Append at cursor position, not at the end
@@ -1087,7 +1316,7 @@ class KayakoAIEnhancer {
         // Create a document fragment with the new content
         const fragment = document.createDocumentFragment();
         const wrapper = document.createElement('span');
-        wrapper.innerHTML = '<br><br>' + textWithRestoredLinks.replace(/\n/g, '<br>');
+        wrapper.innerHTML = '<br><br>' + this.normalizeHTMLForInsert(textWithRestoredLinks);
         
         // Move all child nodes to the fragment
         while (wrapper.firstChild) {
@@ -1113,7 +1342,7 @@ class KayakoAIEnhancer {
         } else {
           const currentHTML = editorElement.innerHTML;
           const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-          const newContentHTML = textWithRestoredLinks.replace(/\n/g, '<br>');
+          const newContentHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
           editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
         }
       }
