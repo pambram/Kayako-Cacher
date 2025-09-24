@@ -7,7 +7,9 @@ A comprehensive browser extension designed to enhance the agent experience in Ka
 This extension provides several ways to customize your Kayako experience:
 
 1.  **Smart Editor Resizing**:
-    * **Auto-Sizing**: Editors automatically grow to max height when focused and shrink to min height when blurred (with smooth animations)
+    * **Smart Auto-Sizing**: 
+        - Editors automatically grow to max height when focused and shrink to min height when blurred (with smooth animations)
+        - **First Load Intelligence**: When tickets first load, editors stay minimized even if focused (to give reading space) until user actually clicks or starts typing
     * **Popup Controls**:
         - Click the extension icon to open the control panel
         - Set specific dimensions for Main Editor and Side Conversation Editor
@@ -44,13 +46,26 @@ This extension provides several ways to customize your Kayako experience:
 4.  Click the corresponding **Apply** button to see the changes immediately. These values are saved and will be used every time you visit a page.
 5.  Use the toggle switches to show/hide timeline elements like system events, internal notes, and date separators.
 
-### Using Auto-Sizing
+### Using Smart Auto-Sizing
 
+**Normal Behavior:**
 - **Focus to Expand**: Click in any editor - it smoothly grows to your configured max height
 - **Blur to Shrink**: Click outside the editor - it smoothly shrinks to your configured min height  
+
+**First Load Intelligence:**
+- **Reading Mode**: When tickets first load, editors stay minimized even if focused (gives you space to read the ticket)
+- **Writing Mode**: Editor expands when you:
+  - Click in the editor text area
+  - Start typing in the editor
+  - Click any formatting button (Bold, Italic, Link, Lists, etc.)
+  - Paste content into the editor
+- **Smart Detection**: Automatically detects empty vs. populated editors
+
+**Technical Details:**
 - **Smooth Animations**: Uses elegant cubic-bezier transitions for professional feel
 - **Respects Settings**: Uses your min/max height settings from the popup controls
 - **Works Everywhere**: Automatically applies to main editors and side conversation editors
+- **Memory Efficient**: Cleans up temporary listeners after activation
 
 ### Using Drag-to-Resize
 
@@ -94,7 +109,22 @@ This extension is specifically designed to work with the agent view of the Kayak
 
 ## Version History
 
-### v1.6.0 (Current) - Auto-Sizing Editor Enhancement
+### v1.6.2 (Current) - Toolbar Button Activation
+- **🎯 Toolbar Button Detection**: Clicking any formatting button (Bold, Italic, Link, Lists, etc.) now activates and expands empty editors
+- **🔧 Comprehensive Button Coverage**: Detects all interactive toolbar elements including dropdowns and toggles
+- **⚡ Non-Interfering**: Toolbar buttons work normally while also triggering editor expansion
+- **🧹 Smart Cleanup**: Properly cleans up both editor and toolbar listeners after activation
+- **📋 Enhanced Logging**: Better debugging for toolbar button detection and activation
+
+### v1.6.1 - Smart First Load Auto-Sizing
+- **🎯 First Load Intelligence**: Empty focused editors stay minimized on ticket load for better reading experience
+- **🖱️ Click to Activate**: Click in empty editor (even if focused) to expand and start writing
+- **⌨️ Type to Activate**: Start typing to automatically expand empty editor
+- **📋 Paste to Activate**: Pasting content automatically expands empty editor
+- **🧹 Memory Management**: Automatic cleanup of temporary event listeners after activation
+- **🔍 Smart Detection**: Accurately detects empty vs. populated editors
+
+### v1.6.0 - Auto-Sizing Editor Enhancement
 - **📏 Auto-Sizing on Focus/Blur**: Editors automatically grow to max height on focus and shrink to min height on blur
 - **🎨 Smooth Animations**: Elegant cubic-bezier transitions for professional feel (0.3s duration)
 - **⚙️ Settings Integration**: Uses your configured min/max heights from popup controls

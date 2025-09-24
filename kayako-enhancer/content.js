@@ -834,17 +834,67 @@ function setupEditorAutoSizing() {
             handleEditorBlur(editor);
         });
         
-        // Set initial size based on current focus state
+        // Set initial size based on current focus state and content
         if (document.activeElement === editor) {
-            handleEditorFocus(editor);
+            // Check if this is an empty editor on page load
+            const isEmpty = isEditorEmpty(editor);
+            if (isEmpty) {
+                console.log('📏 Found empty focused editor on page load - keeping minimized');
+                // Keep minimized for reading, setup interaction listeners
+                try {
+                    chrome.storage.local.get(["editorMinHeight"], (data) => {
+                        if (chrome.runtime.lastError) {
+                            animateEditorToHeight(editor, defaultMinHeight);
+                            return;
+                        }
+                        const minHeight = data.editorMinHeight || defaultMinHeight;
+                        animateEditorToHeight(editor, minHeight);
+                    });
+                } catch (error) {
+                    animateEditorToHeight(editor, defaultMinHeight);
+                }
+                setupFirstLoadInteractionListeners(editor);
+            } else {
+                // Has content, treat as normal focus
+                handleEditorFocus(editor);
+            }
         } else {
             handleEditorBlur(editor);
         }
     });
 }
 
-// Handle editor focus - animate to max height
+// Handle editor focus - smart sizing based on content and user intent
 function handleEditorFocus(editor) {
+    // Check if this is a "first load" scenario: editor is focused but empty
+    const isEmpty = isEditorEmpty(editor);
+    const isFirstLoad = isEmpty && !editor.dataset.userActivated;
+    
+    if (isFirstLoad) {
+        console.log('📏 Editor focused but empty on first load - keeping minimized for reading');
+        // Keep at min height to give reading space
+        try {
+            chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+                if (chrome.runtime.lastError) {
+                    animateEditorToHeight(editor, defaultMinHeight);
+                    return;
+                }
+                const minHeight = data.editorMinHeight || defaultMinHeight;
+                animateEditorToHeight(editor, minHeight);
+            });
+        } catch (error) {
+            animateEditorToHeight(editor, defaultMinHeight);
+        }
+        
+        // Setup one-time listeners for actual user interaction
+        setupFirstLoadInteractionListeners(editor);
+        
+        // Also setup toolbar button listeners
+        setupToolbarButtonListeners(editor);
+        return;
+    }
+    
+    // Normal focus behavior - grow to max height
     console.log('📏 Editor focused, growing to max height');
     
     try {
@@ -891,6 +941,210 @@ function handleEditorBlur(editor) {
             console.error('Error getting min height for auto-sizing:', error);
         }
     }
+}
+
+// Check if editor is empty (no meaningful content)
+function isEditorEmpty(editor) {
+    // Get the text content, ignoring HTML tags and whitespace
+    const textContent = editor.textContent || editor.innerText || '';
+    const cleanText = textContent.trim();
+    
+    // Also check for common empty states
+    const innerHTML = editor.innerHTML.toLowerCase();
+    const hasOnlyBrTags = innerHTML === '<br>' || innerHTML === '<div><br></div>' || innerHTML === '';
+    const hasOnlyPlaceholder = innerHTML.includes('placeholder') && cleanText === '';
+    
+    const isEmpty = cleanText === '' || hasOnlyBrTags || hasOnlyPlaceholder;
+    
+    console.log('📏 Editor empty check:', {
+        textContent: `"${cleanText}"`,
+        innerHTML: innerHTML.substring(0, 100),
+        isEmpty: isEmpty
+    });
+    
+    return isEmpty;
+}
+
+// Setup listeners for first user interaction on empty, focused editors
+function setupFirstLoadInteractionListeners(editor) {
+    // Don't setup if already waiting for activation or already activated
+    if (editor.dataset.waitingForActivation === 'true' || editor.dataset.userActivated === 'true') {
+        return;
+    }
+    
+    console.log('📏 Setting up first-load interaction listeners');
+    
+    // Mark that we're waiting for user activation
+    editor.dataset.waitingForActivation = 'true';
+    
+    // Create handlers that will clean themselves up
+    const clickHandler = (e) => {
+        console.log('📏 User clicked in empty editor - activating and expanding');
+        activateEditor(editor);
+        cleanupAllFirstLoadListeners(editor, { clickHandler, keydownHandler, inputHandler, pasteHandler });
+    };
+    
+    const keydownHandler = (e) => {
+        // Only activate on actual typing keys, not navigation keys
+        if (isTypingKey(e.key)) {
+            console.log('📏 User started typing in empty editor - activating and expanding');
+            activateEditor(editor);
+            cleanupAllFirstLoadListeners(editor, { clickHandler, keydownHandler, inputHandler, pasteHandler });
+        }
+    };
+    
+    const inputHandler = (e) => {
+        if (!isEditorEmpty(e.target)) {
+            console.log('📏 Content added to empty editor - activating and expanding');
+            activateEditor(editor);
+            cleanupAllFirstLoadListeners(editor, { clickHandler, keydownHandler, inputHandler, pasteHandler });
+        }
+    };
+    
+    const pasteHandler = (e) => {
+        console.log('📏 User pasted in empty editor - activating and expanding');
+        activateEditor(editor);
+        cleanupAllFirstLoadListeners(editor, { clickHandler, keydownHandler, inputHandler, pasteHandler });
+    };
+    
+    editor.addEventListener('click', clickHandler);
+    editor.addEventListener('keydown', keydownHandler);
+    editor.addEventListener('input', inputHandler);
+    editor.addEventListener('paste', pasteHandler);
+    
+    // Store reference to handlers for cleanup
+    editor._firstLoadHandlers = { clickHandler, keydownHandler, inputHandler, pasteHandler };
+}
+
+// Setup toolbar button listeners for first-load editors
+function setupToolbarButtonListeners(editor) {
+    // Find the toolbar associated with this editor
+    const container = editor.closest('.ko-text-editor__container_1p5g6r');
+    if (!container) {
+        console.log('📏 Could not find editor container for toolbar listeners');
+        return;
+    }
+    
+    const toolbar = container.querySelector('.ko-text-editor__header_1p5g6r');
+    if (!toolbar) {
+        console.log('📏 Could not find toolbar for editor');
+        return;
+    }
+    
+    // Don't setup if already done
+    if (toolbar.dataset.autoSizeListenersSetup === 'true') {
+        return;
+    }
+    
+    console.log('📏 Setting up toolbar button listeners for auto-sizing');
+    
+    // Find all interactive elements in the toolbar
+    const toolbarButtons = toolbar.querySelectorAll(`
+        .ko-text-editor__itemWrap_1p5g6r,
+        button,
+        [role="button"],
+        [tabindex],
+        .ember-basic-dropdown-trigger
+    `);
+    
+    console.log('📏 Found', toolbarButtons.length, 'toolbar buttons');
+    
+    // Create click handler for toolbar buttons
+    const toolbarClickHandler = (e) => {
+        console.log('📏 Toolbar button clicked:', e.target, '- activating editor');
+        
+        // Don't interfere with the button's normal function
+        // Just activate the editor after a brief delay
+        setTimeout(() => {
+            activateEditor(editor);
+            cleanupToolbarListeners(toolbar, toolbarButtons, toolbarClickHandler);
+        }, 0);
+    };
+    
+    // Add listeners to all toolbar buttons
+    toolbarButtons.forEach(button => {
+        button.addEventListener('click', toolbarClickHandler);
+    });
+    
+    // Mark as setup and store handler for cleanup
+    toolbar.dataset.autoSizeListenersSetup = 'true';
+    toolbar._autoSizeHandler = toolbarClickHandler;
+    toolbar._autoSizeButtons = toolbarButtons;
+}
+
+// Clean up toolbar listeners after activation
+function cleanupToolbarListeners(toolbar, buttons, handler) {
+    console.log('📏 Cleaning up toolbar listeners');
+    
+    buttons.forEach(button => {
+        button.removeEventListener('click', handler);
+    });
+    
+    delete toolbar._autoSizeHandler;
+    delete toolbar._autoSizeButtons;
+    toolbar.dataset.autoSizeListenersSetup = 'false';
+}
+
+// Clean up all first load listeners after activation
+function cleanupAllFirstLoadListeners(editor, handlers) {
+    console.log('📏 Cleaning up all first-load listeners');
+    
+    // Clean up editor listeners
+    editor.removeEventListener('click', handlers.clickHandler);
+    editor.removeEventListener('keydown', handlers.keydownHandler);
+    editor.removeEventListener('input', handlers.inputHandler);
+    editor.removeEventListener('paste', handlers.pasteHandler);
+    
+    // Clear the stored handlers
+    delete editor._firstLoadHandlers;
+    editor.dataset.firstLoadHandlers = 'false';
+    
+    // Also clean up toolbar listeners if they exist
+    const container = editor.closest('.ko-text-editor__container_1p5g6r');
+    if (container) {
+        const toolbar = container.querySelector('.ko-text-editor__header_1p5g6r');
+        if (toolbar && toolbar._autoSizeHandler && toolbar._autoSizeButtons) {
+            cleanupToolbarListeners(toolbar, toolbar._autoSizeButtons, toolbar._autoSizeHandler);
+        }
+    }
+}
+
+// Activate editor for real editing (expand to max height)
+function activateEditor(editor) {
+    console.log('📏 Activating editor for real use');
+    
+    // Mark as user activated
+    editor.dataset.userActivated = 'true';
+    editor.dataset.waitingForActivation = 'false';
+    
+    // Expand to max height
+    try {
+        chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+            if (chrome.runtime.lastError) {
+                animateEditorToHeight(editor, defaultMaxHeight);
+                return;
+            }
+            
+            const maxHeight = data.editorMaxHeight || defaultMaxHeight;
+            animateEditorToHeight(editor, maxHeight);
+        });
+    } catch (error) {
+        animateEditorToHeight(editor, defaultMaxHeight);
+    }
+}
+
+// Check if a key is a typing key (not navigation)
+function isTypingKey(key) {
+    // Exclude navigation and modifier keys
+    const nonTypingKeys = [
+        'Tab', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock',
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'Home', 'End', 'PageUp', 'PageDown',
+        'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+        'Escape', 'Insert', 'Delete'
+    ];
+    
+    return !nonTypingKeys.includes(key) && key.length === 1;
 }
 
 // Animate editor to specific height
