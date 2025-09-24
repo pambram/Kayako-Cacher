@@ -353,10 +353,10 @@ class KayakoImageOptimizer {
             const html = $editor.froalaEditor('html.get');
             $editor.froalaEditor('html.set', html);
           } catch (_) {}
-          return; // Avoid fallback path duplicating insertion
+          return; // Avoid fallback duplicating insertion
         } else {
           console.warn('⚠️ No contentUrl on attachment; skipping insert');
-          return;
+          return; // Do not fall back when Froala editor is present
         }
       }
     }
