@@ -175,7 +175,7 @@ class KayakoCacherPopup {
       const persist = async (e) => {
         const val = parseInt(e.target.value, 10);
         if (!isNaN(val)) {
-          const clamped = Math.max(320, Math.min(8192, val));
+          const clamped = Math.max(50, Math.min(8192, val));
           if (this.config.imageMaxWidth !== clamped) {
             this.config.imageMaxWidth = clamped;
             await this.saveConfig();
@@ -198,7 +198,7 @@ class KayakoCacherPopup {
       const persistH = async (e) => {
         const val = parseInt(e.target.value, 10);
         if (!isNaN(val)) {
-          const clamped = Math.max(320, Math.min(8192, val));
+          const clamped = Math.max(50, Math.min(8192, val));
           if (this.config.imageMaxHeight !== clamped) {
             this.config.imageMaxHeight = clamped;
             await this.saveConfig();
