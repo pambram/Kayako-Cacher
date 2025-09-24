@@ -33,7 +33,14 @@ This extension provides several ways to customize your Kayako experience:
     * **Cmd+K / Ctrl+K Shortcut**: Quick hyperlink insertion with familiar keyboard shortcut
     * **Clipboard Integration**: Automatically detects URLs in clipboard and pre-fills hyperlink dialog
 
-4.  **Persistent Login**:
+4.  **Ticket History Tracking**:
+    * **Automatic Tracking**: Automatically tracks tickets when you click "Send" (reliable indicator of work done)
+    * **Smart Data Collection**: Captures ticket ID, title, customer, timestamp, and domain
+    * **History Management**: View, delete, and manually add tickets in the extension popup
+    * **Quick Access**: Click any ticket in history to open it in a new tab
+    * **Storage Efficient**: Keeps last 100 tickets in localStorage, auto-removes duplicates
+
+5.  **Persistent Login**:
     * When you log in to the Central Kayako brand (e.g., central-supportdesk.kayako.com), the extension keeps you logged in across all your configured Kayako brands automatically. You only need to log in once, and your session is synchronized everywhere.
 
 ## How to Use
@@ -92,6 +99,28 @@ This extension provides several ways to customize your Kayako experience:
 - **Enhanced Readability**: Timeline items automatically expand to full width (no more cramped max-width)
 - **Element Visibility**: Use the popup to toggle various timeline elements for cleaner view
 
+### Ticket History
+
+**Automatic Tracking:**
+- Extension automatically tracks tickets when you click "Send" button
+- Captures ticket ID, title, customer info, and timestamp
+- Stores up to 100 recent tickets in localStorage
+
+**Managing History:**
+1. Click extension icon to view ticket history section
+2. **📂 Open**: Click to open any tracked ticket in new tab
+3. **🗑️ Delete**: Remove individual tickets from history
+4. **➕ Add Current**: Manually add current ticket to history
+5. **🔄 Refresh**: Reload history display
+6. **🗑️ Clear All**: Remove all tracked tickets
+
+**Data Collected:**
+- Ticket ID and title
+- Customer/requester name
+- Timestamp and relative time
+- Full ticket URL
+- Kayako domain
+
 ## Installation
 
 To install the extension locally for development or personal use:
@@ -109,7 +138,17 @@ This extension is specifically designed to work with the agent view of the Kayak
 
 ## Version History
 
-### v1.6.2 (Current) - Toolbar Button Activation
+### v1.7.0 (Current) - Ticket History Tracking
+- **📚 Automatic History Tracking**: Tracks tickets when "Send" button is clicked (reliable work indicator)
+- **📊 Smart Data Collection**: Captures ticket ID, title, customer, timestamp, URL, and domain
+- **🎛️ History Management Interface**: Complete history section in extension popup
+- **📂 Quick Access**: One-click to open any tracked ticket in new tab
+- **🗑️ Easy Cleanup**: Individual delete buttons and bulk clear functionality
+- **➕ Manual Addition**: Add current ticket to history manually
+- **⏰ Relative Timestamps**: Shows "2h ago", "3d ago" for easy reference
+- **💾 Efficient Storage**: localStorage with 100-ticket limit and duplicate prevention
+
+### v1.6.2 - Toolbar Button Activation
 - **🎯 Toolbar Button Detection**: Clicking any formatting button (Bold, Italic, Link, Lists, etc.) now activates and expands empty editors
 - **🔧 Comprehensive Button Coverage**: Detects all interactive toolbar elements including dropdowns and toggles
 - **⚡ Non-Interfering**: Toolbar buttons work normally while also triggering editor expansion

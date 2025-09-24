@@ -1164,6 +1164,246 @@ function animateEditorToHeight(editor, targetHeight) {
     editor.dataset.autoSizeHeight = targetHeight;
 }
 
+// Function to setup ticket history tracking
+function setupTicketHistoryTracking() {
+    console.log('📚 Setting up ticket history tracking');
+    
+    // Listen for clicks on Send buttons
+    document.addEventListener('click', (e) => {
+        const target = e.target;
+        
+        // Check if this is a Send button or contains Send text
+        const isSendButton = (
+            target.matches('button[class*="ko-button__primary"], button[class*="ko-button__shared"]') ||
+            target.closest('button[class*="ko-button__primary"], button[class*="ko-button__shared"]')
+        ) && (
+            target.textContent?.includes('Send') ||
+            target.querySelector?.('span')?.textContent?.includes('Send') ||
+            target.closest('button')?.textContent?.includes('Send')
+        );
+        
+        if (isSendButton) {
+            console.log('📚 Send button clicked - tracking ticket');
+            trackCurrentTicket();
+        }
+    });
+}
+
+// Function to track the current ticket
+function trackCurrentTicket() {
+    try {
+        // Extract ticket information from the current page
+        const ticketInfo = extractTicketInfo();
+        
+        if (ticketInfo) {
+            console.log('📚 Extracted ticket info:', ticketInfo);
+            saveTicketToHistory(ticketInfo);
+        } else {
+            console.log('📚 Could not extract ticket information');
+        }
+    } catch (error) {
+        console.error('Error tracking ticket:', error);
+    }
+}
+
+// Function to extract ticket information from the current page
+function extractTicketInfo() {
+    try {
+        // Get ticket ID from URL (support both /conversation/ and /conversations/)
+        const urlMatch = window.location.href.match(/\/agent\/conversations?\/(\d+)/);
+        const ticketId = urlMatch ? urlMatch[1] : null;
+        
+        if (!ticketId) {
+            console.log('📚 No ticket ID found in URL');
+            return null;
+        }
+        
+        // Try to extract ticket title/subject
+        let title = '';
+        const titleSelectors = [
+            '.ko-conversation-header__subject',
+            '.conversation-header__subject',
+            '[class*="subject"]',
+            'h1', 'h2', 'h3'
+        ];
+        
+        for (const selector of titleSelectors) {
+            const titleElement = document.querySelector(selector);
+            if (titleElement && titleElement.textContent.trim()) {
+                title = titleElement.textContent.trim();
+                break;
+            }
+        }
+        
+        // Fallback title if none found
+        if (!title) {
+            title = `Ticket #${ticketId}`;
+        }
+        
+        // Get customer/user info if available
+        let customer = '';
+        const customerSelectors = [
+            '.ko-conversation-header__requester',
+            '.conversation-header__requester', 
+            '[class*="requester"]',
+            '[class*="customer"]'
+        ];
+        
+        for (const selector of customerSelectors) {
+            const customerElement = document.querySelector(selector);
+            if (customerElement && customerElement.textContent.trim()) {
+                customer = customerElement.textContent.trim();
+                break;
+            }
+        }
+        
+        return {
+            id: ticketId,
+            title: title.substring(0, 100), // Limit length
+            customer: customer.substring(0, 50), // Limit length
+            url: window.location.href,
+            timestamp: Date.now(),
+            date: new Date().toISOString(),
+            domain: window.location.hostname
+        };
+        
+    } catch (error) {
+        console.error('Error extracting ticket info:', error);
+        return null;
+    }
+}
+
+// Function to save ticket to history
+function saveTicketToHistory(ticketInfo) {
+    try {
+        chrome.storage.local.get(['ticketHistory'], (data) => {
+            if (chrome.runtime.lastError) {
+                console.log('Could not access storage for ticket history');
+                return;
+            }
+            
+            let history = data.ticketHistory || [];
+            
+            // Remove any existing entry for this ticket ID to avoid duplicates
+            history = history.filter(ticket => ticket.id !== ticketInfo.id);
+            
+            // Add new entry at the beginning
+            history.unshift(ticketInfo);
+            
+            // Keep only last 100 tickets to avoid storage bloat
+            if (history.length > 100) {
+                history = history.slice(0, 100);
+            }
+            
+            // Save back to storage
+            chrome.storage.local.set({ ticketHistory: history }, () => {
+                if (chrome.runtime.lastError) {
+                    console.error('Error saving ticket history:', chrome.runtime.lastError);
+                } else {
+                    console.log('📚 Ticket saved to history:', ticketInfo.id);
+                    showQuickNotification(`📚 Ticket #${ticketInfo.id} tracked`, 'success');
+                }
+            });
+        });
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            console.log('Extension context invalidated, could not save ticket history');
+        } else {
+            console.error('Error saving ticket to history:', error);
+        }
+    }
+}
+
+// Function to get ticket history for popup
+function getTicketHistory(sendResponse) {
+    try {
+        chrome.storage.local.get(['ticketHistory'], (data) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: 'Could not access storage' });
+                return;
+            }
+            
+            const history = data.ticketHistory || [];
+            sendResponse({ success: true, history: history });
+        });
+    } catch (error) {
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+// Function to delete ticket from history
+function deleteTicketFromHistory(ticketId, sendResponse) {
+    try {
+        chrome.storage.local.get(['ticketHistory'], (data) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: 'Could not access storage' });
+                return;
+            }
+            
+            let history = data.ticketHistory || [];
+            const originalLength = history.length;
+            
+            // Remove the ticket
+            history = history.filter(ticket => ticket.id !== ticketId);
+            
+            chrome.storage.local.set({ ticketHistory: history }, () => {
+                if (chrome.runtime.lastError) {
+                    sendResponse({ success: false, error: 'Could not save changes' });
+                } else {
+                    console.log('📚 Deleted ticket from history:', ticketId);
+                    sendResponse({ 
+                        success: true, 
+                        removed: originalLength !== history.length,
+                        history: history 
+                    });
+                }
+            });
+        });
+    } catch (error) {
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
+// Function to manually add ticket to history
+function addTicketToHistory(ticketInfo, sendResponse) {
+    try {
+        chrome.storage.local.get(['ticketHistory'], (data) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: 'Could not access storage' });
+                return;
+            }
+            
+            let history = data.ticketHistory || [];
+            
+            // Remove any existing entry for this ticket ID
+            history = history.filter(ticket => ticket.id !== ticketInfo.id);
+            
+            // Add new entry at the beginning
+            history.unshift({
+                ...ticketInfo,
+                timestamp: Date.now(),
+                date: new Date().toISOString()
+            });
+            
+            // Keep only last 100 tickets
+            if (history.length > 100) {
+                history = history.slice(0, 100);
+            }
+            
+            chrome.storage.local.set({ ticketHistory: history }, () => {
+                if (chrome.runtime.lastError) {
+                    sendResponse({ success: false, error: 'Could not save changes' });
+                } else {
+                    console.log('📚 Manually added ticket to history:', ticketInfo.id);
+                    sendResponse({ success: true, history: history });
+                }
+            });
+        });
+    } catch (error) {
+        sendResponse({ success: false, error: error.message });
+    }
+}
+
 // --- QOL IMPROVEMENTS END HERE ---
 
 // Listen for messages from popup.js
@@ -1188,6 +1428,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             toggleInternalNotes(request.hide);
         } else if (request.action === "toggleDaySeparators") {
             toggleDaySeparators(request.hide);
+        } else if (request.action === "getTicketHistory") {
+            getTicketHistory(sendResponse);
+            return true; // Keep channel open for async response
+        } else if (request.action === "deleteTicketFromHistory") {
+            deleteTicketFromHistory(request.ticketId, sendResponse);
+            return true;
+        } else if (request.action === "addTicketToHistory") {
+            addTicketToHistory(request.ticketInfo, sendResponse);
+            return true;
         }
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
@@ -1240,6 +1489,7 @@ removeTimelineMaxWidth();
 setupAutoHyperlinking();
 setupHyperlinkShortcut();
 setupAutoSizing();
+setupTicketHistoryTracking();
 
 // Apply saved visibility states on load
 try {

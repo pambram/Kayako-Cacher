@@ -56,6 +56,23 @@
         <button id="apply-side">Apply Side Editor</button>
     </div>
 
+    <div class="section">
+        <h3>📚 Ticket History</h3>
+        <div class="ticket-history-controls">
+            <button id="refresh-history" class="small-btn">🔄 Refresh</button>
+            <button id="add-current-ticket" class="small-btn">➕ Add Current</button>
+            <button id="clear-history" class="small-btn danger">🗑️ Clear All</button>
+        </div>
+        
+        <div id="ticket-history-container" class="ticket-history">
+            <div class="loading">Loading ticket history...</div>
+        </div>
+        
+        <div class="ticket-history-footer">
+            <small>Automatically tracks tickets when you click "Send"</small>
+        </div>
+    </div>
+
     <script src="popup.js"></script>
 </body>
 </html>
