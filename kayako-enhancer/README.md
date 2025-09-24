@@ -1,12 +1,13 @@
 # Kayako QoL Enhancer Chrome Extension
 
-A comprehensive browser extension designed to enhance the agent experience in Kayako with productivity improvements, editor enhancements, and interface optimizations. Take control of your workspace to fit your workflow.
+A comprehensive browser extension designed to enhance the agent experience in Kayako with smart editor auto-sizing, productivity improvements, and interface optimizations. Features include auto-expanding editors on focus, smart hyperlinking, timeline improvements, and much more. Take control of your workspace to fit your workflow.
 
 ## Features
 
 This extension provides several ways to customize your Kayako experience:
 
-1.  **Editor Resizing**:
+1.  **Smart Editor Resizing**:
+    * **Auto-Sizing**: Editors automatically grow to max height when focused and shrink to min height when blurred (with smooth animations)
     * **Popup Controls**:
         - Click the extension icon to open the control panel
         - Set specific dimensions for Main Editor and Side Conversation Editor
@@ -43,6 +44,14 @@ This extension provides several ways to customize your Kayako experience:
 4.  Click the corresponding **Apply** button to see the changes immediately. These values are saved and will be used every time you visit a page.
 5.  Use the toggle switches to show/hide timeline elements like system events, internal notes, and date separators.
 
+### Using Auto-Sizing
+
+- **Focus to Expand**: Click in any editor - it smoothly grows to your configured max height
+- **Blur to Shrink**: Click outside the editor - it smoothly shrinks to your configured min height  
+- **Smooth Animations**: Uses elegant cubic-bezier transitions for professional feel
+- **Respects Settings**: Uses your min/max height settings from the popup controls
+- **Works Everywhere**: Automatically applies to main editors and side conversation editors
+
 ### Using Drag-to-Resize
 
 - To resize, simply drag the edge of the main editor or side conversation panel. This override lasts until you leave the conversation, switch away from the side panel, or reload the page.
@@ -51,9 +60,10 @@ This extension provides several ways to customize your Kayako experience:
 ### Smart Hyperlinking
 
 **Auto-Hyperlink on Paste:**
-1. Select any text in a Kayako editor
-2. Copy a URL to your clipboard
-3. Paste (Cmd+V / Ctrl+V) - the selected text automatically becomes a hyperlink
+1. Select any text in a Kayako editor (e.g., "click here")
+2. Copy a URL to your clipboard (e.g., https://google.com)
+3. Paste (Cmd+V / Ctrl+V) - the selected text stays as "click here" but becomes a hyperlink to the URL
+4. No manual hyperlink button clicking needed!
 
 **Quick Hyperlink Insertion:**
 1. Select text in a Kayako editor (optional)
@@ -81,3 +91,36 @@ To install the extension locally for development or personal use:
 ## Compatibility
 
 This extension is specifically designed to work with the agent view of the Kayako platform (URLs matching `*://*.kayako.com/agent/*`). It may not function correctly on other parts of Kayako or on other websites.
+
+## Version History
+
+### v1.6.0 (Current) - Auto-Sizing Editor Enhancement
+- **📏 Auto-Sizing on Focus/Blur**: Editors automatically grow to max height on focus and shrink to min height on blur
+- **🎨 Smooth Animations**: Elegant cubic-bezier transitions for professional feel (0.3s duration)
+- **⚙️ Settings Integration**: Uses your configured min/max heights from popup controls
+- **🔄 Dynamic Setup**: Auto-sizing applies to existing and newly created editors
+- **🛡️ Extension Context Protection**: Robust error handling for extension reloads
+- **✅ Graceful Degradation**: Falls back to default heights if extension context lost
+
+### v1.5.4 - Extension Context Error Handling
+- **🛡️ MutationObserver Protection**: Prevents spam errors when extension is reloaded
+- **🔧 Safe Storage Access**: All chrome.storage calls now handle context invalidation gracefully
+- **📋 Enhanced Paste Debugging**: Comprehensive logging for hyperlink troubleshooting
+
+### v1.5.3 - Hyperlink Paste Fix
+- **🔗 Fixed Auto-Hyperlinking**: Now uses synchronous `e.clipboardData` instead of async clipboard API
+- **✅ Immediate Prevention**: Prevents default paste behavior immediately when URL detected  
+- **🎯 Improved Timeline CSS**: More aggressive CSS specificity to override Kayako's max-width constraints
+- **📋 Enhanced Debugging**: Added detailed logging for timeline CSS application
+- **💬 Success Notifications**: Visual feedback when auto-hyperlinking works
+
+### v1.5.1 - Auto-Hyperlink Logic Improvements
+- **🔧 Simplified Paste Logic**: Removed complex setTimeout-based interception
+- **🎨 Enhanced CSS Targeting**: Better selectors for timeline elements
+
+### v1.5.0 - QOL Productivity Enhancements
+- **📏 Timeline Max-Width Removal**: Full-width timeline items for better readability
+- **🔗 Auto-Hyperlinking**: Paste URLs over selected text to create hyperlinks automatically  
+- **⌨️ Cmd+K Shortcut**: Standard hyperlink insertion shortcut like in other editors
+- **🎨 Professional UI**: Clean hyperlink dialog with clipboard integration
+- **🔄 Dynamic Application**: Features reapply to new content automatically

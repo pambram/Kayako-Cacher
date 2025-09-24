@@ -37,12 +37,32 @@ const defaultSideMaxHeight = 300;
 
 // Function to apply saved or default sizes
 function applyAllEditorSizes() {
-    chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
-        resizeEditor(data.editorMinHeight || defaultMinHeight, data.editorMaxHeight || defaultMaxHeight);
-    });
-    chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight"], (data) => {
-        resizeSideConversationEditor(data.sideMinWidth || defaultSideMinWidth, data.sideMinHeight || defaultSideMinHeight, data.sideMaxHeight || defaultSideMaxHeight);
-    });
+    try {
+        chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+            if (chrome.runtime.lastError) {
+                console.log('Could not get editor size data, using defaults');
+                resizeEditor(defaultMinHeight, defaultMaxHeight);
+                return;
+            }
+            resizeEditor(data.editorMinHeight || defaultMinHeight, data.editorMaxHeight || defaultMaxHeight);
+        });
+        chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight"], (data) => {
+            if (chrome.runtime.lastError) {
+                console.log('Could not get side editor size data, using defaults');
+                resizeSideConversationEditor(defaultSideMinWidth, defaultSideMinHeight, defaultSideMaxHeight);
+                return;
+            }
+            resizeSideConversationEditor(data.sideMinWidth || defaultSideMinWidth, data.sideMinHeight || defaultSideMinHeight, data.sideMaxHeight || defaultSideMaxHeight);
+        });
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            console.log('Extension was reloaded, using default editor sizes');
+            resizeEditor(defaultMinHeight, defaultMaxHeight);
+            resizeSideConversationEditor(defaultSideMinWidth, defaultSideMinHeight, defaultSideMaxHeight);
+        } else {
+            console.error('Error applying editor sizes:', error);
+        }
+    }
 }
 
 
@@ -408,8 +428,9 @@ function removeTimelineMaxWidth() {
 function setupAutoHyperlinking() {
     console.log('🔗 Setting up auto-hyperlinking functionality');
     
-    // Listen for paste events on all Kayako editors
-    document.addEventListener('paste', async (e) => {
+    // Listen for paste events on all Kayako editors with capture phase to get first shot
+    document.addEventListener('paste', (e) => {
+        console.log('📋 Paste event detected, target:', e.target);
         const target = e.target;
         
         // Check if we're in a Kayako editor
@@ -423,57 +444,63 @@ function setupAutoHyperlinking() {
             return;
         }
         
-        // Get the selected text and range BEFORE we check clipboard
+        // Get the selected text BEFORE the paste happens
         const selectedText = selection.toString();
-        const range = selection.getRangeAt(0).cloneRange();
+        const range = selection.getRangeAt(0);
         
+        // Get the clipboard data synchronously from the paste event
+        let clipboardText = '';
         try {
-            // Get clipboard text
-            const clipboardText = await navigator.clipboard.readText();
-            
-            // Check if clipboard contains a URL
-            if (isValidURL(clipboardText)) {
-                console.log('🔗 Auto-hyperlinking detected');
-                console.log('🔗 Selected text:', selectedText);
-                console.log('🔗 URL from clipboard:', clipboardText);
-                
-                // PREVENT the default paste behavior
-                e.preventDefault();
-                e.stopPropagation();
-                
-                // Create hyperlink element
-                const link = document.createElement('a');
-                link.href = clipboardText;
-                link.textContent = selectedText; // Keep the original selected text
-                link.target = '_blank';
-                
-                // Replace selection with link
-                range.deleteContents();
-                range.insertNode(link);
-                
-                // Move cursor after the link
-                range.setStartAfter(link);
-                range.setEndAfter(link);
-                selection.removeAllRanges();
-                selection.addRange(range);
-                
-                console.log('✅ Auto-hyperlinked:', selectedText, '->', clipboardText);
-                
-                // Show brief success notification
-                showQuickNotification('🔗 Auto-hyperlinked!', 'success');
-                
-                // Trigger change events to notify Kayako
-                const changeEvent = new Event('input', { bubbles: true });
-                target.dispatchEvent(changeEvent);
-                
-                return;
-            }
+            clipboardText = e.clipboardData.getData('text/plain');
         } catch (error) {
-            console.log('Could not access clipboard for auto-hyperlinking:', error.message);
+            console.log('Could not get clipboard data from paste event:', error.message);
+            return;
+        }
+        
+        // Check if clipboard contains a URL
+        if (isValidURL(clipboardText)) {
+            console.log('🔗 Auto-hyperlinking detected');
+            console.log('🔗 Selected text:', `"${selectedText}"`);
+            console.log('🔗 URL from clipboard:', clipboardText);
+            
+            // IMMEDIATELY prevent the paste
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            
+            // Create hyperlink element with the selected text immediately
+            const link = document.createElement('a');
+            link.href = clipboardText;
+            link.textContent = selectedText; // Preserve the selected text
+            link.target = '_blank';
+            
+            console.log('🔗 Created link:', link.outerHTML);
+            
+            // Replace selection with link immediately
+            range.deleteContents();
+            range.insertNode(link);
+            
+            // Position cursor after the link
+            const newRange = document.createRange();
+            newRange.setStartAfter(link);
+            newRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+            
+            console.log('✅ Auto-hyperlinked:', `"${selectedText}"`, '→', clipboardText);
+            
+            // Show success notification
+            showQuickNotification(`🔗 "${selectedText}" linked!`, 'success');
+            
+            // Trigger Kayako events
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('fr-change', { bubbles: true }));
+            
+            return false;
         }
         
         // If we get here, it's not a URL - let normal paste happen
-    });
+    }, true); // Use capture phase to get first shot at the event
 }
 
 // Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
@@ -752,40 +779,199 @@ function showQuickNotification(message, type = 'info') {
     }, 2000);
 }
 
+// Function to setup auto-sizing: grow on focus, shrink on blur
+function setupAutoSizing() {
+    console.log('📏 Setting up auto-sizing functionality');
+    
+    // Add CSS for smooth animations
+    const styleId = 'kayako-auto-sizing-animations';
+    if (!document.getElementById(styleId)) {
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = `
+            /* Smooth animations for editor auto-sizing */
+            .fr-element.auto-sizing {
+                transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            }
+            
+            .fr-wrapper.auto-sizing {
+                transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Setup focus/blur listeners for all editor elements
+    setupEditorAutoSizing();
+}
+
+// Function to setup auto-sizing for existing and new editors
+function setupEditorAutoSizing() {
+    const editors = document.querySelectorAll('.fr-element');
+    
+    editors.forEach(editor => {
+        if (editor.dataset.autoSizingSetup) {
+            return; // Already setup
+        }
+        
+        console.log('📏 Setting up auto-sizing for editor:', editor);
+        editor.dataset.autoSizingSetup = 'true';
+        
+        // Add animation classes
+        editor.classList.add('auto-sizing');
+        const wrapper = editor.closest('.fr-wrapper');
+        if (wrapper) {
+            wrapper.classList.add('auto-sizing');
+        }
+        
+        // Add focus listener - grow to max height
+        editor.addEventListener('focus', () => {
+            handleEditorFocus(editor);
+        });
+        
+        // Add blur listener - shrink to min height
+        editor.addEventListener('blur', () => {
+            handleEditorBlur(editor);
+        });
+        
+        // Set initial size based on current focus state
+        if (document.activeElement === editor) {
+            handleEditorFocus(editor);
+        } else {
+            handleEditorBlur(editor);
+        }
+    });
+}
+
+// Handle editor focus - animate to max height
+function handleEditorFocus(editor) {
+    console.log('📏 Editor focused, growing to max height');
+    
+    try {
+        chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+            if (chrome.runtime.lastError) {
+                console.log('Could not get height data, using defaults for auto-sizing');
+                animateEditorToHeight(editor, defaultMaxHeight);
+                return;
+            }
+            
+            const maxHeight = data.editorMaxHeight || defaultMaxHeight;
+            animateEditorToHeight(editor, maxHeight);
+        });
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            console.log('Extension context invalidated, using default max height');
+            animateEditorToHeight(editor, defaultMaxHeight);
+        } else {
+            console.error('Error getting max height for auto-sizing:', error);
+        }
+    }
+}
+
+// Handle editor blur - animate to min height
+function handleEditorBlur(editor) {
+    console.log('📏 Editor blurred, shrinking to min height');
+    
+    try {
+        chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+            if (chrome.runtime.lastError) {
+                console.log('Could not get height data, using defaults for auto-sizing');
+                animateEditorToHeight(editor, defaultMinHeight);
+                return;
+            }
+            
+            const minHeight = data.editorMinHeight || defaultMinHeight;
+            animateEditorToHeight(editor, minHeight);
+        });
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            console.log('Extension context invalidated, using default min height');
+            animateEditorToHeight(editor, defaultMinHeight);
+        } else {
+            console.error('Error getting min height for auto-sizing:', error);
+        }
+    }
+}
+
+// Animate editor to specific height
+function animateEditorToHeight(editor, targetHeight) {
+    console.log('📏 Animating editor to height:', targetHeight + 'px');
+    
+    // Set the height on the editor element
+    editor.style.height = targetHeight + 'px';
+    
+    // Also set max-height on the wrapper if it exists
+    const wrapper = editor.closest('.fr-wrapper');
+    if (wrapper) {
+        wrapper.style.maxHeight = targetHeight + 'px';
+    }
+    
+    // Store the current auto-size height so drag-to-resize knows about it
+    editor.dataset.autoSizeHeight = targetHeight;
+}
+
 // --- QOL IMPROVEMENTS END HERE ---
 
 // Listen for messages from popup.js
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "resize") {
-        resizeEditor(request.minHeight, request.maxHeight);
-        chrome.storage.local.set({
-            editorMinHeight: request.minHeight,
-            editorMaxHeight: request.maxHeight
-        });
-    } else if (request.action === "resizeSideConversation") {
-        resizeSideConversationEditor(request.minWidth, request.minHeight, request.maxHeight);
-        chrome.storage.local.set({
-            sideMinWidth: request.minWidth,
-            sideMinHeight: request.minHeight,
-            sideMaxHeight: request.maxHeight
-        });
-    } else if (request.action === "toggleEvents") {
-        toggleEvents(request.hide);
-    } else if (request.action === "toggleInternalNotes") {
-        toggleInternalNotes(request.hide);
-    } else if (request.action === "toggleDaySeparators") {
-        toggleDaySeparators(request.hide);
+    try {
+        if (request.action === "resize") {
+            resizeEditor(request.minHeight, request.maxHeight);
+            chrome.storage.local.set({
+                editorMinHeight: request.minHeight,
+                editorMaxHeight: request.maxHeight
+            });
+        } else if (request.action === "resizeSideConversation") {
+            resizeSideConversationEditor(request.minWidth, request.minHeight, request.maxHeight);
+            chrome.storage.local.set({
+                sideMinWidth: request.minWidth,
+                sideMinHeight: request.minHeight,
+                sideMaxHeight: request.maxHeight
+            });
+        } else if (request.action === "toggleEvents") {
+            toggleEvents(request.hide);
+        } else if (request.action === "toggleInternalNotes") {
+            toggleInternalNotes(request.hide);
+        } else if (request.action === "toggleDaySeparators") {
+            toggleDaySeparators(request.hide);
+        }
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            console.log('Extension was reloaded, could not save settings');
+        } else {
+            console.error('Error handling message:', error);
+        }
     }
 });
 
+// Track if extension context is valid
+let extensionContextValid = true;
+
 // Use a single MutationObserver to handle all dynamic changes
 const observer = new MutationObserver(() => {
-    // Apply sizes set from the popup
-    applyAllEditorSizes();
-    // Attach the interactive draggable listeners
-    attachAllListeners();
-    // Ensure QOL improvements are applied to new content
-    removeTimelineMaxWidth();
+    // Skip if extension context is invalidated to avoid spam errors
+    if (!extensionContextValid) {
+        return;
+    }
+    
+    try {
+        // Apply sizes set from the popup
+        applyAllEditorSizes();
+        // Attach the interactive draggable listeners
+        attachAllListeners();
+        // Ensure QOL improvements are applied to new content
+        removeTimelineMaxWidth();
+        // Setup auto-sizing for any new editors
+        setupEditorAutoSizing();
+    } catch (error) {
+        if (error.message.includes('Extension context invalidated')) {
+            extensionContextValid = false;
+            console.log('🔄 Extension context invalidated - stopping MutationObserver to prevent spam');
+            observer.disconnect();
+        } else {
+            console.error('Error in MutationObserver:', error);
+        }
+    }
 });
 
 // Start observing when the script loads
@@ -799,16 +985,29 @@ attachAllListeners();
 removeTimelineMaxWidth();
 setupAutoHyperlinking();
 setupHyperlinkShortcut();
+setupAutoSizing();
 
 // Apply saved visibility states on load
-chrome.storage.local.get(["hideEvents", "hideInternalNotes", "hideDates"], (data) => {
-    if (data.hideEvents) {
-        toggleEvents(true);
+try {
+    chrome.storage.local.get(["hideEvents", "hideInternalNotes", "hideDates"], (data) => {
+        if (chrome.runtime.lastError) {
+            console.log('Could not load visibility settings, using defaults');
+            return;
+        }
+        if (data.hideEvents) {
+            toggleEvents(true);
+        }
+        if (data.hideInternalNotes) {
+            toggleInternalNotes(true);
+        }
+        if (data.hideDates) {
+            toggleDaySeparators(true);
+        }
+    });
+} catch (error) {
+    if (error.message.includes('Extension context invalidated')) {
+        console.log('Extension was reloaded, could not load visibility settings');
+    } else {
+        console.error('Error loading visibility settings:', error);
     }
-    if (data.hideInternalNotes) {
-        toggleInternalNotes(true);
-    }
-    if (data.hideDates) {
-        toggleDaySeparators(true);
-    }
-});
+}
