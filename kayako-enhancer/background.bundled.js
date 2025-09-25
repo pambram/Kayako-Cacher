@@ -380,4 +380,134 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "log") {
         console.log("Kayako Resizer Log:", message.data);
     }
+    // Initialize baseline after tracking a ticket
+    if (message.action === 'baselineTicketActivity' && message.ticketId && message.domain) {
+        baselineTicketActivity(message.domain, message.ticketId).then(() => sendResponse({ success: true })).catch(err => {
+            console.error('Baseline error:', err?.message || err);
+            sendResponse({ success: false, error: err?.message || String(err) });
+        });
+        return true;
+    }
+    if (message.action === 'forceCheckTickets') {
+        checkAllTrackedTickets().then(() => sendResponse({ success: true })).catch(err => {
+            console.error('Force check error:', err?.message || err);
+            sendResponse({ success: false, error: err?.message || String(err) });
+        });
+        return true;
+    }
 });
+
+// ----- Ticket activity checking (minimal, surgical) -----
+
+/** Return Promise wrapper for chrome.storage.local.get */
+function storageGet(keys) {
+  return new Promise(resolve => chrome.storage.local.get(keys, resolve));
+}
+
+/** Return Promise wrapper for chrome.storage.local.set */
+function storageSet(obj) {
+  return new Promise(resolve => chrome.storage.local.set(obj, resolve));
+}
+
+/** Normalize various Kayako posts payload shapes to an array */
+function normalizePostsPayload(json) {
+  try {
+    if (Array.isArray(json)) return json;
+    if (Array.isArray(json?.data)) return json.data;
+    if (Array.isArray(json?.data?.data)) return json.data.data;
+    if (Array.isArray(json?.result)) return json.result;
+  } catch (_) {}
+  return [];
+}
+
+/** Fetch latest post id for a ticket from its brand */
+async function fetchLatestPostId(domain, ticketId) {
+  const url = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=5`;
+  const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} for ${domain} ticket ${ticketId}`);
+  }
+  const json = await res.json();
+  const posts = normalizePostsPayload(json);
+  let latest = 0;
+  for (const p of posts) {
+    const pid = Number(p?.id) || 0;
+    if (pid > latest) latest = pid;
+  }
+  return latest;
+}
+
+/** Baseline a single ticket's lastKnownPostId without flagging unread */
+async function baselineTicketActivity(domain, ticketId) {
+  try {
+    const latest = await fetchLatestPostId(domain, ticketId);
+    const data = await storageGet(['ticketHistory']);
+    let history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+    let changed = false;
+    history = history.map(t => {
+      if (String(t.id) === String(ticketId) && t.domain === domain) {
+        const updated = {
+          ...t,
+          lastKnownPostId: latest || t.lastKnownPostId || 0,
+          hasUnseenActivity: false,
+          unreadCount: 0,
+          lastCheckedAt: Date.now()
+        };
+        changed = true;
+        return updated;
+      }
+      return t;
+    });
+    if (changed) await storageSet({ ticketHistory: history });
+  } catch (e) {
+    console.warn('BaselineTicketActivity failed:', e?.message || e);
+  }
+}
+
+/** Check all tracked tickets and flag unseen activity */
+async function checkAllTrackedTickets() {
+  const data = await storageGet(['ticketHistory']);
+  const history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+  if (!history.length) return;
+  let mutated = false;
+  for (let i = 0; i < history.length; i++) {
+    const t = history[i];
+    if (!t || !t.id || !t.domain) continue;
+    try {
+      const latest = await fetchLatestPostId(t.domain, t.id);
+      const baseline = Number(t.lastKnownPostId || 0);
+      if (!baseline) {
+        // First time baseline
+        history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        mutated = true;
+        continue;
+      }
+      if (latest > baseline) {
+        const unreadCount = Number(t.unreadCount || 0) + (latest - baseline);
+        history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now() };
+        mutated = true;
+      } else if (t.hasUnseenActivity || t.unreadCount) {
+        history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        mutated = true;
+      } else {
+        history[i] = { ...t, lastCheckedAt: Date.now() };
+        mutated = true;
+      }
+    } catch (e) {
+      console.warn('Ticket check failed:', t?.id, e?.message || e);
+    }
+  }
+  if (mutated) await storageSet({ ticketHistory: history });
+}
+
+// Schedule periodic checks
+try {
+  chrome.alarms.create('kayako_ticket_updates', { periodInMinutes: 5 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === 'kayako_ticket_updates') {
+      checkAllTrackedTickets();
+    }
+  });
+} catch (e) {
+  console.warn('Alarms not available:', e?.message || e);
+}

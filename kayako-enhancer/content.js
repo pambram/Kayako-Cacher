@@ -1299,6 +1299,10 @@ function saveTicketToHistory(ticketInfo) {
                 } else {
                     console.log('📚 Ticket saved to history:', ticketInfo.id);
                     showQuickNotification(`📚 Ticket #${ticketInfo.id} tracked`, 'success');
+                    // Notify background to baseline latest activity for this ticket
+                    try {
+                        chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain: ticketInfo.domain, ticketId: ticketInfo.id });
+                    } catch (_) {}
                 }
             });
         });
@@ -1392,6 +1396,10 @@ function addTicketToHistory(ticketInfo, sendResponse) {
                     sendResponse({ success: false, error: 'Could not save changes' });
                 } else {
                     console.log('📚 Manually added ticket to history:', ticketInfo.id);
+                    // Notify background to baseline latest activity for this ticket
+                    try {
+                        chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain: ticketInfo.domain, ticketId: ticketInfo.id });
+                    } catch (_) {}
                     sendResponse({ success: true, history: history });
                 }
             });

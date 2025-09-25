@@ -183,15 +183,24 @@ document.addEventListener("DOMContentLoaded", function () {
 
 // Function to load and display ticket history
 function loadTicketHistory() {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "getTicketHistory" }, (response) => {
-            if (response && response.success) {
-                displayTicketHistory(response.history);
-            } else {
-                displayTicketHistory([]);
-            }
+    const container = document.getElementById("ticket-history-container");
+    if (container) {
+        container.innerHTML = '<div class="loading">Checking updates…</div>';
+    }
+    // Ask background to refresh activity flags, then read from storage
+    try {
+        chrome.runtime.sendMessage({ action: 'forceCheckTickets' }, () => {
+            chrome.storage.local.get(['ticketHistory'], (data) => {
+                const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+                displayTicketHistory(history);
+            });
         });
-    });
+    } catch (_) {
+        chrome.storage.local.get(['ticketHistory'], (data) => {
+            const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+            displayTicketHistory(history);
+        });
+    }
 }
 
 // Function to display ticket history in the popup
@@ -206,18 +215,22 @@ function displayTicketHistory(history) {
     let historyHTML = '';
     history.slice(0, 20).forEach(ticket => { // Show only last 20 in popup
         const relativeTime = getRelativeTime(ticket.timestamp);
+        const unread = Number(ticket.unreadCount || 0);
+        const hasUnseen = !!ticket.hasUnseenActivity || unread > 0;
+        const unreadDot = hasUnseen ? `<span class="unread-dot" title="${unread ? unread + ' new' : 'New activity'}"></span>` : '';
+        const unreadMeta = unread ? ` • ${unread} new` : (hasUnseen ? ' • new' : '');
         
         historyHTML += `
             <div class="ticket-item" data-ticket-id="${ticket.id}">
                 <div class="ticket-info">
-                    <div class="ticket-id">#${ticket.id}</div>
+                    <div class="ticket-id">#${ticket.id}${unreadDot}</div>
                     <div class="ticket-title" title="${ticket.title}">${ticket.title}</div>
                     <div class="ticket-meta">
-                        ${ticket.customer ? ticket.customer + ' • ' : ''}${relativeTime}${ticket.domain ? ' • ' + ticket.domain : ''}
+                        ${ticket.customer ? ticket.customer + ' • ' : ''}${relativeTime}${ticket.domain ? ' • ' + ticket.domain : ''}${unreadMeta}
                     </div>
                 </div>
                 <div class="ticket-actions">
-                    <button class="ticket-action-btn open" data-url="${ticket.url}" title="Open ticket">📂</button>
+                    <button class="ticket-action-btn open" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" title="Open ticket">📂</button>
                     <button class="ticket-action-btn delete" data-ticket-id="${ticket.id}" title="Remove from history">🗑️</button>
                 </div>
             </div>
@@ -229,8 +242,19 @@ function displayTicketHistory(history) {
     // Add event listeners to action buttons
     container.querySelectorAll('.ticket-action-btn.open').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const url = e.target.dataset.url;
+            const el = e.currentTarget;
+            const url = el.dataset.url;
+            const ticketId = el.dataset.ticketId;
+            const domain = el.dataset.domain;
             chrome.tabs.create({ url: url });
+            // Baseline when opening so badge clears next refresh
+            try {
+                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
+                    setTimeout(loadTicketHistory, 300);
+                });
+            } catch (_) {
+                setTimeout(loadTicketHistory, 300);
+            }
         });
     });
     
@@ -279,17 +303,13 @@ function addCurrentTicket() {
 
 // Function to delete ticket from history
 function deleteTicket(ticketId) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        chrome.tabs.sendMessage(tabs[0].id, { 
-            action: "deleteTicketFromHistory",
-            ticketId: ticketId
-        }, (response) => {
-            if (response && response.success) {
-                showNotification(`Ticket #${ticketId} removed`, 'success');
-                loadTicketHistory(); // Refresh display
-            } else {
-                showNotification('Failed to remove ticket', 'error');
-            }
+    // Delete directly from extension storage so it works on any page
+    chrome.storage.local.get(['ticketHistory'], (data) => {
+        let history = (data && Array.isArray(data.ticketHistory)) ? data.ticketHistory : [];
+        const filtered = history.filter(t => t.id !== ticketId);
+        chrome.storage.local.set({ ticketHistory: filtered }, () => {
+            showNotification(`Ticket #${ticketId} removed`, 'success');
+            loadTicketHistory();
         });
     });
 }
