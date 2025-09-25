@@ -194,6 +194,17 @@ console.log('🚀 Clean Kayako optimization starting...');
     xhr.send = function(data) {
       // Handle cache hit by simulating response
       if (cacheHit && cacheHit.responseText) {
+        // Safety: bypass simulation if cached snapshot looks incomplete and not very fresh
+        try {
+          const freshnessFloorMs = Math.max(60000, Math.floor(CACHE_EXPIRY / 6)); // ~5 min for default expiry
+          const ageMs = Date.now() - (cacheHit.timestamp || 0);
+          const parsedProbe = JSON.parse(cacheHit.responseText);
+          const probeCount = (parsedProbe && parsedProbe.data && Array.isArray(parsedProbe.data)) ? parsedProbe.data.length : 0;
+          if (probeCount > 0 && probeCount < 5 && ageMs > freshnessFloorMs) {
+            console.log('⚠️ Cached snapshot too small/stale (', probeCount, 'posts,', Math.round(ageMs/1000), 's old) → using network');
+            return originalSend.apply(this, [data]);
+          }
+        } catch (_) {}
         try {
           if (window.__kayako_blockCacheUntil && Date.now() < window.__kayako_blockCacheUntil) {
             console.log('⏳ Cache simulation temporarily disabled');
@@ -212,6 +223,11 @@ console.log('🚀 Clean Kayako optimization starting...');
              Object.defineProperty(this, 'responseText', { value: cleanedResponseText, configurable: true });
              Object.defineProperty(this, 'response', { value: cleanedResponseText, configurable: true });
              Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+             try { Object.defineProperty(this, 'responseURL', { value: requestUrl, configurable: true }); } catch (_) {}
+             try {
+               this.getResponseHeader = (name) => null;
+               this.getAllResponseHeaders = () => 'content-type: application/json\r\n';
+             } catch (_) {}
              
              console.log('📤 Triggering cached response handlers');
              
@@ -628,7 +644,7 @@ console.log('🚀 Clean Kayako optimization starting...');
     return cleared;
   };
   
-  // Free up localStorage space by removing old non-Kayako entries
+  // Free up localStorage space by pruning ONLY our own cache keys
   function freeUpLocalStorage() {
     try {
       console.log('🧹 Freeing up localStorage space...');
@@ -639,32 +655,30 @@ console.log('🚀 Clean Kayako optimization starting...');
       
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
-        if (key) {
+        if (!key || !key.startsWith(CACHE_PREFIX)) continue; // Only our cache keys
+        try {
+          const value = localStorage.getItem(key);
+          if (!value) continue;
+          
+          // Parse our cache envelope: { data, timestamp, url }
           try {
-            const value = localStorage.getItem(key);
-            
-            // Try to parse as timestamped data
-            if (value && value.includes('timestamp')) {
-              const parsed = JSON.parse(value);
-              if (parsed.timestamp && parsed.timestamp < cutoff) {
-                localStorage.removeItem(key);
-                freedSpace++;
-              }
-            }
-            
-            // Remove very large entries (>100KB)
-            if (value && value.length > 100000) {
+            const parsed = JSON.parse(value);
+            if (parsed && parsed.timestamp && parsed.timestamp < cutoff) {
               localStorage.removeItem(key);
               freedSpace++;
+              continue;
             }
-            
-          } catch (e) {
-            // Skip entries that can't be processed
+          } catch (_) {}
+          
+          // Guardrail for oversized OUR entries only
+          if (value.length > 100000) {
+            localStorage.removeItem(key);
+            freedSpace++;
           }
-        }
+        } catch (_) {}
       }
       
-      console.log(`🧹 Freed ${freedSpace} localStorage entries for space`);
+      console.log(`🧹 Freed ${freedSpace} Kayako cache entries for space`);
       return freedSpace;
       
     } catch (error) {
