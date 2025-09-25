@@ -318,8 +318,35 @@ class KayakoAIEnhancer {
       return;
     }
 
-    const textData = this.getEditorText(editorElement);
-    
+    // If there is a non-empty selection inside the editor, operate ONLY on the selection
+    let textData = null;
+    try {
+      const selection = window.getSelection();
+      const hasRange = selection && selection.rangeCount > 0;
+      const range = hasRange ? selection.getRangeAt(0) : null;
+      const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
+      if (isInEditor) {
+        const cloned = range.cloneContents();
+        const holder = document.createElement('div');
+        holder.appendChild(cloned);
+        const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
+        textData = {
+          hasTemplate: false,
+          extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
+          fullText: tmpExtraction.textWithPlaceholders || '',
+          linkMap: tmpExtraction.linkMap || {},
+          selectionRange: range,
+          editorElement: editorElement
+        };
+      }
+    } catch (e) {
+      console.warn('Selection processing failed, falling back to editor extraction:', e?.message || e);
+    }
+    // Fallback: use template-aware extraction for the whole editor
+    if (!textData) {
+      textData = this.getEditorText(editorElement);
+    }
+
     // For templates, allow empty content (placeholder area might be empty)
     if (!textData.hasTemplate && (!textData.extractedText || textData.extractedText.trim().length === 0)) {
       this.showNotification('❌ No text found to enhance', 'error');
@@ -337,9 +364,9 @@ class KayakoAIEnhancer {
     const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info');
 
     try {
-      // Get ticket context if enabled
+      // Get ticket context if enabled (skip for Beautify to keep it fast)
       let ticketContext = '';
-      if (this.config?.useTicketContext) {
+      if (this.config?.useTicketContext && action.id !== 'beautify') {
         ticketContext = this.extractTicketContext();
         console.log('🎯 Extracted ticket context:', ticketContext ? 'Found context' : 'No context found');
       }
@@ -413,22 +440,46 @@ class KayakoAIEnhancer {
       link.parentNode.replaceChild(textNode, link);
     });
     
-    // Extract text content from the modified clone
-    let textContent = '';
-    if (clonedElement.innerText) {
-      textContent = clonedElement.innerText;
-    } else if (clonedElement.textContent) {
-      textContent = clonedElement.textContent;
-    } else {
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = clonedElement.innerHTML;
-      textContent = tempDiv.textContent || tempDiv.innerText || '';
-    }
+    // Extract text content from the modified clone with preserved breaks
+    const textContent = this.getTextWithBreaks(clonedElement);
     
     return {
       textWithPlaceholders: textContent,
       linkMap: linkMap
     };
+  }
+
+  // Convert DOM to plain text, preserving logical line breaks
+  getTextWithBreaks(root) {
+    const BLOCK_TAGS = new Set(['P','DIV','SECTION','ARTICLE','HEADER','FOOTER','H1','H2','H3','H4','H5','H6','LI']);
+    let out = '';
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        out += node.nodeValue;
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName;
+      if (tag === 'BR') {
+        out += '\n';
+        return;
+      }
+      if (tag === 'LI') {
+        // Ensure list items appear on their own lines
+        // Keep exact text (format-only rule), do not add markers
+        node.childNodes.forEach(walk);
+        out += '\n';
+        return;
+      }
+      node.childNodes.forEach(walk);
+      if (BLOCK_TAGS.has(tag)) {
+        out += '\n';
+      }
+    };
+    walk(root);
+    // Collapse excessive blank lines but preserve single line breaks
+    return out.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   extractFromTemplate(text, editorElement) {
@@ -473,6 +524,35 @@ class KayakoAIEnhancer {
     // Restore links in the enhanced text
     const textWithRestoredLinks = this.restoreLinksInText(newText, textData.linkMap);
     
+    // If user selected a specific range, replace only that selection
+    if (textData.selectionRange) {
+      try {
+        const range = textData.selectionRange;
+        const fragment = document.createDocumentFragment();
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
+        while (wrapper.firstChild) {
+          fragment.appendChild(wrapper.firstChild);
+        }
+        range.deleteContents();
+        range.insertNode(fragment);
+        // Move cursor to end
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        range.collapse(false);
+      } catch (e) {
+        console.warn('Selection replacement failed, falling back to template/full replace');
+      }
+      
+      // Trigger events
+      const inputEvent = new Event('input', { bubbles: true });
+      editorElement.dispatchEvent(inputEvent);
+      const changeEvent = new Event('fr-change', { bubbles: true });
+      editorElement.dispatchEvent(changeEvent);
+      return;
+    }
+
     if (textData.hasTemplate) {
       // Prefer DOM Range replacement between template markers for robustness
       const inserted = this.replaceTemplatePlaceholder(editorElement, textWithRestoredLinks);
@@ -1025,9 +1105,35 @@ class KayakoAIEnhancer {
     const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info');
 
     try {
-      // For custom prompts, we don't extract from template - we generate new content
-      const textData = this.getEditorText(editorElement);
-      let contextText = textData.extractedText.trim();
+      // Prefer operating on selection only
+      let textData = null;
+      try {
+        const selection = window.getSelection();
+        const hasRange = selection && selection.rangeCount > 0;
+        const range = hasRange ? selection.getRangeAt(0) : null;
+        const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
+        if (isInEditor) {
+          const cloned = range.cloneContents();
+          const holder = document.createElement('div');
+          holder.appendChild(cloned);
+          const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
+          textData = {
+            hasTemplate: false,
+            extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
+            fullText: tmpExtraction.textWithPlaceholders || '',
+            linkMap: tmpExtraction.linkMap || {},
+            selectionRange: range,
+            editorElement: editorElement
+          };
+        }
+      } catch (e) {
+        console.warn('Selection processing failed (custom prompt), falling back:', e?.message || e);
+      }
+      if (!textData) {
+        // For custom prompts, we don't extract from template - we generate new content
+        textData = this.getEditorText(editorElement);
+      }
+      let contextText = (textData.extractedText || '').trim();
       
       // Enhanced prompt with customer context and product detection
       let enhancedPrompt = customPrompt;
@@ -1276,6 +1382,35 @@ class KayakoAIEnhancer {
   }
 
   insertCustomText(editorElement, originalTextData, generatedText, action) {
+    // If selection was captured, prefer replacing that selection
+    if (originalTextData && originalTextData.selectionRange) {
+      const range = originalTextData.selectionRange;
+      const html = this.normalizeHTMLForInsert(this.restoreLinksInText(generatedText, originalTextData.linkMap));
+      const fragment = document.createDocumentFragment();
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      while (wrapper.firstChild) {
+        fragment.appendChild(wrapper.firstChild);
+      }
+      range.deleteContents();
+      range.insertNode(fragment);
+      // Collapse to end
+      const selection = window.getSelection();
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      
+      // Trigger change events
+      const inputEvent = new Event('input', { bubbles: true });
+      editorElement.dispatchEvent(inputEvent);
+      const changeEvent = new Event('fr-change', { bubbles: true });
+      editorElement.dispatchEvent(changeEvent);
+      
+      // Highlight
+      setTimeout(() => { this.highlightNewText(editorElement); }, 100);
+      return;
+    }
+
     if (action === 'insert' || !originalTextData.extractedText.trim()) {
       // Insert new content (for empty editor or explicit insert)
       if (originalTextData.hasTemplate) {
