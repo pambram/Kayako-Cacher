@@ -14,7 +14,7 @@ class KayakoAIEnhancer {
     try {
       // Load configuration
       await this.loadConfig();
-      console.log('✅ Config loaded:', this.config);
+      // console.log('✅ Config loaded:', this.config);
       
       // Wait for page to stabilize
       await this.waitForPageReady();
@@ -22,7 +22,7 @@ class KayakoAIEnhancer {
       // Check if we can find any editors
       const containers = document.querySelectorAll('.ko-text-editor__container_1p5g6r');
       const toolbars = document.querySelectorAll('.fr-toolbar');
-      console.log(`🔍 Found ${containers.length} Kayako containers and ${toolbars.length} Froala toolbars`);
+      // console.log(`🔍 Found ${containers.length} Kayako containers and ${toolbars.length} Froala toolbars`);
       
       // Set up observers for dynamic content
       this.setupObservers();
@@ -111,13 +111,13 @@ class KayakoAIEnhancer {
     // Find all Kayako text editor containers that haven't been enhanced yet
     const containers = document.querySelectorAll('.ko-text-editor__container_1p5g6r');
     
-    console.log(`🔍 Found ${containers.length} Kayako text editor containers`);
+    // console.log(`🔍 Found ${containers.length} Kayako text editor containers`);
     
     containers.forEach(container => {
       // Look for Kayako toolbar header within the container (not the hidden Froala one)
       const kayakoHeader = container.querySelector('.ko-text-editor__header_1p5g6r:not([data-ai-enhanced])');
       if (kayakoHeader) {
-        console.log('🎯 Found Kayako toolbar header in container');
+        // console.log('🎯 Found Kayako toolbar header in container');
         this.enhanceKayakoToolbar(kayakoHeader, container);
       }
     });
@@ -148,10 +148,10 @@ class KayakoAIEnhancer {
     if (buttonGroups.length > 0) {
       // Add to the last button group
       const lastGroup = buttonGroups[buttonGroups.length - 1];
-      console.log('🔧 Adding AI button to last Kayako button group');
+      // console.log('🔧 Adding AI button to last Kayako button group');
       lastGroup.appendChild(aiButtonGroup);
     } else {
-      console.log('🔧 Adding AI button to end of Kayako header');
+      // console.log('🔧 Adding AI button to end of Kayako header');
       kayakoHeader.appendChild(aiButtonGroup);
     }
     // Removed quick Beautify icon to avoid duplication; Beautify is in AI dropdown only
@@ -159,17 +159,17 @@ class KayakoAIEnhancer {
     // Debug: Check if button was added
     const addedButton = kayakoHeader.querySelector('.kayako-ai-dropdown');
     if (addedButton) {
-      console.log('✅ AI button successfully added to Kayako toolbar:', addedButton);
-      console.log('✅ Button visible:', addedButton.offsetWidth > 0 && addedButton.offsetHeight > 0);
+      // console.log('✅ AI button successfully added to Kayako toolbar:', addedButton);
+      // console.log('✅ Button visible:', addedButton.offsetWidth > 0 && addedButton.offsetHeight > 0);
       
       const styles = window.getComputedStyle(addedButton);
-      console.log('🔍 Button styles:', {
-        display: styles.display,
-        visibility: styles.visibility,
-        opacity: styles.opacity,
-        width: addedButton.offsetWidth + 'px',
-        height: addedButton.offsetHeight + 'px'
-      });
+      // console.log('🔍 Button styles:', {
+      //   display: styles.display,
+      //   visibility: styles.visibility,
+      //   opacity: styles.opacity,
+      //   width: addedButton.offsetWidth + 'px',
+      //   height: addedButton.offsetHeight + 'px'
+      // });
       
     } else {
       console.error('❌ AI button not found after insertion');
@@ -381,7 +381,10 @@ class KayakoAIEnhancer {
       // Remove processing notification before showing modal
       processingNotification.remove();
       
-      if (enhancedText && enhancedText !== textData.extractedText) {
+      // For Beautify, always show the preview if we received any text at all.
+      // The preview normalization may introduce formatting (e.g., <br>, lists)
+      // even when the raw text matches the input.
+      if (enhancedText && (action.id === 'beautify' || enhancedText !== textData.extractedText)) {
         // Clean up the enhanced text before showing preview
         const cleanEnhancedText = this.normalizeHTMLForInsert(enhancedText.trim().replace(/^\s+/gm, ''));
         
@@ -518,6 +521,27 @@ class KayakoAIEnhancer {
       extractedText: text.trim(),
       fullText: text
     };
+  }
+
+  // Extract everything after the "Additional Context?" section header.
+  // Works on the plain text with link placeholders.
+  extractAdditionalContextSection(fullText) {
+    try {
+      const text = fullText || '';
+      const idx = text.search(/Additional\s*Context\?/i);
+      if (idx === -1) {
+        return '';
+      }
+      let after = text.slice(idx + 'Additional Context?'.length);
+      // Drop leading separators (lines of only '=') and empty lines
+      const lines = after.split(/\r?\n/);
+      while (lines.length && (/^\s*$/.test(lines[0]) || /^=+$/.test(lines[0].trim()))) {
+        lines.shift();
+      }
+      return lines.join('\n').trim();
+    } catch (_) {
+      return '';
+    }
   }
 
   setEditorText(editorElement, textData, newText) {
@@ -664,6 +688,13 @@ class KayakoAIEnhancer {
   // Sanitize Beautify output to a safe subset for Froala/Kayako
   sanitizeBeautifyHTML(html) {
     try {
+      // If it's plain text (no tags), don't sanitize here to avoid
+      // collapsing newlines/bullets. Downstream normalization will
+      // convert newlines to <br> or lists.
+      if (!/<[^>]+>/.test(html || '')) {
+        return (html || '').toString();
+      }
+
       const container = document.createElement('div');
       container.innerHTML = html;
       
@@ -938,12 +969,12 @@ class KayakoAIEnhancer {
     const naturalHeight = dropdownMenu.scrollHeight;
     dropdownMenu.style.display = 'none';
     
-    console.log('🔍 Dropdown sizing:', {
-      availableHeight,
-      naturalHeight,
-      buttonBottom: buttonRect.bottom,
-      viewportHeight
-    });
+    // console.log('🔍 Dropdown sizing:', {
+    //   availableHeight,
+    //   naturalHeight,
+    //   buttonBottom: buttonRect.bottom,
+    //   viewportHeight
+    // });
     
     // Set appropriate max-height with scrollbar if needed
     if (naturalHeight > availableHeight && availableHeight > 150) {
@@ -987,7 +1018,7 @@ class KayakoAIEnhancer {
       }
     });
     
-    console.log('⌨️ Keyboard shortcuts registered (Option + Shift + H)');
+    // console.log('⌨️ Keyboard shortcuts registered');
   }
 
   findActiveEditor() {
@@ -1105,35 +1136,17 @@ class KayakoAIEnhancer {
     const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info');
 
     try {
-      // Prefer operating on selection only
-      let textData = null;
-      try {
-        const selection = window.getSelection();
-        const hasRange = selection && selection.rangeCount > 0;
-        const range = hasRange ? selection.getRangeAt(0) : null;
-        const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
-        if (isInEditor) {
-          const cloned = range.cloneContents();
-          const holder = document.createElement('div');
-          holder.appendChild(cloned);
-          const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
-          textData = {
-            hasTemplate: false,
-            extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
-            fullText: tmpExtraction.textWithPlaceholders || '',
-            linkMap: tmpExtraction.linkMap || {},
-            selectionRange: range,
-            editorElement: editorElement
-          };
-        }
-      } catch (e) {
-        console.warn('Selection processing failed (custom prompt), falling back:', e?.message || e);
+      // For Help Me Write, ignore selections. Always use editor content as context.
+      // If a template is detected, use everything after "Additional Context?".
+      // Otherwise, use the entire editor text.
+      const textData = this.getEditorText(editorElement);
+
+      let contextText = '';
+      if (textData.hasTemplate) {
+        contextText = this.extractAdditionalContextSection(textData.fullText).trim();
+      } else {
+        contextText = (textData.fullText || '').trim();
       }
-      if (!textData) {
-        // For custom prompts, we don't extract from template - we generate new content
-        textData = this.getEditorText(editorElement);
-      }
-      let contextText = (textData.extractedText || '').trim();
       
       // Enhanced prompt with customer context and product detection
       let enhancedPrompt = customPrompt;
@@ -1729,18 +1742,18 @@ class KayakoAIEnhancer {
 }
 
 // Initialize when the page is ready
-console.log('🤖 Kayako AI Content Script loaded on:', window.location.href);
-console.log('🤖 Document state:', document.readyState);
+// console.log('🤖 Kayako AI Content Script loaded on:', window.location.href);
+// console.log('🤖 Document state:', document.readyState);
 
 try {
   if (document.readyState === 'loading') {
-    console.log('🤖 Waiting for DOM to load...');
+    // console.log('🤖 Waiting for DOM to load...');
     document.addEventListener('DOMContentLoaded', () => {
-      console.log('🤖 DOM loaded, initializing...');
+      // console.log('🤖 DOM loaded, initializing...');
       new KayakoAIEnhancer();
     });
   } else {
-    console.log('🤖 DOM already ready, initializing immediately...');
+    // console.log('🤖 DOM already ready, initializing immediately...');
     new KayakoAIEnhancer();
   }
 } catch (error) {

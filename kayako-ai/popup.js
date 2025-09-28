@@ -41,7 +41,7 @@ class PopupManager {
       const response = await chrome.runtime.sendMessage({ action: 'getConfig' });
       if (response.success) {
         this.config = response.config;
-        console.log('Config loaded:', this.config);
+        // console.log('Config loaded:', this.config);
       } else {
         console.error('Failed to load config:', response.error);
         this.showError('Failed to load configuration');
