@@ -39,7 +39,7 @@ console.log('🚀 CORRECTED consolidated optimization starting...');
       // 2. CACHE CHECK (but don't return yet)
       if (method === 'GET' && url.includes('/posts')) {
         const cacheKey = generateCacheKey(url);
-        console.log('🔍 Cache check for:', cacheKey);
+        // console.log('🔍 Cache check for:', cacheKey);
         
         // Check memory cache first
         if (memoryCache.has(cacheKey)) {

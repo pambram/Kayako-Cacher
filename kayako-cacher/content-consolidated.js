@@ -1,16 +1,16 @@
 // Consolidated content script - single approach to avoid loading conflicts
-console.log('🚀 CONSOLIDATED Kayako optimizer starting...');
+console.log('🚀 Kayako Cacher Optimizer starting...');
 console.log('📍 URL:', window.location.href);
 
 // Check if we're on a supported domain
 const supportedDomains = ['kayako.com/agent', '.gfi.com/agent', '.aurea.com/agent', '.ignitetech.com/agent', '.crossover.com/agent', '.totogi.com/agent', '.alpha.school/agent', '.cloudsense.com/agent', '.kandy.io/agent', 'dnnsupport.dnnsoftware.com/agent', 'csai.trilogy.com/agent'];
 
 if (supportedDomains.some(domain => window.location.href.includes(domain))) {
-  console.log('✅ Supported domain detected');
+  // console.log('✅ Supported domain detected');
   
   // Load the consolidated fix immediately
   (function loadConsolidated() {
-    console.log('💉 Loading consolidated optimization...');
+    // console.log('💉 Loading consolidated optimization...');
     
     try {
       // Inject consolidated script as text (most reliable)
@@ -18,15 +18,15 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
       script.src = chrome.runtime.getURL('clean-working-solution.js');
       
       script.onload = () => {
-        console.log('✅ Consolidated optimization loaded');
+        // console.log('✅ Consolidated optimization loaded');
         
         // Wait for the page script completion signal, then proceed without cross-context checks
         let completed = false;
         const proceed = () => {
           if (completed) return;
           completed = true;
-          console.log('✅ Clean solution reported ready');
-          showSuccessIndicator();
+          // console.log('✅ Clean solution reported ready');
+          // Success indicator disabled; rely on small toasts only
           // Inject image upload optimizer (config-gated)
           try {
             chrome.runtime.sendMessage({ action: 'getConfig' }, (resp) => {
@@ -34,11 +34,11 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
               if (enabled) {
                 const existing = document.getElementById('kayako-image-optimizer-script');
                 if (!existing) {
-                  console.log('💉 Loading image upload optimizer...');
+                  // console.log('💉 Loading image upload optimizer...');
                   const imgScript = document.createElement('script');
                   imgScript.id = 'kayako-image-optimizer-script';
                   imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
-                  imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
+                  // imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
                   imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
                   (document.head || document.documentElement).appendChild(imgScript);
                 }
@@ -65,7 +65,7 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
         };
         const handleMsg = (event) => {
           if (event.source === window && event.data && event.data.type === 'KAYAKO_SCRIPT_LOADED') {
-            console.log('📡 Page script completion signal received');
+            // console.log('📡 Page script completion signal received');
             proceed();
           }
         };
@@ -100,7 +100,7 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
 // Add script completion listener
 window.addEventListener('message', (event) => {
   if (event.source === window && event.data.type === 'KAYAKO_SCRIPT_LOADED') {
-    console.log('📡 Received script completion signal at:', new Date(event.data.timestamp).toLocaleTimeString());
+    // console.log('📡 Received script completion signal at:', new Date(event.data.timestamp).toLocaleTimeString());
   }
 });
 
@@ -196,7 +196,7 @@ chrome.runtime.onMessage.addListener((message) => {
         const imgScript = document.createElement('script');
         imgScript.id = 'kayako-image-optimizer-script';
         imgScript.src = chrome.runtime.getURL('image-upload-optimizer.js');
-        imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
+        // imgScript.onload = () => console.log('✅ Image upload optimizer loaded');
         imgScript.onerror = (e) => console.warn('❌ Image upload optimizer failed to load', e);
         (document.head || document.documentElement).appendChild(imgScript);
       } catch (e) {

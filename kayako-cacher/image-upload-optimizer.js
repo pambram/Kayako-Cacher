@@ -18,7 +18,7 @@ class KayakoImageOptimizer {
   }
 
   init() {
-    console.log('🖼️ Image upload optimizer initializing...');
+    // console.log('🖼️ Image upload optimizer initializing...');
     
     // Defer until DOM is ready to avoid MutationObserver target issues
     if (document.readyState === 'loading') {
@@ -37,7 +37,7 @@ class KayakoImageOptimizer {
       
       dropzones.forEach(dropzone => {
         if (!dropzone.dataset.optimized) {
-          console.log('🔧 Optimizing dropzone:', dropzone);
+          // console.log('🔧 Optimizing dropzone:', dropzone);
           this.enhanceDropzone(dropzone);
           dropzone.dataset.optimized = 'true';
         }
@@ -74,53 +74,49 @@ class KayakoImageOptimizer {
     dropzone.addEventListener('drop', (e) => {
       if (this.disabled) { return; }
       console.log('📁 Optimized drop handler triggered');
-      // Try to remember caret if there is a selection before drop
+      const files = Array.from(e.dataTransfer.files || []);
+      const imageFiles = files.filter(file => file.type && file.type.startsWith('image/'));
+      // Skip if only GIFs (let native handler deal with them)
+      const nonGifImages = imageFiles.filter(f => (f.type !== 'image/gif') && !(f.name || '').toLowerCase().endsWith('.gif'));
+      if (!nonGifImages.length) {
+        return; // allow native flow for GIFs
+      }
+      // Remember caret and block native only when we will handle
       try { this.saveCaretPosition(); } catch (_) {}
-      // Block native handlers that also insert
       try { e.preventDefault(); } catch (_) {}
       try { e.stopPropagation(); } catch (_) {}
       
-      const files = Array.from(e.dataTransfer.files);
-      const imageFiles = files.filter(file => file.type.startsWith('image/'));
-      
-      if (imageFiles.length > 0) {
-        console.log(`🖼️ Processing ${imageFiles.length} image(s) for optimization...`);
-        
-        // Process images in background with progress
-        this.processImagesOptimized(imageFiles);
-        
-        // Prevent default slow handling
-        e.stopImmediatePropagation();
-      }
+      console.log(`🖼️ Processing ${nonGifImages.length} image(s) for optimization...`);
+      this.processImagesOptimized(nonGifImages);
+      e.stopImmediatePropagation();
     }, true); // Use capture to intercept before slow handlers
     
     // Add paste optimization
     dropzone.addEventListener('paste', (e) => {
       if (this.disabled) { return; }
-      const items = Array.from(e.clipboardData.items);
-      const imageItems = items.filter(item => item.type.startsWith('image/'));
+      const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+      const imageItems = items.filter(item => item.type && item.type.startsWith('image/'));
+      // Filter out GIFs; if nothing left, let native handler run
+      const nonGifItems = imageItems.filter(item => item.type !== 'image/gif');
+      if (nonGifItems.length === 0) { return; }
       
-      if (imageItems.length > 0) {
-        console.log('📋 Optimizing pasted images...');
-        // Save caret so we can insert at exact cursor position after upload
-        try { this.saveCaretPosition(); } catch (_) {}
-        
-        // Visual confirmation that optimized path is active
+      console.log('📋 Optimizing pasted images...');
+      // Save caret so we can insert at exact cursor position after upload
+      try { this.saveCaretPosition(); } catch (_) {}
+      
+      // Visual confirmation that optimized path is active
+      try { this.showUploadProgress(nonGifItems.length); } catch (_) {}
+      
+      try { e.preventDefault(); } catch (_) {}
+      try { e.stopImmediatePropagation(); } catch (_) {}
+      try { e.stopPropagation(); } catch (_) {}
+      
+      nonGifItems.forEach(item => {
         try {
-          this.showUploadProgress(imageItems.length);
-        } catch (_) {}
-        
-        try { e.preventDefault(); } catch (_) {}
-        try { e.stopImmediatePropagation(); } catch (_) {}
-        try { e.stopPropagation(); } catch (_) {}
-        
-        imageItems.forEach(item => {
           const file = item.getAsFile();
-          if (file) {
-            this.processImagesOptimized([file]);
-          }
-        });
-      }
+          if (file) this.processImagesOptimized([file]);
+        } catch (_) {}
+      });
     }, true);
   }
 
@@ -597,4 +593,4 @@ window.addEventListener('KAYAKO_IMAGE_OPT_CONFIG', (event) => {
   }
 });
 
-console.log('✅ Image upload optimizer loaded');
+// console.log('✅ Image upload optimizer loaded');

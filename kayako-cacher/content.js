@@ -22,7 +22,7 @@ class KayakoPaginationCacher {
     try {
       // Load configuration
       await this.loadConfig();
-      console.log('✅ Config loaded:', this.config);
+      // console.log('✅ Config loaded:', this.config);
       
       // Wait a bit for page to stabilize
       await new Promise(resolve => setTimeout(resolve, 500));

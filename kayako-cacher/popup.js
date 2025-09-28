@@ -22,7 +22,7 @@ class KayakoCacherPopup {
 
       // Load current configuration
       await this.loadConfig();
-      console.log('Config loaded:', this.config);
+      // console.log('Config loaded:', this.config);
       
       // Set up event listeners
       this.setupEventListeners();

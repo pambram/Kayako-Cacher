@@ -1,5 +1,5 @@
 // CLEAN WORKING SOLUTION - Focus only on proven working features
-console.log('🚀 Clean Kayako optimization starting...');
+// console.log('🚀 Kayako Cacher optimization starting...');
 
 (function() {
   'use strict';
@@ -7,30 +7,30 @@ console.log('🚀 Clean Kayako optimization starting...');
   // Store original XMLHttpRequest
   const OriginalXHR = window.XMLHttpRequest;
   
-  console.log('📦 Setting up clean XHR override...');
+  // console.log('📦 Setting up clean XHR override...');
   
   // Ensure functions are created early and globally accessible
   window.clearKayakoCache = function() {
-    console.log('🗑️ clearKayakoCache function called');
+    // console.log('🗑️ clearKayakoCache function called');
     return 'function working';
   };
   
   window.getKayakoCacheStats = function() {
-    console.log('📊 getKayakoCacheStats function called');
+    // console.log('📊 getKayakoCacheStats function called');
     return { working: true };
   };
   
   window.kayakoCacheStats = function() {
-    console.log('📊 kayakoCacheStats function called');
+    // console.log('📊 kayakoCacheStats function called');
     return { working: true };
   };
   
   window.testKayakoPagination = function() {
-    console.log('🧪 testKayakoPagination function called');
+    // console.log('🧪 testKayakoPagination function called');
     return true;
   };
   
-  console.log('✅ Basic functions created early');
+  // console.log('✅ Basic functions created early');
   
   // Cache storage
   const CACHE_PREFIX = 'kayako_cache_';
@@ -39,6 +39,9 @@ console.log('🚀 Clean Kayako optimization starting...');
   
   // Stats tracking
   window.kayakoCacheStats_live = { hits: 0, misses: 0, stored: 0 };
+  
+  // Disable simulated responses so Kayako always processes real network results
+  const SIMULATE_FROM_CACHE = false;
   
   // === WORKING PAGINATION + CACHE DETECTION (RESTORED) ===
   window.XMLHttpRequest = function() {
@@ -56,8 +59,14 @@ console.log('🚀 Clean Kayako optimization starting...');
       cacheHit = null;
       const intercept = (method === 'GET' && isPostsList(url));
       if (!intercept) {
-        // Pass-through: ensure native send is used so our stack doesn't appear
-        try { this.send = originalSend.bind(this); } catch (e) {}
+        // Pass-through most requests, but keep our wrapper for detail stubs
+        let needsDetailStub = false;
+        try {
+          needsDetailStub = (method === 'GET') && (typeof url === 'string') && (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url));
+        } catch (_) {}
+        if (!needsDetailStub) {
+          try { this.send = originalSend.bind(this); } catch (e) {}
+        }
         // For writes to posts endpoints, invalidate caches and pause cache simulation briefly
         try {
           const m = (method || '').toUpperCase();
@@ -77,16 +86,39 @@ console.log('🚀 Clean Kayako optimization starting...');
         } catch (_) {}
       }
       
-      // PAGINATION FIX (only for GET list endpoint /api/v1/cases/{id}/posts)
-      if (intercept && typeof url === 'string' && url.includes('limit=30')) {
-        url = url.replace('limit=30', 'limit=100');
-        console.log('✅ Pagination: limit increased to 100');
-      }
+      // PAGINATION FIX: enforce consistent limit on posts and activities GET requests
+      try {
+        const shouldSetLimit = (method === 'GET') && (isPostsList(url) || isActivitiesList(url));
+        if (shouldSetLimit && typeof url === 'string') {
+          const u = new URL(url, window.location.origin);
+          const current = u.searchParams.get('limit');
+          if (current !== '100') {
+            u.searchParams.set('limit', '100');
+            url = u.toString();
+            // console.log('✅ Pagination: limit set to 100');
+          }
+        }
+      } catch (_) {}
+
+      // Strip include=* from activity/message detail requests to avoid server 400
+      try {
+        if (method === 'GET' && typeof url === 'string' && (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url))) {
+          const u = new URL(url, window.location.origin);
+          if (u.searchParams.has('include')) {
+            const inc = u.searchParams.get('include');
+            if (!inc || inc === '*' || inc === 'all') {
+              u.searchParams.delete('include');
+              url = u.toString();
+              // silenced verbose log
+            }
+          }
+        }
+      } catch (_) {}
       
       // CACHE CHECK only for GET list endpoint
       if (intercept) {
         const cacheKey = generateCacheKey(url);
-        console.log('🔍 Cache check for:', cacheKey, '| URL:', url.substring(url.indexOf('/api')));
+        // console.log('🔍 Cache check for:', cacheKey, '| URL:', url.substring(url.indexOf('/api')));
         
         // Check memory cache
         if (memoryCache.has(cacheKey)) {
@@ -170,6 +202,21 @@ console.log('🚀 Clean Kayako optimization starting...');
           window.kayakoCacheStats_live.misses++;
           showNotification('🌐 Cache Miss', 'warning');
         }
+
+        // Performance instrumentation: if we had a cache snapshot, record network time as savedMs
+        try {
+          if (cacheHit) {
+            this.__kayako_perf_startTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            this.addEventListener('loadend', function() {
+              try {
+                const t0 = this.__kayako_perf_startTs || ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+                const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                const networkMs = Math.max(0, Math.round(t1 - t0));
+                window.postMessage({ type: 'KAYAKO_CACHE_PERF', detail: { url: requestUrl, networkMs: networkMs, savedMs: networkMs } }, '*');
+              } catch (_) {}
+            }, { once: true });
+          }
+        } catch (_) {}
       }
       
       return originalOpen.apply(this, [method, url, ...rest]);
@@ -182,7 +229,7 @@ console.log('🚀 Clean Kayako optimization starting...');
           if (window.kayako_csrf_token !== value) {
             window.kayako_csrf_token = value;
             if (!window.__kayako_csrf_logged) {
-              console.log('🔑 Captured CSRF token from XHR header');
+              // console.log('🔑 Captured CSRF token from XHR header');
               window.__kayako_csrf_logged = true;
             }
           }
@@ -192,8 +239,8 @@ console.log('🚀 Clean Kayako optimization starting...');
     };
 
     xhr.send = function(data) {
-      // Handle cache hit by simulating response
-      if (cacheHit && cacheHit.responseText) {
+      // Handle cache hit by simulating response (disabled: let Kayako process network results)
+      if (SIMULATE_FROM_CACHE && cacheHit && cacheHit.responseText) {
         // Safety: bypass simulation if cached snapshot looks incomplete and not very fresh
         try {
           const freshnessFloorMs = Math.max(60000, Math.floor(CACHE_EXPIRY / 6)); // ~5 min for default expiry
@@ -476,6 +523,18 @@ console.log('🚀 Clean Kayako optimization starting...');
                     window.kayakoCacheStats_live.stored++;
                   }
                 }
+
+                // Start background backfill for older pages on initial list (no after_id)
+                try {
+                  const u = new URL(requestUrl, window.location.origin);
+                  const hasAfter = u.searchParams.has('after_id');
+                  if (!hasAfter && !window.__kayako_backfill_in_progress) {
+                    window.__kayako_backfill_in_progress = true;
+                    setTimeout(() => {
+                      try { startBackgroundBackfill(requestUrl, responseData); } catch (e) { console.warn('Backfill start error:', e); }
+                    }, 100);
+                  }
+                } catch (e) {}
               } else {
                 console.log('🚫 Skipping cache - empty response (no posts to cache)');
               }
@@ -491,6 +550,43 @@ console.log('🚀 Clean Kayako optimization starting...');
         };
       }
       
+    // Quietly short-circuit problematic activity/message detail requests with a safe, array-shaped payload
+    try {
+      if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isMessageDetail(requestUrl) || isAttachmentDetail(requestUrl))) {
+        let stubPayload = null;
+        if (isAttachmentDetail(requestUrl)) {
+          try {
+            const u = new URL(requestUrl, window.location.origin);
+            const id = u.pathname.split('/').pop();
+            stubPayload = { data: { id: Number(id), resource_type: 'attachment' } };
+          } catch (_) {
+            stubPayload = { data: { id: null, resource_type: 'attachment' } };
+          }
+        } else {
+          // activities/messages → callers often expect array responses
+          stubPayload = { data: [] };
+        }
+        const text = JSON.stringify(stubPayload);
+        setTimeout(() => {
+          try {
+            Object.defineProperty(this, 'status', { value: 200, configurable: true });
+            Object.defineProperty(this, 'statusText', { value: 'OK', configurable: true });
+            Object.defineProperty(this, 'responseText', { value: text, configurable: true });
+            Object.defineProperty(this, 'response', { value: text, configurable: true });
+            Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+            try { Object.defineProperty(this, 'responseURL', { value: requestUrl, configurable: true }); } catch (_) {}
+            try {
+              this.getResponseHeader = (name) => (name && name.toLowerCase() === 'content-type') ? 'application/json' : null;
+              this.getAllResponseHeaders = () => 'content-type: application/json\r\n';
+            } catch (_) {}
+            if (this.onload) this.onload.call(this);
+            if (this.onreadystatechange) this.onreadystatechange.call(this);
+          } catch (_) {}
+        }, 0);
+        return;
+      }
+    } catch (_) {}
+
       return originalSend.apply(this, [data]);
     };
     
@@ -507,6 +603,387 @@ console.log('🚀 Clean Kayako optimization starting...');
       const u = new URL(url, window.location.origin);
       return /\/api\/v1\/cases\/\d+\/posts$/.test(u.pathname);
     } catch (e) { return false; }
+  }
+  function isActivitiesList(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/\d+\/activities$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+  function isActivityDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/activities\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+  function isMessageDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/messages\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+  function isAttachmentDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/attachments\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+  
+  // Background backfill of older posts using OriginalXHR
+  function startBackgroundBackfill(initialUrl, firstData) {
+    try {
+      console.log('🔄 Starting background backfill (posts)...');
+      const origin = window.location.origin;
+      const initial = new URL(initialUrl, origin);
+      let nextUrl = extractNextUrl(firstData) || computeNextUrlFromMinId(initial, firstData);
+      let pages = 0;
+      let totalNew = 0;
+      let lastAfter = null;
+      
+      const loop = () => {
+        try {
+          if (!nextUrl) {
+            console.log('✅ Backfill complete (no next URL)');
+            finalizeBackfill(totalNew);
+            return;
+          }
+          const u = new URL(nextUrl, origin);
+          const afterId = u.searchParams.get('after_id') || 'initial';
+          if (afterId && afterId === lastAfter) {
+            console.log('🛑 Backfill stopped (after_id repeat)');
+            finalizeBackfill(totalNew);
+            return;
+          }
+          lastAfter = afterId;
+          if (u.searchParams.get('limit') !== '100') u.searchParams.set('limit', '100');
+          if (!u.searchParams.has('_flat')) u.searchParams.set('_flat', 'true');
+          // Reduce payload size and avoid corruption-prone expansions
+          if (u.searchParams.has('include')) u.searchParams.delete('include');
+          const urlAbs = u.toString();
+          const bg = new OriginalXHR();
+          bg.open('GET', urlAbs, true);
+          try { bg.responseType = 'json'; } catch (_) {}
+          try { bg.withCredentials = true; } catch (_) {}
+          try { bg.setRequestHeader('Accept', 'application/json'); } catch (_) {}
+          try { bg.setRequestHeader('X-Requested-With', 'XMLHttpRequest'); } catch (_) {}
+          bg.onload = function() {
+            try {
+              if (this.status !== 200) {
+                console.warn('Backfill HTTP error:', this.status);
+                finalizeBackfill(totalNew);
+                return;
+              }
+              let data = this && typeof this.response === 'object' ? this.response : null;
+              if (!data) {
+                try { data = JSON.parse(this.responseText || '{}'); } catch (e1) {
+                  // Attempt to sanitize common corruption then parse again
+                  try {
+                    const clean = sanitizeJsonText(this.responseText || '');
+                    data = JSON.parse(clean || '{}');
+                  } catch (e2) {
+                    // Retry once with smaller limit to avoid corruption
+                    try {
+                      const retryUrl = new URL(urlAbs);
+                      retryUrl.searchParams.set('limit', '30');
+                      retryUrl.searchParams.set('_flat', 'true');
+                      if (retryUrl.searchParams.has('include')) retryUrl.searchParams.delete('include');
+                      fetch(retryUrl.toString(), {
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                      }).then(r => r.json()).then(json => {
+                        try {
+                          const cnt = Array.isArray(json && json.data) ? json.data.length : 0;
+                          if (cnt > 0) {
+                            try { totalNew += applyToEmberStore(json) || cnt; } catch(_) { totalNew += cnt; }
+                            pages++;
+                            nextUrl = extractNextUrl(json) || computeNextUrlFromMinId(retryUrl, json);
+                            setTimeout(loop, 120);
+                          } else {
+                            finalizeBackfill(totalNew);
+                          }
+                        } catch (_) { finalizeBackfill(totalNew); }
+                      }).catch(() => finalizeBackfill(totalNew));
+                      return; // defer continuation to fetch path
+                    } catch (_) {
+                      console.warn('Backfill parse error - giving up this page');
+                      finalizeBackfill(totalNew);
+                      return;
+                    }
+                  }
+                }
+              }
+              const count = Array.isArray(data.data) ? data.data.length : 0;
+              if (count > 0) {
+                const cacheKey = generateCacheKey(urlAbs);
+                const entry = { data, timestamp: Date.now(), url: urlAbs };
+                memoryCache.set(cacheKey, entry);
+                try { localStorage.setItem(CACHE_PREFIX + cacheKey, JSON.stringify(entry)); } catch (_) {}
+                try { totalNew += applyToEmberStore(data) || count; } catch(_) { totalNew += count; }
+                pages++;
+                nextUrl = extractNextUrl(data) || computeNextUrlFromMinId(u, data);
+                setTimeout(loop, 120);
+              } else {
+                console.log('✅ Backfill reached beginning (empty page)');
+                finalizeBackfill(totalNew);
+              }
+            } catch (e) {
+              console.warn('Backfill parse error:', e);
+              finalizeBackfill(totalNew);
+            }
+          };
+          bg.onerror = function() {
+            console.warn('Backfill network error');
+            finalizeBackfill(totalNew);
+          };
+          bg.send();
+        } catch (e) {
+          console.warn('Backfill loop error:', e);
+          finalizeBackfill(totalNew);
+        }
+      };
+      loop();
+    } catch (e) {
+      console.warn('Backfill start failed:', e);
+      finalizeBackfill(0);
+    }
+  }
+  
+  function extractNextUrl(payload) {
+    try {
+      if (!payload) return null;
+      if (payload.links && payload.links.next) return payload.links.next;
+      if (payload.meta && payload.meta.next_url) return payload.meta.next_url;
+      return null;
+    } catch (_) { return null; }
+  }
+  
+  function computeNextUrlFromMinId(baseUrlObj, payload) {
+    try {
+      if (!payload || !Array.isArray(payload.data) || payload.data.length === 0) return null;
+      const ids = payload.data.map(x => {
+        try { return parseInt(String(x && (x.id || x.post_id || x.postId)), 10); } catch (_) { return NaN; }
+      }).filter(n => Number.isFinite(n));
+      if (!ids.length) return null;
+      const minId = Math.min.apply(null, ids);
+      const u = new URL(baseUrlObj.toString());
+      u.searchParams.set('after_id', String(minId - 1));
+      return u.toString();
+    } catch (_) { return null; }
+  }
+  
+  // Attempt to sanitize JSON text by removing control chars and trailing commas
+  function sanitizeJsonText(text) {
+    try {
+      if (!text || typeof text !== 'string') return text;
+      // Remove non-whitespace control chars (keep \n, \r, \t)
+      const withoutCtrls = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+      // Remove trailing commas before } or ]
+      const withoutTrailingCommas = withoutCtrls.replace(/,(\s*[}\]])/g, '$1');
+      return withoutTrailingCommas;
+    } catch (_) { return text; }
+  }
+  
+  function isComposerActive() {
+    try {
+      const ae = document.activeElement;
+      if (!ae) return false;
+      if (ae.isContentEditable) return true;
+      const tag = (ae.tagName || '').toLowerCase();
+      if (tag === 'textarea' || tag === 'input') return true;
+      return false;
+    } catch (_) { return false; }
+  }
+  
+  function finalizeBackfill(totalNew) {
+    try {
+      window.__kayako_backfill_in_progress = false;
+    } catch (_) {}
+    try {
+      if (totalNew > 0) {
+        console.log(`✅ Backfill finished. New posts cached: ${totalNew}`);
+        // No reload/refresh. Ember store was updated incrementally as pages arrived.
+        // Optionally show a small toast to indicate completion.
+        try { showNotification('🆕 Posts updated', 'info'); } catch(_) {}
+      } else {
+        console.log('✅ Backfill finished. No new posts.');
+      }
+    } catch (_) {}
+  }
+
+  // Push JSON:API payload into Ember Data store without reload
+  function applyToEmberStore(payload) {
+    try {
+      if (!payload || !Array.isArray(payload.data) || payload.data.length === 0) return 0;
+      const container = getEmberContainer();
+      if (!container) return 0;
+      const store = (container.lookup && (container.lookup('service:store') || container.lookup('store:main'))) || null;
+      if (!store) return 0;
+      let pushed = 0;
+      // Filter to message-like records only to avoid relationship churn
+      const items = payload.data.filter(function(item){
+        try {
+          const rt = (item && (item.resource_type || item.type || (item.original && item.original.resource_type) || (item.attributes && item.attributes.resource_type) || '')).toString().toLowerCase();
+          return rt === 'case_message' || rt === 'case-message' || rt === 'post' || rt === 'case message' || rt === 'message';
+        } catch (_) { return false; }
+      });
+      if (!items.length) return 0;
+      if (typeof Ember !== 'undefined' && Ember.run) {
+        Ember.run(function(){
+          try {
+            if (store.push) {
+              const jsonApiData = items.map(function(item){
+                var attrs = {};
+                for (var k in item) { if (Object.prototype.hasOwnProperty.call(item, k) && k !== 'id' && k !== 'resource_type' && k !== 'type') attrs[k] = item[k]; }
+                return { id: String(item.id), type: 'case-message', attributes: attrs };
+              });
+              try { store.push({ data: jsonApiData }); pushed = jsonApiData.length; } catch(_) {}
+            }
+          } catch(_){}
+        });
+      }
+      if (pushed > 0) {
+        console.log('🧩 Ember store updated with', pushed, 'records');
+        // Try to append to visible arrays in the controller/route
+        try {
+          const ids = items.map(function(it){ return String(it && it.id); }).filter(Boolean);
+          // Prefer case-message records, fallback to post
+          const recsCaseMsg = ids.map(function(id){ try { return store.peekRecord('case-message', id); } catch(_) { return null; } }).filter(Boolean);
+          const recsPost = ids.map(function(id){ try { return store.peekRecord('post', id); } catch(_) { return null; } }).filter(Boolean);
+          const used = (recsCaseMsg && recsCaseMsg.length) ? recsCaseMsg : recsPost;
+          if (used && used.length) tryAppendToVisibleThread(used);
+        } catch(_) {}
+      }
+      return pushed;
+    } catch (e) {
+      console.warn('Ember store update failed:', e);
+      return 0;
+    }
+  }
+
+  function getEmberContainer() {
+    try {
+      if (window.Ember) {
+        // Try common locations
+        if (Ember.Namespace && Ember.Namespace.NAMESPACES) {
+          for (var i=0;i<Ember.Namespace.NAMESPACES.length;i++) {
+            var ns = Ember.Namespace.NAMESPACES[i];
+            if (ns && ns.__container__) return ns.__container__;
+          }
+        }
+        if (Ember.Application && Ember.Application.instances && Ember.Application.instances.length) {
+          var app = Ember.Application.instances[0];
+          if (app && app.__container__) return app.__container__;
+        }
+        if (Ember.__container__) return Ember.__container__;
+      }
+    } catch (_) {}
+    return null;
+  }
+  
+  function tryAppendToVisibleThread(records) {
+    try {
+      if (!records || !records.length) return false;
+      const container = getEmberContainer();
+      if (!container) return false;
+      const router = (container.lookup && container.lookup('router:main')) || null;
+      const currentName = (router && (router.currentRouteName || (router.get && router.get('currentRouteName')))) || null;
+      const route = (currentName && container.lookup && container.lookup('route:' + currentName)) || null;
+      const controller = (route && route.controller) || (currentName && container.lookup && container.lookup('controller:' + currentName)) || null;
+      // Prefer explicit known paths first
+      const roots = { controller: controller, route: route, model: (controller && controller.model) || (route && route.currentModel) };
+      const pathCandidates = [
+        ['controller','timeline','posts'],
+        ['route','controller','timeline','posts'],
+        ['route','currentModel','timeline','posts'],
+        ['route','context','timeline','posts'],
+        ['model','timeline','posts']
+      ];
+      const getByPath = function(rootObj, tokens){
+        try {
+          let obj = rootObj;
+          for (let i=0;i<tokens.length;i++) { if (!obj) return null; obj = obj[tokens[i]]; }
+          return obj || null;
+        } catch(_) { return null; }
+      };
+      let arrRef = null;
+      let arrPath = null;
+      for (let i=0;i<pathCandidates.length;i++) {
+        const tokens = pathCandidates[i];
+        const top = tokens[0];
+        if (!roots[top]) continue;
+        const ref = getByPath(roots, tokens);
+        if (ref && (Array.isArray(ref) || (ref.toArray && typeof ref.toArray==='function'))) { arrRef = ref; arrPath = tokens.join('.'); break; }
+      }
+      
+      const isPostModel = function(item){
+        try {
+          if (!item) return false;
+          if (item.constructor && item.constructor.modelName && (item.constructor.modelName === 'case-message' || item.constructor.modelName === 'case_message' || item.constructor.modelName === 'post')) return true;
+          if (item.get && (item.get('resource_type') === 'post')) return true;
+          return false;
+        } catch(_) { return false; }
+      };
+      
+      const findArrayIn = function(obj){
+        try {
+          for (var key in obj) {
+            if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+            var val = obj[key];
+            if (!val) continue;
+            // Normalize Ember arrays
+            var arr = Array.isArray(val) ? val : (val.toArray ? val.toArray() : null);
+            if (!arr || !arr.length) continue;
+            // Check sample element
+            var sample = arr[0];
+            if (isPostModel(sample)) return { owner: obj, key: key, arrRef: val };
+          }
+        } catch(_) {}
+        return null;
+      };
+      
+      if (!arrRef) {
+        // Fallback: probe common holders shallowly
+        const targets = [];
+        if (controller) targets.push(controller);
+        if (route) targets.push(route);
+        try { if (controller && controller.model) targets.push(controller.model); } catch(_) {}
+        try { if (route && route.currentModel) targets.push(route.currentModel); } catch(_) {}
+        let target = null;
+        for (let i=0;i<targets.length && !target;i++) target = findArrayIn(targets[i]);
+        if (!target) return false;
+        arrRef = target.arrRef;
+        arrPath = target.path || 'unknown';
+      }
+      
+      // Merge unique by id
+      const existingArr = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
+      const existingIds = new Set(existingArr.map(function(r){ try { return String(r.id || (r.get && r.get('id'))); } catch(_) { return null; } }).filter(Boolean));
+      const toAdd = records.filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
+      if (!toAdd.length) return false;
+      
+      Ember.run(function(){
+        try {
+          if (arrRef.pushObjects) { arrRef.pushObjects(toAdd); }
+          else if (Array.isArray(arrRef)) { Array.prototype.push.apply(arrRef, toAdd); }
+          else if (Ember.set && controller) { Ember.set(controller, arrPath.split('.').pop(), existingArr.concat(toAdd)); }
+          // Attempt to re-sort by createdAt/created_at ascending to maintain chronological order
+          try {
+            let full = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
+            full.sort(function(a,b){
+              var ga = (a.get ? (a.get('createdAt') || a.get('created_at')) : (a.createdAt || a.created_at)) || '';
+              var gb = (b.get ? (b.get('createdAt') || b.get('created_at')) : (b.createdAt || b.created_at)) || '';
+              return (new Date(ga)) - (new Date(gb));
+            });
+            if (Ember.set && controller) Ember.set(controller, arrPath.split('.').pop(), full);
+          } catch(_) {}
+        } catch(_) {}
+      });
+      console.log('🧷 Appended', toAdd.length, 'records to', arrPath);
+      return true;
+    } catch (e) {
+      console.warn('Append to visible thread failed:', e);
+      return false;
+    }
   }
   function isPostsWrite(url) {
     try {
@@ -820,20 +1297,20 @@ console.log('🚀 Clean Kayako optimization starting...');
     }
   };
   
-  console.log('✅ Clean Kayako optimization ready');
-  console.log('🎯 Features: Pagination (100 posts/request) + Working cache detection + Clean management');
+  // console.log('✅ Clean Kayako optimization ready');
+  // console.log('🎯 Features: Pagination (100 posts/request) + Working cache detection + Clean management');
   
   // Debug: Verify functions are actually created
-  console.log('🔍 Verifying functions created:');
-  console.log('  clearKayakoCache:', typeof window.clearKayakoCache);
-  console.log('  getKayakoCacheStats:', typeof window.getKayakoCacheStats);
-  console.log('  kayakoCacheStats:', typeof window.kayakoCacheStats);
-  console.log('  testKayakoPagination:', typeof window.testKayakoPagination);
-  console.log('  testBackgroundRefresh:', typeof window.testBackgroundRefresh);
+  // console.log('🔍 Verifying functions created:');
+  // console.log('  clearKayakoCache:', typeof window.clearKayakoCache);
+  // console.log('  getKayakoCacheStats:', typeof window.getKayakoCacheStats);
+  // console.log('  kayakoCacheStats:', typeof window.kayakoCacheStats);
+  // console.log('  testKayakoPagination:', typeof window.testKayakoPagination);
+  // console.log('  testBackgroundRefresh:', typeof window.testBackgroundRefresh);
   
   // ONLY clean up very old cache entries on startup (not recent cache!)
   setTimeout(() => {
-    console.log('🧹 Checking for very old cache entries...');
+    // console.log('🧹 Checking for very old cache entries...');
     try {
       let veryOldCleaned = 0;
       const veryOldCutoff = Date.now() - (24 * 60 * 60 * 1000); // 24 hours old
@@ -860,9 +1337,9 @@ console.log('🚀 Clean Kayako optimization starting...');
       }
       
       if (veryOldCleaned > 0) {
-        console.log(`🧹 Cleaned ${veryOldCleaned} very old cache entries (24h+)`);
+        // console.log(`🧹 Cleaned ${veryOldCleaned} very old cache entries (24h+)`);
       } else {
-        console.log('✅ No old cache cleanup needed');
+        // console.log('✅ No old cache cleanup needed');
       }
     } catch (error) {
       console.warn('Startup cleanup error:', error);
@@ -872,51 +1349,9 @@ console.log('🚀 Clean Kayako optimization starting...');
 })();
 
 // Signal that script has completed execution
-console.log('📡 Signaling script completion...');
+// console.log('📡 Signaling script completion...');
 window.postMessage({ type: 'KAYAKO_SCRIPT_LOADED', timestamp: Date.now() }, '*');
 
-// Clean visual indicator
-setTimeout(() => {
-  try { const existing = document.getElementById('kayako-opt'); if (existing) existing.remove(); } catch (_) {}
-  const indicator = document.createElement('div');
-  indicator.id = 'kayako-opt';
-  indicator.style.cssText = `
-    position: fixed;
-    bottom: 20px;
-    left: 20px;
-    background: #28a745;
-    color: white;
-    padding: 8px 12px;
-    border-radius: 4px;
-    font-size: 11px;
-    z-index: 10000;
-    font-family: Arial, sans-serif;
-    cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-  `;
-  
-  indicator.innerHTML = `
-    ✅ Kayako Optimized<br>
-    <small>100 posts/request • Click to hide</small>
-  `;
-  
-  indicator.onclick = () => {
-    indicator.style.opacity = '0';
-    setTimeout(() => indicator.remove(), 200);
-  };
-  
-  document.body?.appendChild(indicator);
-  
-  // Auto-remove after ~3 seconds
-  setTimeout(() => {
-    try {
-      if (indicator && indicator.parentNode) {
-        indicator.style.opacity = '0';
-        setTimeout(() => { try { indicator.remove(); } catch(_) {} }, 250);
-      }
-    } catch (_) {}
-  }, 3000);
-  
-}, 1000);
+// (Removed bulky success indicator; using small auto-dismiss toasts instead)
 
-console.log('🎉 Clean solution loaded - focus on proven working features!');
+// console.log('🎉 Clean solution loaded - focus on proven working features!');
