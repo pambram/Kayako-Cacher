@@ -223,7 +223,7 @@ function displayTicketHistory(history) {
         historyHTML += `
             <div class="ticket-item" data-ticket-id="${ticket.id}">
                 <div class="ticket-info">
-                    <div class="ticket-id">#${ticket.id}${unreadDot}</div>
+                    <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}">#${ticket.id}</a>${unreadDot}</div>
                     <div class="ticket-title" title="${ticket.title}">${ticket.title}</div>
                     <div class="ticket-meta">
                         ${ticket.customer ? ticket.customer + ' • ' : ''}${relativeTime}${ticket.domain ? ' • ' + ticket.domain : ''}${unreadMeta}
@@ -232,6 +232,11 @@ function displayTicketHistory(history) {
                 <div class="ticket-actions">
                     <button class="ticket-action-btn open" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" title="Open ticket">📂</button>
                     <button class="ticket-action-btn delete" data-ticket-id="${ticket.id}" title="Remove from history">🗑️</button>
+                </div>
+                <div class="confirm-inline">
+                    <span class="confirm-text">Sure?</span>
+                    <button class="btn yes" data-ticket-id="${ticket.id}">Yes</button>
+                    <button class="btn no">No</button>
                 </div>
             </div>
         `;
@@ -246,22 +251,143 @@ function displayTicketHistory(history) {
             const url = el.dataset.url;
             const ticketId = el.dataset.ticketId;
             const domain = el.dataset.domain;
-            chrome.tabs.create({ url: url });
-            // Baseline when opening so badge clears next refresh
+            chrome.tabs.create({ url: url, active: false });
+            // Baseline and clear inline (no full list refresh) with fade
             try {
                 chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
-                    setTimeout(loadTicketHistory, 300);
+                    const item = el.closest('.ticket-item');
+                    if (item) {
+                        const dot = item.querySelector('.unread-dot');
+                        if (dot) {
+                            dot.classList.add('fade-out');
+                            setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
+                        }
+                        const meta = item.querySelector('.ticket-meta');
+                        if (meta) {
+                            const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+                            meta.classList.add('fade-out');
+                            setTimeout(() => {
+                                meta.textContent = newText;
+                                meta.classList.remove('fade-out');
+                                meta.classList.add('fade-in');
+                                setTimeout(() => meta.classList.remove('fade-in'), 200);
+                            }, 200);
+                        }
+                    }
                 });
             } catch (_) {
-                setTimeout(loadTicketHistory, 300);
+                const item = el.closest('.ticket-item');
+                if (item) {
+                    const dot = item.querySelector('.unread-dot');
+                    if (dot) {
+                        dot.classList.add('fade-out');
+                        setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
+                    }
+                    const meta = item.querySelector('.ticket-meta');
+                    if (meta) {
+                        const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+                        meta.classList.add('fade-out');
+                        setTimeout(() => {
+                            meta.textContent = newText;
+                            meta.classList.remove('fade-out');
+                            meta.classList.add('fade-in');
+                            setTimeout(() => meta.classList.remove('fade-in'), 200);
+                        }, 200);
+                    }
+                }
             }
         });
     });
     
+    // Make ticket number clickable to open in background
+    container.querySelectorAll('.ticket-id-link').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const el = e.currentTarget;
+            const url = el.dataset.url;
+            const ticketId = el.dataset.ticketId;
+            const domain = el.dataset.domain;
+            chrome.tabs.create({ url: url, active: false });
+            try {
+                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
+                    const item = el.closest('.ticket-item');
+                    if (item) {
+                        const dot = item.querySelector('.unread-dot');
+                        if (dot) {
+                            dot.classList.add('fade-out');
+                            setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
+                        }
+                        const meta = item.querySelector('.ticket-meta');
+                        if (meta) {
+                            const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+                            meta.classList.add('fade-out');
+                            setTimeout(() => {
+                                meta.textContent = newText;
+                                meta.classList.remove('fade-out');
+                                meta.classList.add('fade-in');
+                                setTimeout(() => meta.classList.remove('fade-in'), 200);
+                            }, 200);
+                        }
+                    }
+                });
+            } catch (_) {
+                const item = el.closest('.ticket-item');
+                if (item) {
+                    const dot = item.querySelector('.unread-dot');
+                    if (dot) {
+                        dot.classList.add('fade-out');
+                        setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
+                    }
+                    const meta = item.querySelector('.ticket-meta');
+                    if (meta) {
+                        const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+                        meta.classList.add('fade-out');
+                        setTimeout(() => {
+                            meta.textContent = newText;
+                            meta.classList.remove('fade-out');
+                            meta.classList.add('fade-in');
+                            setTimeout(() => meta.classList.remove('fade-in'), 200);
+                        }, 200);
+                    }
+                }
+            }
+        });
+    });
+    
+    // Delete button -> inline confirm
     container.querySelectorAll('.ticket-action-btn.delete').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const ticketId = e.target.dataset.ticketId;
-            deleteTicket(ticketId);
+            const item = e.currentTarget.closest('.ticket-item');
+            if (!item) return;
+            item.classList.add('confirming');
+        });
+    });
+
+    // Confirm Yes -> remove only that ticket and update storage
+    container.querySelectorAll('.confirm-inline .yes').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const ticketId = el.dataset.ticketId;
+            chrome.storage.local.get(['ticketHistory'], (data) => {
+                let history = (data && Array.isArray(data.ticketHistory)) ? data.ticketHistory : [];
+                const filtered = history.filter(t => String(t.id) !== String(ticketId));
+                chrome.storage.local.set({ ticketHistory: filtered }, () => {
+                    const item = el.closest('.ticket-item');
+                    if (item && item.parentNode) {
+                        item.parentNode.removeChild(item);
+                    }
+                    showNotification(`Ticket #${ticketId} removed`, 'success');
+                });
+            });
+        });
+    });
+
+    // Confirm No -> cancel
+    container.querySelectorAll('.confirm-inline .no').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const item = e.currentTarget.closest('.ticket-item');
+            if (!item) return;
+            item.classList.remove('confirming');
         });
     });
 }

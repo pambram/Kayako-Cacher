@@ -391,12 +391,12 @@ function removeTimelineMaxWidth() {
             }
         `;
         document.head.appendChild(style);
-        console.log('✅ Timeline max-width constraints removed');
+        // console.log('✅ Timeline max-width constraints removed');
         
         // Debug: Check if our styles are being applied
         setTimeout(() => {
             const timelineItems = document.querySelectorAll('[class*="ko-timeline-2_list_item__note"]');
-            console.log('🔍 Found timeline items after CSS application:', timelineItems.length);
+            // console.log('🔍 Found timeline items after CSS application:', timelineItems.length);
             timelineItems.forEach((item, index) => {
                 const computedStyle = window.getComputedStyle(item);
                 console.log(`🔍 Timeline item ${index} max-width:`, computedStyle.maxWidth);
@@ -426,7 +426,7 @@ function removeTimelineMaxWidth() {
 
 // Function to setup auto-hyperlinking when pasting URLs
 function setupAutoHyperlinking() {
-    console.log('🔗 Setting up auto-hyperlinking functionality');
+    // console.log('🔗 Setting up auto-hyperlinking functionality');
     
     // Listen for paste events on all Kayako editors with capture phase to get first shot
     document.addEventListener('paste', (e) => {
@@ -505,7 +505,7 @@ function setupAutoHyperlinking() {
 
 // Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
 function setupHyperlinkShortcut() {
-    console.log('⌨️ Setting up Cmd+K / Ctrl+K hyperlink shortcut');
+    // console.log('⌨️ Setting up Cmd+K / Ctrl+K hyperlink shortcut');
     
     document.addEventListener('keydown', (e) => {
         // Check for Cmd+K (Mac) or Ctrl+K (Windows/Linux)
@@ -781,7 +781,7 @@ function showQuickNotification(message, type = 'info') {
 
 // Function to setup auto-sizing: grow on focus, shrink on blur
 function setupAutoSizing() {
-    console.log('📏 Setting up auto-sizing functionality');
+    // console.log('📏 Setting up auto-sizing functionality');
     
     // Add CSS for smooth animations
     const styleId = 'kayako-auto-sizing-animations';
@@ -814,7 +814,7 @@ function setupEditorAutoSizing() {
             return; // Already setup
         }
         
-        console.log('📏 Setting up auto-sizing for editor:', editor);
+        // console.log('📏 Setting up auto-sizing for editor:', editor);
         editor.dataset.autoSizingSetup = 'true';
         
         // Add animation classes
@@ -842,7 +842,7 @@ function setupEditorAutoSizing() {
             // Check if this is an empty editor on page load
             const isEmpty = isEditorEmpty(editor);
             if (isEmpty) {
-                console.log('📏 Found empty focused editor on page load - keeping minimized');
+                // console.log('📏 Found empty focused editor on page load - keeping minimized');
                 // Keep minimized for reading, setup interaction listeners
                 try {
                     chrome.storage.local.get(["editorMinHeight"], (data) => {
@@ -874,7 +874,7 @@ function handleEditorFocus(editor) {
     const isFirstLoad = isEmpty && !editor.dataset.userActivated;
     
     if (isFirstLoad) {
-        console.log('📏 Editor focused but empty on first load - keeping minimized for reading');
+        // console.log('📏 Editor focused but empty on first load - keeping minimized for reading');
         // Keep at min height to give reading space
         try {
             chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
@@ -923,7 +923,7 @@ function handleEditorFocus(editor) {
 
 // Handle editor blur - animate to min height
 function handleEditorBlur(editor) {
-    console.log('📏 Editor blurred, shrinking to min height');
+    // console.log('📏 Editor blurred, shrinking to min height');
     
     try {
         chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
@@ -959,11 +959,11 @@ function isEditorEmpty(editor) {
     
     const isEmpty = cleanText === '' || hasOnlyBrTags || hasOnlyPlaceholder;
     
-    console.log('📏 Editor empty check:', {
-        textContent: `"${cleanText}"`,
-        innerHTML: innerHTML.substring(0, 100),
-        isEmpty: isEmpty
-    });
+    // console.log('📏 Editor empty check:', {
+    //     textContent: `"${cleanText}"`,
+    //     innerHTML: innerHTML.substring(0, 100),
+    //     isEmpty: isEmpty
+    // });
     
     return isEmpty;
 }
@@ -975,7 +975,7 @@ function setupFirstLoadInteractionListeners(editor) {
         return;
     }
     
-    console.log('📏 Setting up first-load interaction listeners');
+    // console.log('📏 Setting up first-load interaction listeners');
     
     // Mark that we're waiting for user activation
     editor.dataset.waitingForActivation = 'true';
@@ -1039,7 +1039,7 @@ function setupToolbarButtonListeners(editor) {
         return;
     }
 
-    console.log('📏 Setting up toolbar listeners (delegated, capture)');
+    // console.log('📏 Setting up toolbar listeners (delegated, capture)');
 
     // Helper to determine if an element within the toolbar should trigger expansion
     const isInteractive = (el) => {
@@ -1108,7 +1108,7 @@ function cleanupAllFirstLoadListeners(editor, handlers) {
 
 // Activate editor for real editing (expand to max height)
 function activateEditor(editor) {
-    console.log('📏 Activating editor for real use');
+    // console.log('📏 Activating editor for real use');
     
     // Mark as user activated
     editor.dataset.userActivated = 'true';
@@ -1146,7 +1146,7 @@ function isTypingKey(key) {
 
 // Animate editor to specific height
 function animateEditorToHeight(editor, targetHeight) {
-    console.log('📏 Animating editor to height:', targetHeight + 'px');
+    // console.log('📏 Animating editor to height:', targetHeight + 'px');
     
     // Set the height on the editor element
     editor.style.height = targetHeight + 'px';
@@ -1163,7 +1163,7 @@ function animateEditorToHeight(editor, targetHeight) {
 
 // Function to setup ticket history tracking
 function setupTicketHistoryTracking() {
-    console.log('📚 Setting up ticket history tracking');
+    // console.log('📚 Setting up ticket history tracking');
     
     // Listen for clicks on Send buttons
     document.addEventListener('click', (e) => {
@@ -1299,9 +1299,9 @@ function saveTicketToHistory(ticketInfo) {
                 } else {
                     console.log('📚 Ticket saved to history:', ticketInfo.id);
                     showQuickNotification(`📚 Ticket #${ticketInfo.id} tracked`, 'success');
-                    // Notify background to baseline latest activity for this ticket
+                    // After send, poll briefly and baseline to include our own new post
                     try {
-                        chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain: ticketInfo.domain, ticketId: ticketInfo.id });
+                        chrome.runtime.sendMessage({ action: 'baselineAfterSend', domain: ticketInfo.domain, ticketId: ticketInfo.id });
                     } catch (_) {}
                 }
             });

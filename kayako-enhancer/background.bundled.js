@@ -395,6 +395,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return true;
     }
+    if (message.action === 'baselineAfterSend' && message.ticketId && message.domain) {
+        baselineAfterSend(message.domain, message.ticketId).then(() => sendResponse({ success: true })).catch(err => {
+            console.error('baselineAfterSend error:', err?.message || err);
+            sendResponse({ success: false, error: err?.message || String(err) });
+        });
+        return true;
+    }
 });
 
 // ----- Ticket activity checking (minimal, surgical) -----
@@ -510,4 +517,42 @@ try {
   });
 } catch (e) {
   console.warn('Alarms not available:', e?.message || e);
+}
+
+/** Wait helper */
+function delay(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+/** After user sends, wait for the new post to appear and baseline to it */
+async function baselineAfterSend(domain, ticketId) {
+  try {
+    const beforeId = await fetchLatestPostId(domain, ticketId);
+    const start = Date.now();
+    let latest = beforeId;
+    // poll up to 20s
+    while (Date.now() - start < 20000) {
+      await delay(1000);
+      try {
+        const probe = await fetchLatestPostId(domain, ticketId);
+        if (probe > latest) {
+          latest = probe;
+          break;
+        }
+      } catch (_) {}
+    }
+    // Update baseline to latest observed (includes our own post)
+    const data = await storageGet(['ticketHistory']);
+    let history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+    let changed = false;
+    history = history.map(t => {
+      if (String(t.id) === String(ticketId) && t.domain === domain) {
+        const updated = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        changed = true;
+        return updated;
+      }
+      return t;
+    });
+    if (changed) await storageSet({ ticketHistory: history });
+  } catch (e) {
+    console.warn('baselineAfterSend failed:', e?.message || e);
+  }
 }
