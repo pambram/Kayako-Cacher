@@ -36,6 +36,7 @@
   const CACHE_PREFIX = 'kayako_cache_';
   const CACHE_EXPIRY = 30 * 60 * 1000; // 30 minutes
   const memoryCache = new Map();
+  const postKindMap = new Map(); // postId -> 'message' | 'activity' | 'note' | 'other'
   
   // Stats tracking
   window.kayakoCacheStats_live = { hits: 0, misses: 0, stored: 0 };
@@ -61,10 +62,14 @@
       if (!intercept) {
         // Pass-through most requests, but keep our wrapper for detail stubs
         let needsDetailStub = false;
+        let isPostsWriteTarget = false;
         try {
           needsDetailStub = (method === 'GET') && (typeof url === 'string') && (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url));
+          const mtmp = (method || '').toUpperCase();
+          const utmp = typeof url === 'string' ? url : '';
+          isPostsWriteTarget = (mtmp === 'POST' || mtmp === 'PUT' || mtmp === 'PATCH' || mtmp === 'DELETE') && isPostsWrite(utmp);
         } catch (_) {}
-        if (!needsDetailStub) {
+        if (!needsDetailStub && !isPostsWriteTarget) {
           try { this.send = originalSend.bind(this); } catch (e) {}
         }
         // For writes to posts endpoints, invalidate caches and pause cache simulation briefly
@@ -72,6 +77,14 @@
           const m = (method || '').toUpperCase();
           const u = typeof url === 'string' ? url : '';
           if ((m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE') && isPostsWrite(u)) {
+            // Sanitize writes: remove include=* to avoid server-side 400s
+            try {
+              const wu = new URL(url, window.location.origin);
+              if (wu.searchParams.has('include')) {
+                wu.searchParams.delete('include');
+                url = wu.toString();
+              }
+            } catch (_) {}
             this.addEventListener('load', function() {
               try {
                 if (this.status >= 200 && this.status < 300) {
@@ -525,6 +538,7 @@
                 }
 
                 // Start background backfill for older pages on initial list (no after_id)
+                try { updatePostKindMap(responseData); } catch (_) {}
                 try {
                   const u = new URL(requestUrl, window.location.origin);
                   const hasAfter = u.searchParams.has('after_id');
@@ -550,6 +564,41 @@
         };
       }
       
+    // Suppress markAsSeen on non-message posts (avoid server 400)
+    try {
+      if (requestMethod && /^(PUT|POST|PATCH)$/i.test(requestMethod) && requestUrl && isPostsWrite(requestUrl)) {
+        const u = new URL(requestUrl, window.location.origin);
+        const idStr = (u.pathname.match(/\/posts\/(\d+)/) || [])[1] || null;
+        let isMarkSeen = false;
+        try {
+          if (typeof data === 'string') {
+            isMarkSeen = /post_status\s*[:=]\s*"?SEEN"?/i.test(data);
+          } else if (data && typeof data === 'object') {
+            isMarkSeen = String(data.post_status || '').toUpperCase() === 'SEEN';
+          }
+        } catch (_) {}
+        if (idStr && isMarkSeen) {
+          const kind = postKindMap.get(idStr);
+          if (kind === 'activity' || kind === 'note') {
+            const ok = JSON.stringify({ status: 200, success: true });
+            setTimeout(() => {
+              try {
+                Object.defineProperty(this, 'status', { value: 200, configurable: true });
+                Object.defineProperty(this, 'statusText', { value: 'OK', configurable: true });
+                Object.defineProperty(this, 'responseText', { value: ok, configurable: true });
+                Object.defineProperty(this, 'response', { value: ok, configurable: true });
+                Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+                if (this.onload) this.onload.call(this);
+                if (this.onreadystatechange) this.onreadystatechange.call(this);
+              } catch (_) {}
+            }, 0);
+            console.log('🛡️ Suppressed markAsSeen for non-message post', idStr);
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
     // Quietly short-circuit problematic activity/message detail requests with a safe, array-shaped payload
     try {
       if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isMessageDetail(requestUrl) || isAttachmentDetail(requestUrl))) {
@@ -635,6 +684,7 @@
       console.log('🔄 Starting background backfill (posts)...');
       const origin = window.location.origin;
       const initial = new URL(initialUrl, origin);
+      try { updatePostKindMap(firstData); } catch (_) {}
       let nextUrl = extractNextUrl(firstData) || computeNextUrlFromMinId(initial, firstData);
       let pages = 0;
       let totalNew = 0;
@@ -712,6 +762,7 @@
                   }
                 }
               }
+              try { updatePostKindMap(data); } catch (_) {}
               const count = Array.isArray(data.data) ? data.data.length : 0;
               if (count > 0) {
                 const cacheKey = generateCacheKey(urlAbs);
@@ -819,11 +870,19 @@
       const store = (container.lookup && (container.lookup('service:store') || container.lookup('store:main'))) || null;
       if (!store) return 0;
       let pushed = 0;
-      // Filter to message-like records only to avoid relationship churn
+      // Filter to message-like records only; exclude activities/notes and trigger/system generated
       const items = payload.data.filter(function(item){
         try {
-          const rt = (item && (item.resource_type || item.type || (item.original && item.original.resource_type) || (item.attributes && item.attributes.resource_type) || '')).toString().toLowerCase();
-          return rt === 'case_message' || rt === 'case-message' || rt === 'post' || rt === 'case message' || rt === 'message';
+          const top = (item && (item.resource_type || item.type || (item.attributes && item.attributes.resource_type) || '')).toString().toLowerCase();
+          const orig = (item && item.original && item.original.resource_type) ? String(item.original.resource_type).toLowerCase() : '';
+          const creator = (item && item.creator && item.creator.resource_type) ? String(item.creator.resource_type).toLowerCase() : '';
+          if (orig === 'activity' || orig === 'note') return false;
+          if (creator === 'trigger' || creator === 'system') return false;
+          // Accept posts that represent messages or case messages
+          if (top === 'case_message' || top === 'case-message' || top === 'message') return true;
+          // For generic 'post', ensure it's not an activity/note (covered above)
+          if (top === 'post') return true;
+          return false;
         } catch (_) { return false; }
       });
       if (!items.length) return 0;
@@ -984,6 +1043,26 @@
       console.warn('Append to visible thread failed:', e);
       return false;
     }
+  }
+  
+  function updatePostKindMap(payload) {
+    try {
+      if (!payload || !Array.isArray(payload.data)) return;
+      payload.data.forEach(function(item){
+        try {
+          const id = String(item && item.id);
+          if (!id) return;
+          const orig = (item && item.original && item.original.resource_type) ? String(item.original.resource_type).toLowerCase() : '';
+          const creator = (item && item.creator && item.creator.resource_type) ? String(item.creator.resource_type).toLowerCase() : '';
+          let kind = 'other';
+          if (orig === 'activity') kind = 'activity';
+          else if (orig === 'note') kind = 'note';
+          else if (creator === 'trigger' || creator === 'system') kind = 'other';
+          else kind = 'message';
+          postKindMap.set(id, kind);
+        } catch(_) {}
+      });
+    } catch(_) {}
   }
   function isPostsWrite(url) {
     try {
