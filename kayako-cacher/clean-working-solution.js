@@ -890,10 +890,24 @@
         Ember.run(function(){
           try {
             if (store.push) {
+              var preferredType = (function(){
+                try {
+                  if (window.__kayako_postModelType) return window.__kayako_postModelType;
+                  var sample = null;
+                  for (var i=0;i<items.length;i++){ if (items[i] && items[i].id){ sample = items[i]; break; } }
+                  var sampleId = sample ? String(sample.id) : null;
+                  var candidates = ['post','case-message','case_message'];
+                  for (var c=0;c<candidates.length;c++) {
+                    try { var rec = sampleId ? store.peekRecord(candidates[c], sampleId) : null; if (rec) { window.__kayako_postModelType = candidates[c]; return candidates[c]; } } catch(_) {}
+                  }
+                  window.__kayako_postModelType = 'post';
+                  return 'post';
+                } catch(_) { return 'post'; }
+              })();
               const jsonApiData = items.map(function(item){
                 var attrs = {};
                 for (var k in item) { if (Object.prototype.hasOwnProperty.call(item, k) && k !== 'id' && k !== 'resource_type' && k !== 'type') attrs[k] = item[k]; }
-                return { id: String(item.id), type: 'case-message', attributes: attrs };
+                return { id: String(item.id), type: preferredType, attributes: attrs };
               });
               try { store.push({ data: jsonApiData }); pushed = jsonApiData.length; } catch(_) {}
             }
