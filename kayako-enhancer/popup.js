@@ -1,4 +1,5 @@
 let __lastTicketHistoryCache = [];
+let __optimisticCleared = new Set();
 
 document.addEventListener("DOMContentLoaded", function () {
     // Main editor elements
@@ -286,7 +287,16 @@ function applyUnreadDiff(prev, next) {
         const p = prevMap[id];
         const n = nextMap[id];
         const had = !!(p && (p.hasUnseenActivity || (Number(p.unreadCount||0) > 0)));
-        const has = !!(n && (n.hasUnseenActivity || (Number(n.unreadCount||0) > 0)));
+        const rawHas = !!(n && (n.hasUnseenActivity || (Number(n.unreadCount||0) > 0)));
+        let has = rawHas;
+        // If user cleared this inline, keep it cleared optimistically until backend baseline reflects
+        if (__optimisticCleared.has(String(id))) {
+            has = false;
+            if (n) {
+                n.hasUnseenActivity = false;
+                n.unreadCount = 0;
+            }
+        }
         const item = container.querySelector(`.ticket-item[data-ticket-id="${id}"]`);
         if (!item) return;
         if (!had && has) {
@@ -300,6 +310,10 @@ function applyUnreadDiff(prev, next) {
             if (nextCount !== prevCount) {
                 addUnreadForItem(item, nextCount);
             }
+        }
+        // If background now shows no unread, drop optimistic flag
+        if (__optimisticCleared.has(String(id)) && rawHas === false) {
+            __optimisticCleared.delete(String(id));
         }
     });
 }
@@ -355,6 +369,7 @@ function displayTicketHistory(history) {
             chrome.tabs.create({ url: url, active: false });
             // Baseline and clear inline (no full list refresh) with fade
             try {
+                __optimisticCleared.add(String(ticketId));
                 chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
                     const item = el.closest('.ticket-item');
                     if (item) {
@@ -377,6 +392,7 @@ function displayTicketHistory(history) {
                     }
                 });
             } catch (_) {
+                __optimisticCleared.add(String(ticketId));
                 const item = el.closest('.ticket-item');
                 if (item) {
                     const dot = item.querySelector('.unread-dot');
@@ -410,6 +426,7 @@ function displayTicketHistory(history) {
             const domain = el.dataset.domain;
             chrome.tabs.create({ url: url, active: false });
             try {
+                __optimisticCleared.add(String(ticketId));
                 chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
                     const item = el.closest('.ticket-item');
                     if (item) {
@@ -432,6 +449,7 @@ function displayTicketHistory(history) {
                     }
                 });
             } catch (_) {
+                __optimisticCleared.add(String(ticketId));
                 const item = el.closest('.ticket-item');
                 if (item) {
                     const dot = item.querySelector('.unread-dot');
