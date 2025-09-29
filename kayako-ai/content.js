@@ -377,6 +377,11 @@ class KayakoAIEnhancer {
       if (action.id === 'beautify' && enhancedText) {
         enhancedText = this.sanitizeBeautifyHTML(enhancedText);
       }
+      // If Beautify returned empty, fall back to input text so we can still format locally
+      if (action.id === 'beautify' && (!enhancedText || !enhancedText.trim())) {
+        try { console.warn('Beautify returned empty; falling back to local formatting.'); } catch (_) {}
+        enhancedText = textData.extractedText || '';
+      }
       
       // Remove processing notification before showing modal
       processingNotification.remove();
