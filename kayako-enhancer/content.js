@@ -434,15 +434,18 @@ function setupAutoHyperlinking() {
         const target = e.target;
         
         // Check if we're in a Kayako editor
-        const editor = target.closest('.fr-element, [contenteditable="true"]');
-        if (!editor) {
+        if (!target.closest('.fr-element, [contenteditable="true"]')) {
             return;
         }
         
+        // Check if text is selected
         const selection = window.getSelection();
-        if (!selection.rangeCount) {
+        if (!selection.rangeCount || selection.isCollapsed) {
             return;
         }
+        
+        // Get the selected text BEFORE the paste happens
+        const selectedText = selection.toString();
         const range = selection.getRangeAt(0);
         
         // Get the clipboard data synchronously from the paste event
@@ -454,126 +457,50 @@ function setupAutoHyperlinking() {
             return;
         }
         
-        // If collapsed (no selection) and clipboard is URL → paste as-is, then suggest title replacement
-        if (selection.isCollapsed && isValidURL(clipboardText)) {
-            // Intercept to insert <a>URL</a> ourselves (visual "as-is") so we can later replace text only
+        // Check if clipboard contains a URL
+        if (isValidURL(clipboardText)) {
+            console.log('🔗 Auto-hyperlinking detected');
+            console.log('🔗 Selected text:', `"${selectedText}"`);
+            console.log('🔗 URL from clipboard:', clipboardText);
+            
+            // IMMEDIATELY prevent the paste
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
             
+            // Create hyperlink element with the selected text immediately
             const link = document.createElement('a');
             link.href = clipboardText;
-            link.textContent = clipboardText;
+            link.textContent = selectedText; // Preserve the selected text
             link.target = '_blank';
             
+            console.log('🔗 Created link:', link.outerHTML);
+            
+            // Replace selection with link immediately
+            range.deleteContents();
             range.insertNode(link);
-            // Move caret after link
-            const after = document.createRange();
-            after.setStartAfter(link);
-            after.collapse(true);
+            
+            // Position cursor after the link
+            const newRange = document.createRange();
+            newRange.setStartAfter(link);
+            newRange.collapse(true);
             selection.removeAllRanges();
-            selection.addRange(after);
+            selection.addRange(newRange);
             
-            // Trigger change events
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('fr-change', { bubbles: true }));
+            console.log('✅ Auto-hyperlinked:', `"${selectedText}"`, '→', clipboardText);
             
-            // Asynchronously fetch title and suggest replacement
-            try {
-                chrome.runtime.sendMessage({ action: 'resolveUrlTitle', url: link.href }, (res) => {
-                    if (!res || !res.success || !res.title) return;
-                    const title = String(res.title).trim();
-                    if (!title || title.toLowerCase() === clipboardText.toLowerCase()) return;
-                    // Ensure link still exists in DOM before prompting
-                    if (!document.body.contains(link)) return;
-                    showTitleReplacementPrompt(title, link, editor);
-                });
-            } catch (_) {}
+            // Show success notification
+            showQuickNotification(`🔗 "${selectedText}" linked!`, 'success');
             
-            return;
+            // Trigger Kayako events
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('fr-change', { bubbles: true }));
+            
+            return false;
         }
         
-        // If text is selected and clipboard is URL → auto-hyperlink selected text
-        if (!selection.isCollapsed) {
-            const selectedText = selection.toString();
-            if (!selectedText) return;
-            if (isValidURL(clipboardText)) {
-                // Prevent default paste
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                
-                const link = document.createElement('a');
-                link.href = clipboardText;
-                link.textContent = selectedText;
-                link.target = '_blank';
-                
-                range.deleteContents();
-                range.insertNode(link);
-                
-                const newRange = document.createRange();
-                newRange.setStartAfter(link);
-                newRange.collapse(true);
-                selection.removeAllRanges();
-                selection.addRange(newRange);
-                
-                showQuickNotification(`🔗 "${selectedText}" linked!`, 'success');
-                editor.dispatchEvent(new Event('input', { bubbles: true }));
-                editor.dispatchEvent(new Event('fr-change', { bubbles: true }));
-                return false;
-            }
-        }
-        
-        // Otherwise let normal paste happen
+        // If we get here, it's not a URL - let normal paste happen
     }, true); // Use capture phase to get first shot at the event
-}
-
-// Offer to replace a just-pasted URL's visible text with the fetched page title
-function showTitleReplacementPrompt(title, linkEl, editor) {
-    // Build lightweight inline prompt (top-right)
-    const prompt = document.createElement('div');
-    prompt.className = 'kayako-url-title-suggestion';
-    prompt.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        background: #ffffff;
-        color: #333;
-        border: 1px solid #ddd;
-        border-radius: 6px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-        padding: 10px 12px;
-        z-index: 10001;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        font-size: 12px;
-        max-width: 360px;
-    `;
-    const safeTitle = title.length > 120 ? title.slice(0, 117) + '…' : title;
-    prompt.innerHTML = `
-        <div style="margin-bottom: 8px;">Replace link text with page title?</div>
-        <div style="margin-bottom: 10px; color:#555; word-break: break-word;">“${safeTitle}”</div>
-        <div style="display:flex; gap:8px; justify-content:flex-end;">
-            <button data-act="replace" style="padding:6px 10px; background:#007bff; color:#fff; border:none; border-radius:4px; cursor:pointer;">Replace</button>
-            <button data-act="keep" style="padding:6px 10px; background:#f1f3f5; color:#333; border:1px solid #ddd; border-radius:4px; cursor:pointer;">Keep URL</button>
-        </div>
-    `;
-    document.body.appendChild(prompt);
-    
-    const cleanup = () => { if (prompt && prompt.parentNode) prompt.remove(); };
-    prompt.querySelector('[data-act="replace"]').addEventListener('click', () => {
-        if (document.body.contains(linkEl)) {
-            linkEl.textContent = title;
-            linkEl.title = title;
-            // Notify editor
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('fr-change', { bubbles: true }));
-        }
-        cleanup();
-    });
-    prompt.querySelector('[data-act="keep"]').addEventListener('click', cleanup);
-    
-    // Auto-dismiss after 8s
-    setTimeout(cleanup, 8000);
 }
 
 // Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
