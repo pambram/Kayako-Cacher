@@ -1,3 +1,5 @@
+let __lastTicketHistoryCache = [];
+
 document.addEventListener("DOMContentLoaded", function () {
     // Main editor elements
     let minSizeInput = document.getElementById("min-size");
@@ -153,7 +155,7 @@ document.addEventListener("DOMContentLoaded", function () {
         clearHistoryBtn.addEventListener("click", clearTicketHistory);
     }
     
-    // Load ticket history on popup open
+    // Load ticket history on popup open (non-blocking: show cached → background refresh → animate diffs)
     loadTicketHistory();
     
     // Apply the current toggle states on popup open
@@ -182,25 +184,124 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 
 // Function to load and display ticket history
-function loadTicketHistory() {
+function ensureRefreshIndicator() {
     const container = document.getElementById("ticket-history-container");
-    if (container) {
-        container.innerHTML = '<div class="loading">Checking updates…</div>';
+    if (!container) return null;
+    let ind = document.getElementById('refresh-indicator');
+    if (!ind) {
+        ind = document.createElement('div');
+        ind.id = 'refresh-indicator';
+        ind.className = 'refresh-indicator';
+        ind.innerHTML = '<div class="refresh-spinner"></div><div class="refresh-text">Refreshing…</div>';
+        container.parentNode.insertBefore(ind, container);
     }
-    // Ask background to refresh activity flags, then read from storage
+    return ind;
+}
+
+function showRefreshIndicator(show) {
+    const ind = ensureRefreshIndicator();
+    if (!ind) return;
+    if (show) ind.classList.add('show'); else ind.classList.remove('show');
+}
+
+function loadTicketHistory() {
+    // 1) Render cached immediately
+    chrome.storage.local.get(['ticketHistory'], (data) => {
+        const cached = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+        __lastTicketHistoryCache = cached;
+        displayTicketHistory(cached);
+        showRefreshIndicator(true);
+    });
+    // 2) Trigger background refresh; when done, diff and animate
     try {
         chrome.runtime.sendMessage({ action: 'forceCheckTickets' }, () => {
             chrome.storage.local.get(['ticketHistory'], (data) => {
-                const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
-                displayTicketHistory(history);
+                const fresh = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+                applyUnreadDiff(__lastTicketHistoryCache, fresh);
+                __lastTicketHistoryCache = fresh;
+                showRefreshIndicator(false);
             });
         });
     } catch (_) {
-        chrome.storage.local.get(['ticketHistory'], (data) => {
-            const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
-            displayTicketHistory(history);
-        });
+        showRefreshIndicator(false);
     }
+}
+
+function mapById(arr) {
+    const m = {};
+    (arr || []).forEach(t => { if (t && t.id != null) m[String(t.id)] = t; });
+    return m;
+}
+
+function clearUnreadForItem(item) {
+    if (!item) return;
+    const dot = item.querySelector('.unread-dot');
+    if (dot) {
+        dot.classList.add('fade-out');
+        setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
+    }
+    const meta = item.querySelector('.ticket-meta');
+    if (meta) {
+        const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+        meta.classList.add('fade-out');
+        setTimeout(() => {
+            meta.textContent = newText;
+            meta.classList.remove('fade-out');
+            meta.classList.add('fade-in');
+            setTimeout(() => meta.classList.remove('fade-in'), 200);
+        }, 200);
+    }
+}
+
+function addUnreadForItem(item, unreadCount) {
+    if (!item) return;
+    const idWrap = item.querySelector('.ticket-id');
+    if (!idWrap) return;
+    let dot = item.querySelector('.unread-dot');
+    if (!dot) {
+        dot = document.createElement('span');
+        dot.className = 'unread-dot appearing';
+        dot.title = unreadCount ? `${unreadCount} new` : 'New activity';
+        idWrap.appendChild(dot);
+        requestAnimationFrame(() => {
+            dot.classList.remove('appearing');
+        });
+    } else {
+        dot.title = unreadCount ? `${unreadCount} new` : 'New activity';
+    }
+    const meta = item.querySelector('.ticket-meta');
+    if (meta) {
+        const base = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+        const suffix = unreadCount ? ` • ${unreadCount} new` : ' • new';
+        meta.textContent = base + suffix;
+    }
+}
+
+function applyUnreadDiff(prev, next) {
+    const prevMap = mapById(prev);
+    const nextMap = mapById(next);
+    const container = document.getElementById('ticket-history-container');
+    if (!container) return;
+    Object.keys(nextMap).forEach(id => {
+        const p = prevMap[id];
+        const n = nextMap[id];
+        const had = !!(p && (p.hasUnseenActivity || (Number(p.unreadCount||0) > 0)));
+        const has = !!(n && (n.hasUnseenActivity || (Number(n.unreadCount||0) > 0)));
+        const item = container.querySelector(`.ticket-item[data-ticket-id="${id}"]`);
+        if (!item) return;
+        if (!had && has) {
+            addUnreadForItem(item, Number(n.unreadCount||0));
+        } else if (had && !has) {
+            clearUnreadForItem(item);
+        } else if (has) {
+            // Update count/title if changed
+            const prevCount = Number(p && p.unreadCount || 0);
+            const nextCount = Number(n.unreadCount || 0);
+            if (nextCount !== prevCount) {
+                addUnreadForItem(item, nextCount);
+            }
+        }
+    });
 }
 
 // Function to display ticket history in the popup
