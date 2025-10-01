@@ -361,7 +361,7 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing AI action: ${action.id} on text:`, textData.extractedText.substring(0, 100) + '...');
 
     this.isProcessing = true;
-    const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info');
+    const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info', null, this.getAnchorForEditor(editorElement));
 
     try {
       // Get ticket context if enabled (skip for Beautify to keep it fast)
@@ -1138,7 +1138,7 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing custom prompt:`, customPrompt);
 
     this.isProcessing = true;
-    const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info');
+    const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info', null, this.getAnchorForEditor(editorElement));
 
     try {
       // For Help Me Write, ignore selections. Always use editor content as context.
@@ -1693,7 +1693,7 @@ class KayakoAIEnhancer {
     return this.showPersistentNotification(message, type, type === 'error' ? 5000 : 3000);
   }
 
-  showPersistentNotification(message, type = 'info', autoRemoveDelay = null) {
+  showPersistentNotification(message, type = 'info', autoRemoveDelay = null, anchorEl = null) {
     // Remove existing notifications
     const existing = document.querySelector('.kayako-ai-notification');
     if (existing) {
@@ -1715,8 +1715,6 @@ class KayakoAIEnhancer {
     
     notification.style.cssText = `
       position: fixed;
-      top: 20px;
-      right: 20px;
       background: ${color.bg};
       color: ${color.text};
       padding: 12px 16px;
@@ -1727,10 +1725,35 @@ class KayakoAIEnhancer {
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
       max-width: 350px;
       word-wrap: break-word;
-      animation: slideInRight 0.3s ease-out;
+      animation: slideInRight 0.2s ease-out;
+      pointer-events: none;
     `;
 
     document.body.appendChild(notification);
+
+    // Position near anchor element when provided
+    if (anchorEl && typeof anchorEl.getBoundingClientRect === 'function') {
+      const rect = anchorEl.getBoundingClientRect();
+      const gap = 8;
+      let top = rect.bottom + gap;
+      let left = rect.left;
+
+      // Clamp inside viewport after measuring size
+      const { innerWidth, innerHeight } = window;
+      const box = notification.getBoundingClientRect();
+      if (left + box.width + 12 > innerWidth) {
+        left = Math.max(12, innerWidth - box.width - 12);
+      }
+      if (top + box.height + 12 > innerHeight) {
+        top = Math.max(12, rect.top - box.height - gap);
+      }
+      notification.style.left = `${left}px`;
+      notification.style.top = `${top}px`;
+    } else {
+      // Default: top-right
+      notification.style.top = '20px';
+      notification.style.right = '20px';
+    }
 
     // Auto remove after delay if specified
     if (autoRemoveDelay) {
@@ -1743,6 +1766,17 @@ class KayakoAIEnhancer {
     }
 
     return notification; // Return reference so it can be manually removed
+  }
+
+  // Find the AI trigger button near the provided editor to anchor notifications
+  getAnchorForEditor(editorElement) {
+    try {
+      const container = editorElement.closest('.ko-text-editor__container_1p5g6r') || document.body;
+      const aiBtn = container.querySelector('.kayako-ai-dropdown');
+      return aiBtn || container;
+    } catch (_) {
+      return null;
+    }
   }
 }
 
