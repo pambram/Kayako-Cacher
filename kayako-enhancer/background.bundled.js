@@ -380,6 +380,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "log") {
         console.log("Kayako Resizer Log:", message.data);
     }
+    if (message.action === 'ping') {
+        console.log('[SW] ping received');
+        sendResponse({ ok: true, ts: Date.now() });
+        return true;
+    }
+    if (message.action === 'fetchPageTitle' && message.url) {
+        console.log('[SW] fetchPageTitle request for', message.url);
+        fetchPageTitle(message.url).then(title => {
+            console.log('[SW] fetchPageTitle result length', title ? title.length : 0);
+            sendResponse({ success: !!title, title });
+        }).catch(err => {
+            console.warn('[SW] fetchPageTitle failed:', err?.message || err);
+            sendResponse({ success: false, error: err?.message || String(err) });
+        });
+        return true;
+    }
     // Initialize baseline after tracking a ticket
     if (message.action === 'baselineTicketActivity' && message.ticketId && message.domain) {
         baselineTicketActivity(message.domain, message.ticketId).then(() => sendResponse({ success: true })).catch(err => {
@@ -403,6 +419,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 });
+
+// --- Page title fetcher ---
+function decodeHTMLEntities(str){
+  try {
+    return str
+      .replace(/&amp;/g,'&')
+      .replace(/&lt;/g,'<')
+      .replace(/&gt;/g,'>')
+      .replace(/&quot;/g,'"')
+      .replace(/&#39;/g,"'");
+  } catch(_) { return str; }
+}
+
+async function fetchPageTitle(url){
+  let res;
+  try {
+    console.log('[SW] fetching for title:', url);
+    res = await fetch(url, { redirect: 'follow', credentials: 'omit' });
+  } catch (e) {
+    // Try https variant if http blocked and host supports it
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'http:') {
+        u.protocol = 'https:';
+        console.log('[SW] retrying https variant:', u.href);
+        res = await fetch(u.href, { redirect: 'follow', credentials: 'omit' });
+      } else {
+        throw e;
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+  if (!res || !res.ok) { console.log('[SW] title fetch not ok'); return ''; }
+  const text = await res.text();
+  const m = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!m) { console.log('[SW] no <title> tag found'); return ''; }
+  const raw = m[1].replace(/\s+/g,' ').trim();
+  return decodeHTMLEntities(raw).slice(0, 200);
+}
 
 // ----- Ticket activity checking (minimal, surgical) -----
 

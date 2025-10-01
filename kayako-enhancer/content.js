@@ -440,13 +440,6 @@ function setupAutoHyperlinking() {
         
         // Check if text is selected
         const selection = window.getSelection();
-        if (!selection.rangeCount || selection.isCollapsed) {
-            return;
-        }
-        
-        // Get the selected text BEFORE the paste happens
-        const selectedText = selection.toString();
-        const range = selection.getRangeAt(0);
         
         // Get the clipboard data synchronously from the paste event
         let clipboardText = '';
@@ -454,8 +447,24 @@ function setupAutoHyperlinking() {
             clipboardText = e.clipboardData.getData('text/plain');
         } catch (error) {
             console.log('Could not get clipboard data from paste event:', error.message);
+        }
+        
+        // If no selection (collapsed) and clipboard has a URL, let paste happen, then offer title replacement
+        if (!selection.rangeCount || selection.isCollapsed) {
+            if (clipboardText && isValidURL(clipboardText)) {
+                console.log('📎 Pasted URL without selection, will suggest title:', clipboardText);
+                // Give the editor a moment to insert/auto-link, then suggest replacement
+                setTimeout(() => {
+                    console.log('⏱️ Title suggestion timer fired for', clipboardText);
+                    trySuggestTitleReplace(target, clipboardText, 1);
+                }, 150);
+            }
             return;
         }
+        
+        // Get the selected text BEFORE the paste happens
+        const selectedText = selection.toString();
+        const range = selection.getRangeAt(0);
         
         // Check if clipboard contains a URL
         if (isValidURL(clipboardText)) {
@@ -501,6 +510,283 @@ function setupAutoHyperlinking() {
         
         // If we get here, it's not a URL - let normal paste happen
     }, true); // Use capture phase to get first shot at the event
+}
+
+function trySuggestTitleReplace(pasteTarget, url, attempt) {
+    try {
+        // Prefer the currently active contenteditable
+        let editor = null;
+        const ae = document.activeElement;
+        if (ae && (ae.isContentEditable || ae.classList?.contains('fr-element'))) {
+            editor = ae;
+        }
+        if (!editor && pasteTarget && typeof pasteTarget.closest === 'function') {
+            editor = pasteTarget.closest('.fr-element, [contenteditable="true"]');
+        }
+        if (!editor) {
+            editor = document.querySelector('.fr-element[contenteditable="true"], [contenteditable="true"]');
+        }
+        if (!editor) {
+            console.log('🕵️ Could not resolve editor on attempt', attempt);
+        } else {
+            console.log('🧭 Resolved editor on attempt', attempt);
+            suggestReplaceURLWithTitle(editor, url);
+            return;
+        }
+        // Retry once more after a short delay because Froala may re-render
+        if (attempt < 2) {
+            setTimeout(() => trySuggestTitleReplace(pasteTarget, url, attempt + 1), 400);
+        }
+    } catch (e) {
+        console.log('trySuggestTitleReplace error:', e?.message || e);
+    }
+}
+
+// Suggest replacing a just-pasted raw URL with the page title as the link text
+function suggestReplaceURLWithTitle(editor, url) {
+    try {
+        // Avoid duplicate prompts for same URL if one is already showing
+        const existing = document.querySelector('.kayako-link-title-suggestion');
+        if (existing && existing.dataset.url === url) {
+            return;
+        }
+        
+        // Ask background to fetch the page title
+        const ver = (chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
+        console.log('📡 Requesting page title from background for:', url, 'enhancer v', ver);
+        let responded = false;
+        const timeoutId = setTimeout(() => {
+            if (!responded) {
+                console.log('⏳ No response from service worker for title within 2s. Pinging…');
+                try {
+                    chrome.runtime.sendMessage({ action: 'ping' }, (pong) => {
+                        const err = chrome.runtime?.lastError;
+                        if (err) {
+                            console.log('⚠️ ping error:', err.message);
+                        } else {
+                            console.log('🏓 ping response:', pong);
+                        }
+                    });
+                } catch (e) {
+                    console.log('⚠️ ping threw:', e?.message || e);
+                }
+            }
+        }, 2000);
+        chrome.runtime.sendMessage({ action: 'fetchPageTitle', url: url }, (response) => {
+            responded = true;
+            clearTimeout(timeoutId);
+            const err = chrome.runtime?.lastError;
+            if (err) {
+                console.log('⚠️ sendMessage error:', err.message);
+            }
+            if (!response || !response.success || !response.title) {
+                console.log('⚠️ No title available for', url);
+                return;
+            }
+            const title = String(response.title).trim();
+            if (!title || title.length === 0) {
+                console.log('⚠️ Empty title for', url);
+                return;
+            }
+            if (titlesEquivalentOrUrlLike(title, url)) {
+                console.log('⚠️ Title looks like URL or equals URL, skipping suggestion for', url, 'title:', title);
+                return;
+            }
+            
+            // Build and show suggestion UI
+            console.log('🏷️ Title fetched:', title);
+            createOrUpdateLinkSuggestion(editor, url, title);
+        });
+    } catch (error) {
+        console.log('Title suggestion failed:', error?.message || error);
+    }
+}
+
+function titlesEquivalentOrUrlLike(title, url) {
+    try {
+        const t = (title || '').trim();
+        const u = new URL(url, window.location.href).href;
+        if (!t) return true;
+        // Exact match or case-insensitive
+        if (t === url || t.toLowerCase() === url.toLowerCase() || t === u || t.toLowerCase() === u.toLowerCase()) return true;
+        // Looks like a URL
+        if (/^https?:\/\//i.test(t)) return true;
+        if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t) && !t.includes(' ')) return true;
+        return false;
+    } catch (_) {
+        return false;
+    }
+}
+
+// Create a small inline UI offering to replace URL text with the page title
+function createOrUpdateLinkSuggestion(editor, url, title) {
+    // Clean up any previous suggestion
+    const prior = document.querySelector('.kayako-link-title-suggestion');
+    if (prior) prior.remove();
+    
+    const container = editor.closest('.ko-text-editor__container_1p5g6r') || editor.parentElement || document.body;
+    const ui = document.createElement('div');
+    ui.className = 'kayako-link-title-suggestion';
+    ui.dataset.url = url;
+    ui.style.cssText = `
+        position: absolute;
+        left: 0px;
+        top: 0px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+        padding: 8px 10px;
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 12px;
+    `;
+    const safeTitle = title.length > 90 ? title.slice(0, 87) + '…' : title;
+    ui.innerHTML = `
+        <span style="color:#333;">Replace pasted link with “${safeTitle}”?</span>
+        <button class="kayako-link-suggest-apply" style="background:#007bff;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">Replace</button>
+        <button class="kayako-link-suggest-dismiss" style="background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:4px 8px;cursor:pointer;">Keep</button>
+    `;
+    
+    // Position within container
+    if (container !== document.body && getComputedStyle(container).position === 'static') {
+        container.style.position = 'relative';
+    }
+    container.appendChild(ui);
+    console.log('💡 Showing link title suggestion UI for', url);
+    positionSuggestionNearURL(ui, container, editor, url);
+    
+    // Prevent editor blur when interacting with the bubble (keep size stable)
+    ui.addEventListener('mousedown', (e) => { try { e.preventDefault(); editor && editor.focus(); } catch(_) {} }, true);
+    ui.addEventListener('pointerdown', (e) => { try { e.preventDefault(); editor && editor.focus(); } catch(_) {} }, true);
+
+    // Handlers
+    ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => ui.remove());
+    ui.querySelector('.kayako-link-suggest-apply').addEventListener('click', () => {
+        try {
+            try { editor && editor.focus(); } catch(_) {}
+            const applied = replaceURLTextWithTitle(editor, url, title);
+            if (applied) {
+                console.log('✅ Replaced URL text with title for', url);
+                showQuickNotification('🔗 Replaced link text with page title', 'success');
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+                showQuickNotification('Could not find pasted link to replace', 'error');
+            }
+        } catch (error) {
+            console.error('Replace with title failed:', error);
+        } finally {
+            ui.remove();
+        }
+    });
+    
+    // Auto-dismiss on further typing in editor
+    const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); };
+    editor.addEventListener('input', inputHandler);
+}
+
+// Try to replace the last pasted URL's visible text with the fetched title
+function replaceURLTextWithTitle(editor, url, title) {
+    // Prefer replacing an anchor that matches the URL
+    const anchor = findAnchorForURL(editor, url);
+    if (anchor) {
+        anchor.textContent = title;
+        return true;
+    }
+    // Fallback: wrap the first matching text node occurrence
+    try {
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+            const idx = node.nodeValue.indexOf(url);
+            if (idx !== -1) {
+                const range = document.createRange();
+                range.setStart(node, idx);
+                range.setEnd(node, idx + url.length);
+                const link = document.createElement('a');
+                link.href = url;
+                link.textContent = title;
+                link.target = '_blank';
+                range.deleteContents();
+                range.insertNode(link);
+                return true;
+            }
+        }
+    } catch (_) {}
+    return false;
+}
+
+// Find an anchor in the editor that corresponds to the pasted URL (handles http/https normalization)
+function findAnchorForURL(editor, url) {
+    try {
+        const anchors = editor.querySelectorAll('a[href]');
+        const u = new URL(url, window.location.href);
+        const alt = new URL((u.protocol === 'http:' ? 'https:' : 'http:') + '//' + u.host + u.pathname + u.search + u.hash);
+        for (const a of anchors) {
+            try {
+                const ah = new URL(a.href, window.location.href);
+                if (ah.href === u.href || ah.href === alt.href) return a;
+            } catch (_) {}
+        }
+    } catch (_) {}
+    return null;
+}
+
+// Compute a good on-screen rect for the pasted URL, to place the suggestion nearby
+function getURLClientRect(editor, url) {
+    try {
+        const anchor = findAnchorForURL(editor, url);
+        if (anchor) return anchor.getBoundingClientRect();
+        // Fallback: find text node occurrence and measure a range
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+            const idx = node.nodeValue.indexOf(url);
+            if (idx !== -1) {
+                const range = document.createRange();
+                range.setStart(node, Math.max(0, idx));
+                range.setEnd(node, Math.min(node.nodeValue.length, idx + Math.min(url.length, 32)));
+                const rect = range.getBoundingClientRect();
+                return rect && rect.width ? rect : editor.getBoundingClientRect();
+            }
+        }
+    } catch (_) {}
+    // Last resort: use selection/caret rect
+    try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount) {
+            const rect = sel.getRangeAt(0).getBoundingClientRect();
+            if (rect && (rect.width || rect.height)) return rect;
+        }
+    } catch (_) {}
+    return editor.getBoundingClientRect();
+}
+
+// Place the suggestion bubble near the pasted URL, within container bounds
+function positionSuggestionNearURL(ui, container, editor, url) {
+    try {
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = getURLClientRect(editor, url);
+        // Prefer above-right of the target
+        const padding = 8;
+        let left = targetRect.left - containerRect.left;
+        let top = targetRect.top - containerRect.top - ui.offsetHeight - padding;
+        // If above would overflow top, place below
+        if (top < padding) {
+            top = targetRect.bottom - containerRect.top + padding;
+        }
+        // Clamp horizontally inside container
+        const maxLeft = (containerRect.width || container.clientWidth) - ui.offsetWidth - padding;
+        left = Math.max(padding, Math.min(left, maxLeft));
+        ui.style.left = left + 'px';
+        ui.style.top = Math.max(padding, top) + 'px';
+        console.log('📍 Positioned suggestion at', { left, top });
+    } catch (e) {
+        console.log('positionSuggestionNearURL failed:', e?.message || e);
+    }
 }
 
 // Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
