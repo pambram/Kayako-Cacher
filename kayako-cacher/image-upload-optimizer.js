@@ -9,7 +9,7 @@ class KayakoImageOptimizer {
       maxWidth: 1920,
       maxHeight: 1080,
       quality: 0.8,
-      format: 'jpeg'
+      format: 'auto' // auto → preserve PNG for crisp UI/screenshot; JPEG for photos
     };
     this.disabled = false;
     this.caretMarkerId = null;
@@ -164,15 +164,55 @@ class KayakoImageOptimizer {
           width *= ratio;
           height *= ratio;
         }
+        try { console.log(`🧩 Image resize → ${Math.round(width)}x${Math.round(height)} (max ${maxWidth}x${maxHeight})`); } catch (_) {}
         
-        // Set canvas dimensions
-        canvas.width = width;
-        canvas.height = height;
+        // Ensure highest quality resampling
+        try {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+        } catch (_) {}
+
+        // Progressive downscale to preserve detail when shrinking a lot
+        const targetW = Math.max(1, Math.round(width));
+        const targetH = Math.max(1, Math.round(height));
+
+        // Start from original in a working canvas
+        let workCanvas = document.createElement('canvas');
+        let workCtx = workCanvas.getContext('2d');
+        try { workCtx.imageSmoothingEnabled = true; workCtx.imageSmoothingQuality = 'high'; } catch (_) {}
+        workCanvas.width = img.naturalWidth || img.width;
+        workCanvas.height = img.naturalHeight || img.height;
+        workCtx.drawImage(img, 0, 0, workCanvas.width, workCanvas.height);
+
+        // If large downscale, reduce by halves until close to target
+        while (workCanvas.width / 2 > targetW && workCanvas.height / 2 > targetH) {
+          const halfCanvas = document.createElement('canvas');
+          const halfCtx = halfCanvas.getContext('2d');
+          try { halfCtx.imageSmoothingEnabled = true; halfCtx.imageSmoothingQuality = 'high'; } catch (_) {}
+          halfCanvas.width = Math.max(targetW, Math.round(workCanvas.width / 2));
+          halfCanvas.height = Math.max(targetH, Math.round(workCanvas.height / 2));
+          halfCtx.clearRect(0, 0, halfCanvas.width, halfCanvas.height);
+          halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
+          workCanvas = halfCanvas;
+        }
+
+        // Final draw to target canvas
+        canvas.width = targetW;
+        canvas.height = targetH;
+        ctx.clearRect(0, 0, targetW, targetH);
+        ctx.drawImage(workCanvas, 0, 0, targetW, targetH);
         
-        // Draw and compress
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        const mime = this.compressionSettings.format === 'jpeg' ? 'image/jpeg' : 'image/png';
+        // Decide output format
+        const requested = (this.compressionSettings.format || 'auto').toLowerCase();
+        let outFormat = requested;
+        if (requested === 'auto') {
+          const srcType = (file && file.type || '').toLowerCase();
+          const likelyScreenshot = srcType === 'image/png' || (Math.max(targetW, targetH) <= 1200);
+          outFormat = likelyScreenshot ? 'png' : (srcType === 'image/jpeg' ? 'jpeg' : 'png');
+        }
+        const mime = outFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+        const q = (outFormat === 'jpeg') ? Math.max(0, Math.min(1, this.compressionSettings.quality || 0.8)) : undefined;
+        try { console.log(`🎛️ Output format: ${outFormat} @ quality ${q !== undefined ? q : 'lossless'}`); } catch (_) {}
         canvas.toBlob((blob) => {
           // Create new file with compressed data
           const compressedFile = new File([blob], file.name, {
@@ -181,7 +221,7 @@ class KayakoImageOptimizer {
           });
           
           resolve(compressedFile);
-        }, mime, this.compressionSettings.format === 'jpeg' ? this.compressionSettings.quality : undefined);
+        }, mime, q);
       };
       
       img.src = URL.createObjectURL(file);

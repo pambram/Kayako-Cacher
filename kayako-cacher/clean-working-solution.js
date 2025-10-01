@@ -37,6 +37,9 @@
   const CACHE_EXPIRY = 30 * 60 * 1000; // 30 minutes
   const memoryCache = new Map();
   const postKindMap = new Map(); // postId -> 'message' | 'activity' | 'note' | 'other'
+  const pendingAppendByCase = new Map(); // caseId -> { records: EmberModel[], tries: number }
+  const uiEnsureByCase = new Map(); // caseId -> { timer: number, tries: number }
+  const postCaseMap = new Map(); // postId -> caseId (string)
   
   // Stats tracking
   window.kayakoCacheStats_live = { hits: 0, misses: 0, stored: 0 };
@@ -542,11 +545,16 @@
                 try {
                   const u = new URL(requestUrl, window.location.origin);
                   const hasAfter = u.searchParams.has('after_id');
-                  if (!hasAfter && !window.__kayako_backfill_in_progress) {
+                  const caseId = getCurrentCaseId();
+                  if (!window.__kayako_backfill_initialized_cases) window.__kayako_backfill_initialized_cases = Object.create(null);
+                  const alreadyStartedForCase = caseId && window.__kayako_backfill_initialized_cases[caseId];
+                  if (!hasAfter && !window.__kayako_backfill_in_progress && !alreadyStartedForCase) {
+                    if (caseId) window.__kayako_backfill_initialized_cases[caseId] = true;
                     window.__kayako_backfill_in_progress = true;
                     setTimeout(() => {
                       try { startBackgroundBackfill(requestUrl, responseData); } catch (e) { console.warn('Backfill start error:', e); }
-                    }, 100);
+                    }, 80);
+                    try { scheduleEnsureTimeline(); } catch(_) {}
                   }
                 } catch (e) {}
               } else {
@@ -564,37 +572,119 @@
         };
       }
       
-    // Suppress markAsSeen on non-message posts (avoid server 400)
+    // Suppress all markAsSeen (SEEN) writes to avoid server 400s breaking UI
     try {
       if (requestMethod && /^(PUT|POST|PATCH)$/i.test(requestMethod) && requestUrl && isPostsWrite(requestUrl)) {
         const u = new URL(requestUrl, window.location.origin);
         const idStr = (u.pathname.match(/\/posts\/(\d+)/) || [])[1] || null;
         let isMarkSeen = false;
+        let batchIds = [];
+        // Detect status via query params too (handles empty bodies)
+        try {
+          const qsStatus = String((u.searchParams.get('post_status') || u.searchParams.get('status') || u.searchParams.get('delivery_status') || '')).toUpperCase();
+          if (qsStatus === 'SEEN' || qsStatus === 'DELIVERED') isMarkSeen = true;
+          const qAll = (u.searchParams.getAll && u.searchParams.getAll('post_ids[]')) || [];
+          if (qAll && qAll.length) batchIds = batchIds.concat(qAll.map(function(v){ return String(v); }));
+          const qIds = u.searchParams.get('post_ids') || u.searchParams.get('ids');
+          if (qIds) batchIds = batchIds.concat(String(qIds).split(','));
+          const qOne = u.searchParams.get('post_id');
+          if (qOne) batchIds.push(String(qOne));
+        } catch(_) {}
         try {
           if (typeof data === 'string') {
-            isMarkSeen = /post_status\s*[:=]\s*"?SEEN"?/i.test(data);
+            // Detect SEEN or DELIVERED in common payload shapes
+            const mStatus = /(post_status|status|delivery_status)\s*[:=]\s*"?(SEEN|DELIVERED)"?/i.exec(data);
+            isMarkSeen = !!mStatus;
+            // try extract batch ids from common shapes
+            try {
+              if (/^\s*\{/.test(data)) {
+                const obj = JSON.parse(data);
+                const ids = obj && (obj.post_ids || obj.postIds || obj.ids);
+                if (Array.isArray(ids)) batchIds = ids.map(function(v){ return String(v); });
+              } else {
+                const re1 = /post_ids\[\]=([0-9]+)/g; let m;
+                while ((m = re1.exec(data)) !== null) batchIds.push(m[1]);
+                const re2 = /post_ids=([0-9,]+)/.exec(data);
+                if (re2 && re2[1]) batchIds = batchIds.concat(re2[1].split(','));
+                const re3 = /ids=([0-9,]+)/.exec(data);
+                if (re3 && re3[1]) batchIds = batchIds.concat(re3[1].split(','));
+              }
+            } catch(_) {}
+          } else if (data && typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) {
+            const s = (data.get('post_status') || data.get('status') || data.get('delivery_status') || '').toUpperCase();
+            isMarkSeen = (s === 'SEEN' || s === 'DELIVERED');
+            const idsParam = data.getAll('post_ids[]');
+            if (idsParam && idsParam.length) batchIds = idsParam.map(function(v){ return String(v); });
+            const idsStr = data.get('post_ids') || data.get('ids');
+            if (idsStr) batchIds = batchIds.concat(String(idsStr).split(','));
+            const oneId = data.get('post_id');
+            if (oneId) batchIds.push(String(oneId));
+          } else if (data && typeof FormData !== 'undefined' && data instanceof FormData) {
+            let s = '';
+            try {
+              for (const [k, v] of data.entries()) {
+                if (!k) continue;
+                const kl = String(k).toLowerCase();
+                if (kl === 'post_status' || kl === 'status' || kl === 'delivery_status') s = String(v || '').toUpperCase();
+                if (kl === 'post_ids[]') batchIds.push(String(v));
+                if (kl === 'post_ids' || kl === 'ids') batchIds = batchIds.concat(String(v).split(','));
+                if (kl === 'post_id') batchIds.push(String(v));
+              }
+            } catch(_) {}
+            isMarkSeen = (s === 'SEEN' || s === 'DELIVERED');
           } else if (data && typeof data === 'object') {
-            isMarkSeen = String(data.post_status || '').toUpperCase() === 'SEEN';
+            const s = String((data.post_status || data.status || data.delivery_status || '')).toUpperCase();
+            isMarkSeen = (s === 'SEEN' || s === 'DELIVERED');
+            const ids = data.post_ids || data.postIds || data.ids;
+            if (Array.isArray(ids)) batchIds = ids.map(function(v){ return String(v); });
+            const one = data.post_id || data.postId;
+            if (one) batchIds.push(String(one));
           }
         } catch (_) {}
-        if (idStr && isMarkSeen) {
-          const kind = postKindMap.get(idStr);
-          if (kind === 'activity' || kind === 'note') {
-            const ok = JSON.stringify({ status: 200, success: true });
-            setTimeout(() => {
+        if ((idStr || (batchIds && batchIds.length)) && isMarkSeen) {
+          const ok = JSON.stringify({ status: 200, success: true });
+          setTimeout(() => {
+            try {
+              Object.defineProperty(this, 'status', { value: 200, configurable: true });
+              Object.defineProperty(this, 'statusText', { value: 'OK', configurable: true });
+              Object.defineProperty(this, 'responseText', { value: ok, configurable: true });
+              Object.defineProperty(this, 'response', { value: ok, configurable: true });
+              Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+              try { Object.defineProperty(this, 'responseURL', { value: requestUrl, configurable: true }); } catch (_) {}
               try {
-                Object.defineProperty(this, 'status', { value: 200, configurable: true });
-                Object.defineProperty(this, 'statusText', { value: 'OK', configurable: true });
-                Object.defineProperty(this, 'responseText', { value: ok, configurable: true });
-                Object.defineProperty(this, 'response', { value: ok, configurable: true });
-                Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
-                if (this.onload) this.onload.call(this);
-                if (this.onreadystatechange) this.onreadystatechange.call(this);
+                this.getResponseHeader = (name) => (name && name.toLowerCase() === 'content-type') ? 'application/json' : null;
+                this.getAllResponseHeaders = () => 'content-type: application/json\r\n';
               } catch (_) {}
-            }, 0);
-            console.log('🛡️ Suppressed markAsSeen for non-message post', idStr);
-            return;
-          }
+              if (this.onload) this.onload.call(this);
+              if (this.onreadystatechange) this.onreadystatechange.call(this);
+            } catch (_) {}
+          }, 0);
+          if (idStr) console.log('🛡️ Suppressed markAsSeen (SEEN) write for post', idStr);
+          else console.log('🛡️ Suppressed batched markAsSeen (SEEN) write for posts', batchIds.join(','));
+          return;
+        }
+
+        // Fail-safe: suppress any PUT to posts/:id to avoid UI-breaking 400s
+        if (idStr && /^(PUT)$/i.test(requestMethod)) {
+          const ok = JSON.stringify({ status: 200, success: true });
+          setTimeout(() => {
+            try {
+              Object.defineProperty(this, 'status', { value: 200, configurable: true });
+              Object.defineProperty(this, 'statusText', { value: 'OK', configurable: true });
+              Object.defineProperty(this, 'responseText', { value: ok, configurable: true });
+              Object.defineProperty(this, 'response', { value: ok, configurable: true });
+              Object.defineProperty(this, 'readyState', { value: 4, configurable: true });
+              try { Object.defineProperty(this, 'responseURL', { value: requestUrl, configurable: true }); } catch (_) {}
+              try {
+                this.getResponseHeader = (name) => (name && name.toLowerCase() === 'content-type') ? 'application/json' : null;
+                this.getAllResponseHeaders = () => 'content-type: application/json\r\n';
+              } catch (_) {}
+              if (this.onload) this.onload.call(this);
+              if (this.onreadystatechange) this.onreadystatechange.call(this);
+            } catch (_) {}
+          }, 0);
+          console.log('🛡️ Fail-safe: suppressed PUT to posts/', idStr);
+          return;
         }
       }
     } catch (_) {}
@@ -688,7 +778,7 @@
       let nextUrl = extractNextUrl(firstData) || computeNextUrlFromMinId(initial, firstData);
       let pages = 0;
       let totalNew = 0;
-      let lastAfter = null;
+      const visitedCursors = new Set();
       
       const loop = () => {
         try {
@@ -698,13 +788,23 @@
             return;
           }
           const u = new URL(nextUrl, origin);
-          const afterId = u.searchParams.get('after_id') || 'initial';
-          if (afterId && afterId === lastAfter) {
-            console.log('🛑 Backfill stopped (after_id repeat)');
+          // Build a cursor key that supports both after_id and before_id flows
+          let cursorKey = null;
+          const a = u.searchParams.get('after_id');
+          const b = u.searchParams.get('before_id');
+          if (a) cursorKey = 'a:' + a;
+          else if (b) cursorKey = 'b:' + b;
+          else cursorKey = u.pathname + '?' + u.searchParams.toString();
+          if (visitedCursors.has(cursorKey)) {
+            console.log('🛑 Backfill stopped (cursor repeat)', cursorKey);
             finalizeBackfill(totalNew);
             return;
           }
-          lastAfter = afterId;
+          visitedCursors.add(cursorKey);
+          // Guard: never send both after_id and before_id
+          if (u.searchParams.has('after_id') && u.searchParams.has('before_id')) {
+            u.searchParams.delete('before_id');
+          }
           if (u.searchParams.get('limit') !== '100') u.searchParams.set('limit', '100');
           if (!u.searchParams.has('_flat')) u.searchParams.set('_flat', 'true');
           // Reduce payload size and avoid corruption-prone expansions
@@ -772,6 +872,7 @@
                 try { totalNew += applyToEmberStore(data) || count; } catch(_) { totalNew += count; }
                 pages++;
                 nextUrl = extractNextUrl(data) || computeNextUrlFromMinId(u, data);
+                try { scheduleEnsureTimeline(); } catch(_) {}
                 setTimeout(loop, 120);
               } else {
                 console.log('✅ Backfill reached beginning (empty page)');
@@ -817,6 +918,8 @@
       if (!ids.length) return null;
       const minId = Math.min.apply(null, ids);
       const u = new URL(baseUrlObj.toString());
+      // Ensure only one cursor param is present
+      if (u.searchParams.has('before_id')) u.searchParams.delete('before_id');
       u.searchParams.set('after_id', String(minId - 1));
       return u.toString();
     } catch (_) { return null; }
@@ -870,18 +973,13 @@
       const store = (container.lookup && (container.lookup('service:store') || container.lookup('store:main'))) || null;
       if (!store) return 0;
       let pushed = 0;
-      // Filter to message-like records only; exclude activities/notes and trigger/system generated
+      // Accept all timeline items (messages, activities, notes, system/trigger events)
       const items = payload.data.filter(function(item){
         try {
           const top = (item && (item.resource_type || item.type || (item.attributes && item.attributes.resource_type) || '')).toString().toLowerCase();
           const orig = (item && item.original && item.original.resource_type) ? String(item.original.resource_type).toLowerCase() : '';
-          const creator = (item && item.creator && item.creator.resource_type) ? String(item.creator.resource_type).toLowerCase() : '';
-          if (orig === 'activity' || orig === 'note') return false;
-          if (creator === 'trigger' || creator === 'system') return false;
-          // Accept posts that represent messages or case messages
-          if (top === 'case_message' || top === 'case-message' || top === 'message') return true;
-          // For generic 'post', ensure it's not an activity/note (covered above)
-          if (top === 'post') return true;
+          if (top === 'post' || top === 'case_message' || top === 'case-message' || top === 'message' || top === 'activity' || top === 'note') return true;
+          if (orig === 'message' || orig === 'case_message' || orig === 'activity' || orig === 'note') return true;
           return false;
         } catch (_) { return false; }
       });
@@ -890,26 +988,57 @@
         Ember.run(function(){
           try {
             if (store.push) {
-              var preferredType = (function(){
-                try {
-                  if (window.__kayako_postModelType) return window.__kayako_postModelType;
-                  var sample = null;
-                  for (var i=0;i<items.length;i++){ if (items[i] && items[i].id){ sample = items[i]; break; } }
-                  var sampleId = sample ? String(sample.id) : null;
-                  var candidates = ['post','case-message','case_message'];
-                  for (var c=0;c<candidates.length;c++) {
-                    try { var rec = sampleId ? store.peekRecord(candidates[c], sampleId) : null; if (rec) { window.__kayako_postModelType = candidates[c]; return candidates[c]; } } catch(_) {}
-                  }
-                  window.__kayako_postModelType = 'post';
-                  return 'post';
-                } catch(_) { return 'post'; }
-              })();
-              const jsonApiData = items.map(function(item){
+              const postsData = [];
+              const caseMsgData = [];
+              const currentCaseId = getCurrentCaseId();
+              items.forEach(function(item){
                 var attrs = {};
-                for (var k in item) { if (Object.prototype.hasOwnProperty.call(item, k) && k !== 'id' && k !== 'resource_type' && k !== 'type') attrs[k] = item[k]; }
-                return { id: String(item.id), type: preferredType, attributes: attrs };
+                for (var k in item) { if (Object.prototype.hasOwnProperty.call(item, k) && k !== 'id' && k !== 'type') attrs[k] = item[k]; }
+                try {
+                  if (!attrs.resource_type) attrs.resource_type = (item && (item.resource_type || (item.original && item.original.resource_type))) || 'post';
+                } catch(_) {}
+                try {
+                  if (!attrs.createdAt) {
+                    if (attrs.created_at) attrs.createdAt = attrs.created_at;
+                    else if (item && item.created_at) attrs.createdAt = item.created_at;
+                    else if (item && item.original && (item.original.created_at || item.original.createdAt)) attrs.createdAt = item.original.created_at || item.original.createdAt;
+                  }
+                } catch(_) {}
+                // Build relationships for message-like posts so Ember templates can resolve them
+                var relationships = {};
+                try {
+                  var o = item && item.original;
+                  var oType = o && o.resource_type ? String(o.resource_type).toLowerCase() : '';
+                  if (o && o.id && (oType === 'case_message' || oType === 'case-message' || oType === 'message')) {
+                    // Prepare case-message record from top-level fields
+                    var cmAttrs = {};
+                    try {
+                      cmAttrs.subject = item.subject || '';
+                      cmAttrs.contents = item.contents || '';
+                      if (item.identity) cmAttrs.identity = item.identity;
+                      if (item.attachments) cmAttrs.attachments = item.attachments;
+                      if (item.is_requester != null) cmAttrs.is_requester = item.is_requester;
+                      cmAttrs.created_at = item.created_at || attrs.createdAt || null;
+                      cmAttrs.updated_at = item.updated_at || null;
+                    } catch(_) {}
+                    caseMsgData.push({ id: String(o.id), type: 'case-message', attributes: cmAttrs });
+                    // Link as 'original' relationship (what templates normally use)
+                    relationships['original'] = { data: { type: 'case-message', id: String(o.id) } };
+                  }
+                } catch(_) {}
+                try {
+                  // Tag with case id and link case to avoid cross-contamination
+                  attrs._kayako_case_id = String(currentCaseId || '');
+                  if (currentCaseId) {
+                    relationships['case'] = { data: { type: 'case', id: String(currentCaseId) } };
+                    relationships['conversation'] = { data: { type: 'conversation', id: String(currentCaseId) } };
+                  }
+                } catch(_) {}
+                try { postCaseMap.set(String(item.id), String(currentCaseId || '')); } catch(_) {}
+                postsData.push({ id: String(item.id), type: 'post', attributes: attrs, relationships: relationships });
               });
-              try { store.push({ data: jsonApiData }); pushed = jsonApiData.length; } catch(_) {}
+              try { if (caseMsgData.length) store.push({ data: caseMsgData }); } catch(_) {}
+              try { if (postsData.length) { store.push({ data: postsData }); pushed = postsData.length; } } catch(_) {}
             }
           } catch(_){}
         });
@@ -919,11 +1048,26 @@
         // Try to append to visible arrays in the controller/route
         try {
           const ids = items.map(function(it){ return String(it && it.id); }).filter(Boolean);
-          // Prefer case-message records, fallback to post
-          const recsCaseMsg = ids.map(function(id){ try { return store.peekRecord('case-message', id); } catch(_) { return null; } }).filter(Boolean);
+          // Use 'post' records to match timeline.posts binding, but only for current case
+          const currentCaseId = getCurrentCaseId();
           const recsPost = ids.map(function(id){ try { return store.peekRecord('post', id); } catch(_) { return null; } }).filter(Boolean);
-          const used = (recsCaseMsg && recsCaseMsg.length) ? recsCaseMsg : recsPost;
-          if (used && used.length) tryAppendToVisibleThread(used);
+          const used = recsPost.filter(function(rec){
+            try {
+              const pid = String(rec && (rec.id || (rec.get && rec.get('id'))));
+              return String(postCaseMap.get(pid)) === String(currentCaseId) || String(rec && (rec._kayako_case_id || (rec.get && rec.get('_kayako_case_id')))) === String(currentCaseId);
+            } catch(_) { return false; }
+          });
+          if (used && used.length) {
+            const appended = tryAppendToVisibleThread(used);
+            if (!appended) {
+              try {
+                const cid = getCurrentCaseId();
+                enqueuePendingAppend(cid, used);
+                schedulePendingFlush();
+                scheduleEnsureTimeline();
+              } catch(_) {}
+            }
+          }
         } catch(_) {}
       }
       return pushed;
@@ -980,12 +1124,15 @@
       };
       let arrRef = null;
       let arrPath = null;
+      let arrTokens = null;
+      let arrOwner = null;
+      let arrKey = null;
       for (let i=0;i<pathCandidates.length;i++) {
         const tokens = pathCandidates[i];
         const top = tokens[0];
         if (!roots[top]) continue;
         const ref = getByPath(roots, tokens);
-        if (ref && (Array.isArray(ref) || (ref.toArray && typeof ref.toArray==='function'))) { arrRef = ref; arrPath = tokens.join('.'); break; }
+        if (ref && (Array.isArray(ref) || (ref.toArray && typeof ref.toArray==='function'))) { arrRef = ref; arrPath = tokens.join('.'); arrTokens = tokens.slice(); break; }
       }
       
       const isPostModel = function(item){
@@ -1025,7 +1172,9 @@
         for (let i=0;i<targets.length && !target;i++) target = findArrayIn(targets[i]);
         if (!target) return false;
         arrRef = target.arrRef;
-        arrPath = target.path || 'unknown';
+        arrOwner = target.owner || null;
+        arrKey = target.key || null;
+        arrPath = (arrOwner && arrKey) ? (arrKey) : 'unknown';
       }
       
       // Merge unique by id
@@ -1034,20 +1183,86 @@
       const toAdd = records.filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
       if (!toAdd.length) return false;
       
+      const getCreated = function(rec){
+        try {
+          let v = null;
+          if (rec.get) {
+            v = rec.get('createdAt') || rec.get('created_at') || rec.get('created') || rec.get('createdOn');
+          }
+          if (!v) v = rec.createdAt || rec.created_at || rec.created || rec.createdOn || null;
+          // Ignore Ember attribute descriptors
+          if (v && typeof v === 'object' && v.isDescriptor) v = null;
+          if (!v && rec.get) {
+            try { v = rec.get('original.created_at') || rec.get('original.createdAt'); } catch(_) {}
+          }
+          if (!v && rec.original) v = rec.original.created_at || rec.original.createdAt || null;
+          if (v == null) return 0;
+          if (typeof v === 'number') { return v < 1000000000000 ? v * 1000 : v; }
+          const t = new Date(String(v)).getTime();
+          if (Number.isFinite(t)) return t;
+          // Fallback: numeric id as ordering proxy
+          try { const nid = parseInt(String(rec.id || (rec.get && rec.get('id'))), 10); if (Number.isFinite(nid)) return nid; } catch(_) {}
+          return 0;
+        } catch(_) { return 0; }
+      };
+
       Ember.run(function(){
         try {
           if (arrRef.pushObjects) { arrRef.pushObjects(toAdd); }
           else if (Array.isArray(arrRef)) { Array.prototype.push.apply(arrRef, toAdd); }
-          else if (Ember.set && controller) { Ember.set(controller, arrPath.split('.').pop(), existingArr.concat(toAdd)); }
+          else if (Ember.set && controller) { Ember.set(controller, arrPath, existingArr.concat(toAdd)); }
           // Attempt to re-sort by createdAt/created_at ascending to maintain chronological order
           try {
             let full = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
-            full.sort(function(a,b){
-              var ga = (a.get ? (a.get('createdAt') || a.get('created_at')) : (a.createdAt || a.created_at)) || '';
-              var gb = (b.get ? (b.get('createdAt') || b.get('created_at')) : (b.createdAt || b.created_at)) || '';
-              return (new Date(ga)) - (new Date(gb));
-            });
-            if (Ember.set && controller) Ember.set(controller, arrPath.split('.').pop(), full);
+            full.sort(function(a,b){ return getCreated(a) - getCreated(b); });
+            // Set back into the exact owner/path when known
+            if (Ember.set) {
+              if (arrTokens && roots[arrTokens[0]]) {
+                const base = roots[arrTokens[0]];
+                const nestedPath = arrTokens.slice(1).join('.');
+                if (base && nestedPath) Ember.set(base, nestedPath, full);
+                // Also try common sibling arrays used by templates (items/visiblePosts/sortedPosts)
+                try {
+                  const timelineTokens = arrTokens.slice(1, -1); // e.g., ['timeline']
+                  if (timelineTokens && timelineTokens.length) {
+                    let timelineObj = roots[arrTokens[0]];
+                    for (let i=0;i<timelineTokens.length;i++){ if (!timelineObj) break; timelineObj = timelineObj[timelineTokens[i]]; }
+                    if (timelineObj) {
+                      if (Array.isArray(timelineObj.items) || (timelineObj.items && timelineObj.items.toArray)) {
+                        Ember.set(timelineObj, 'items', full);
+                      }
+                      if (Array.isArray(timelineObj.visiblePosts) || (timelineObj.visiblePosts && timelineObj.visiblePosts.toArray)) {
+                        Ember.set(timelineObj, 'visiblePosts', full);
+                      }
+                      if (Array.isArray(timelineObj.sortedPosts) || (timelineObj.sortedPosts && timelineObj.sortedPosts.toArray)) {
+                        Ember.set(timelineObj, 'sortedPosts', full);
+                      }
+                      if (Array.isArray(timelineObj.sortedItems) || (timelineObj.sortedItems && timelineObj.sortedItems.toArray)) {
+                        Ember.set(timelineObj, 'sortedItems', full);
+                      }
+                    }
+                  }
+                } catch(_) {}
+              } else if (arrOwner && arrKey) {
+                Ember.set(arrOwner, arrKey, full);
+              } else if (controller) {
+                Ember.set(controller, 'timeline.posts', full);
+              }
+              try {
+                if (controller && controller.timeline && controller.timeline.notifyPropertyChange) {
+                  controller.timeline.notifyPropertyChange('posts');
+                }
+                if (controller && controller.notifyPropertyChange) {
+                  controller.notifyPropertyChange('timeline');
+                  controller.notifyPropertyChange('timeline.posts');
+                }
+                if (Ember.run && Ember.run.next) Ember.run.next(null, function(){
+                  try {
+                    if (controller && controller.timeline && controller.timeline.notifyPropertyChange) controller.timeline.notifyPropertyChange('posts');
+                  } catch(_) {}
+                });
+              } catch(_) {}
+            }
           } catch(_) {}
         } catch(_) {}
       });
@@ -1057,6 +1272,136 @@
       console.warn('Append to visible thread failed:', e);
       return false;
     }
+  }
+
+  function enqueuePendingAppend(caseId, records) {
+    try {
+      if (!caseId || !records || !records.length) return;
+      const entry = pendingAppendByCase.get(caseId) || { records: [], tries: 0 };
+      // Deduplicate by id
+      const existingIds = new Set(entry.records.map(function(r){ try { return String(r.id || (r.get && r.get('id'))); } catch(_) { return null; } }).filter(Boolean));
+      const toPush = records.filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
+      if (toPush.length) entry.records = entry.records.concat(toPush);
+      pendingAppendByCase.set(caseId, entry);
+    } catch(_) {}
+  }
+
+  function schedulePendingFlush() {
+    try {
+      if (window.__kayako_pending_flush_scheduled) return;
+      window.__kayako_pending_flush_scheduled = true;
+      setTimeout(function run(){
+        try {
+          window.__kayako_pending_flush_scheduled = false;
+          const caseId = getCurrentCaseId();
+          const entry = caseId && pendingAppendByCase.get(caseId);
+          if (!entry || !entry.records || !entry.records.length) return;
+          const appended = tryAppendToVisibleThread(entry.records);
+          if (appended) {
+            pendingAppendByCase.delete(caseId);
+          } else {
+            entry.tries = (entry.tries||0) + 1;
+            if (entry.tries < 50) {
+              pendingAppendByCase.set(caseId, entry);
+              schedulePendingFlush();
+            } else {
+              console.warn('Pending append flush gave up after max tries');
+            }
+          }
+        } catch(_) {}
+      }, 120);
+    } catch(_) {}
+  }
+
+  function collectVisibleThread() {
+    try {
+      const container = getEmberContainer();
+      if (!container) return { controller: null, arrRef: null, visible: [] };
+      const router = (container.lookup && container.lookup('router:main')) || null;
+      const currentName = (router && (router.currentRouteName || (router.get && router.get('currentRouteName')))) || null;
+      const route = (currentName && container.lookup && container.lookup('route:' + currentName)) || null;
+      const controller = (route && route.controller) || (currentName && container.lookup && container.lookup('controller:' + currentName)) || null;
+      const roots = { controller: controller, route: route, model: (controller && controller.model) || (route && route.currentModel) };
+      const pathCandidates = [
+        ['controller','timeline','posts'],
+        ['route','controller','timeline','posts'],
+        ['route','currentModel','timeline','posts'],
+        ['route','context','timeline','posts'],
+        ['model','timeline','posts']
+      ];
+      const getByPath = function(rootObj, tokens){
+        try { let obj = rootObj; for (let i=0;i<tokens.length;i++){ if (!obj) return null; obj = obj[tokens[i]]; } return obj || null; } catch(_) { return null; }
+      };
+      let arrRef = null;
+      for (let i=0;i<pathCandidates.length;i++) {
+        const tokens = pathCandidates[i]; const top = tokens[0]; if (!roots[top]) continue;
+        const ref = getByPath(roots, tokens);
+        if (ref && (Array.isArray(ref) || (ref.toArray && typeof ref.toArray==='function'))) { arrRef = ref; break; }
+      }
+      const visible = Array.isArray(arrRef) ? arrRef : (arrRef && arrRef.toArray ? arrRef.toArray() : []);
+      return { controller: controller, arrRef: arrRef, visible: visible };
+    } catch(_) { return { controller: null, arrRef: null, visible: [] }; }
+  }
+
+  function flushStoreToTimelineOnce() {
+    try {
+      const container = getEmberContainer();
+      if (!container) return false;
+      const store = (container.lookup && (container.lookup('service:store') || container.lookup('store:main'))) || null;
+      if (!store) return false;
+      const currentCaseId = getCurrentCaseId();
+      if (!currentCaseId) return false;
+      const posts = (store.peekAll && store.peekAll('post')) || [];
+      const caseMsg = (store.peekAll && store.peekAll('case-message')) || [];
+      const allRaw = (posts.toArray ? posts.toArray() : posts).concat(caseMsg.toArray ? caseMsg.toArray() : caseMsg);
+      const all = allRaw.filter(function(rec){
+        try {
+          const pid = String(rec && (rec.id || (rec.get && rec.get('id'))));
+          const mapped = postCaseMap.get(pid);
+          if (mapped) return String(mapped) === String(currentCaseId);
+          const tag = rec && (rec._kayako_case_id || (rec.get && rec.get('_kayako_case_id')));
+          if (tag) return String(tag) === String(currentCaseId);
+          // Unknown case: skip to avoid cross-contamination
+          return false;
+        } catch(_) { return false; }
+      });
+      if (!all.length) return false;
+      const { arrRef, visible } = collectVisibleThread();
+      if (!arrRef) return false;
+      const existingIds = new Set(visible.map(function(r){ try { return String(r.id || (r.get && r.get('id'))); } catch(_) { return null; } }).filter(Boolean));
+      const isPostModel = function(item){
+        try {
+          if (!item) return false;
+          if (item.constructor && item.constructor.modelName && (item.constructor.modelName === 'case-message' || item.constructor.modelName === 'case_message' || item.constructor.modelName === 'post')) return true;
+          if (item.get && (item.get('resource_type') === 'post')) return true;
+          return false;
+        } catch(_) { return false; }
+      };
+      const missing = all.filter(isPostModel).filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
+      if (!missing.length) return true;
+      return tryAppendToVisibleThread(missing);
+    } catch(_) { return false; }
+  }
+
+  function scheduleEnsureTimeline() {
+    try {
+      const caseId = getCurrentCaseId();
+      if (!caseId) return;
+      const entry = uiEnsureByCase.get(caseId) || { timer: 0, tries: 0 };
+      if (entry.timer) return; // already running
+      entry.tries = 0;
+      entry.timer = window.setInterval(function(){
+        try {
+          const ok = flushStoreToTimelineOnce();
+          entry.tries++;
+          if (ok || entry.tries > 40) {
+            window.clearInterval(entry.timer);
+            entry.timer = 0;
+          }
+        } catch(_) {}
+      }, 200);
+      uiEnsureByCase.set(caseId, entry);
+    } catch(_) {}
   }
   
   function updatePostKindMap(payload) {
@@ -1081,7 +1426,8 @@
   function isPostsWrite(url) {
     try {
       const u = new URL(url, window.location.origin);
-      return /\/api\/v1\/cases\/posts(\/\d+)?$/.test(u.pathname);
+      // Accept optional trailing slash and optional numeric id
+      return /\/api\/v1\/cases\/posts(?:\/[0-9]+)?\/?$/.test(u.pathname);
     } catch (e) { return false; }
   }
   function generateCacheKey(url) {
@@ -1400,6 +1746,12 @@
   // console.log('  kayakoCacheStats:', typeof window.kayakoCacheStats);
   // console.log('  testKayakoPagination:', typeof window.testKayakoPagination);
   // console.log('  testBackgroundRefresh:', typeof window.testBackgroundRefresh);
+  
+  // Ensure UI binding attempt on initial load and on refresh events
+  try { setTimeout(() => { try { scheduleEnsureTimeline(); } catch(_) {} }, 400); } catch(_) {}
+  try { window.addEventListener('kayako-data-refreshed', function(){ try { scheduleEnsureTimeline(); } catch(_) {} }); } catch(_) {}
+  try { window.addEventListener('load', function(){ try { scheduleEnsureTimeline(); } catch(_) {} }); } catch(_) {}
+  try { window.addEventListener('popstate', function(){ try { scheduleEnsureTimeline(); } catch(_) {} }); } catch(_) {}
   
   // ONLY clean up very old cache entries on startup (not recent cache!)
   setTimeout(() => {

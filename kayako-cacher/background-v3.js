@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   imageQuality: 0.8,
   imageMaxWidth: 1920,
   imageMaxHeight: 1080,
-  imageFormat: 'jpeg'
+  imageFormat: 'auto'
 };
 
 // Initialize extension
