@@ -418,6 +418,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return true;
     }
+  // Quick translation (auto-detect -> target language, default en)
+  if (message.action === 'translateText' && message.text) {
+    const toLang = message.toLang || 'en';
+    const sample = String(message.text).slice(0, 80).replace(/\s+/g, ' ');
+    console.log('[SW] translateText request →', sample, '…');
+    translateText(message.text, toLang).then(({ translation, sourceLang }) => {
+      sendResponse({ success: true, translation, sourceLang });
+    }).catch(err => {
+      console.warn('[SW] translateText failed:', err?.message || err);
+      sendResponse({ success: false, error: err?.message || String(err) });
+    });
+    return true;
+  }
 });
 
 // --- Page title fetcher ---
@@ -458,6 +471,41 @@ async function fetchPageTitle(url){
   if (!m) { console.log('[SW] no <title> tag found'); return ''; }
   const raw = m[1].replace(/\s+/g,' ').trim();
   return decodeHTMLEntities(raw).slice(0, 200);
+}
+
+// --- Lightweight translation via Google public endpoint ---
+async function translateTextSingle(text, toLang) {
+  const endpoint = 'https://translate.googleapis.com/translate_a/single';
+  // Using the free gtx client. This is unofficial and subject to change.
+  const url = `${endpoint}?client=gtx&sl=auto&tl=${encodeURIComponent(toLang)}&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url, { redirect: 'follow', credentials: 'omit' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} translating`);
+  const json = await res.json();
+  // Response shape: [[ [translated, original, null, null, ...], ... ], null, sourceLang, ...]
+  let translation = '';
+  try { translation = (json?.[0] || []).map(p => p?.[0] || '').join(''); } catch (_) { translation = ''; }
+  const sourceLang = (json?.[2] || 'auto');
+  return { translation, sourceLang };
+}
+
+async function translateText(text, toLang) {
+  if (text.indexOf('\n') === -1 && text.indexOf('\r') === -1) {
+    return translateTextSingle(text, toLang);
+  }
+  const lines = String(text).split(/\r?\n/);
+  let sourceLang = 'auto';
+  const out = [];
+  for (const line of lines) {
+    if (!line.trim()) { out.push(''); continue; }
+    try {
+      const r = await translateTextSingle(line, toLang);
+      if (r.sourceLang && r.sourceLang !== 'auto') sourceLang = r.sourceLang;
+      out.push(r.translation || '');
+    } catch (_) {
+      out.push('');
+    }
+  }
+  return { translation: out.join('\n'), sourceLang };
 }
 
 // ----- Ticket activity checking (minimal, surgical) -----

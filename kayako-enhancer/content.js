@@ -815,6 +815,126 @@ function positionSuggestionNearURL(ui, container, editor, url) {
     }
 }
 
+// --- Inline translation (preview) ---
+function setupInlineTranslation() {
+    // Trigger on double- or triple-click selections within timeline posts
+    document.addEventListener('click', (e) => {
+        try {
+            // Only care about double/triple clicks
+            if (!e || typeof e.detail !== 'number' || e.detail < 2) return;
+            const target = e.target;
+            // Ignore clicks in editors
+            if (target.closest('.fr-element, [contenteditable="true"]')) return;
+            // Limit to timeline content areas
+            const timelineContainer = target.closest('[class*="ko-timeline-2_list_item__content"], [class*="ko-timeline-2_list_item__post"], [class*="ko-timeline-2_list_item__note"]');
+            if (!timelineContainer) return;
+
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            const text = sel.toString().trim();
+            if (!text || text.length < 2) return;
+            // Avoid overly long requests
+            const capped = text.slice(0, 1200);
+
+            // Remove any existing bubble
+            const prior = document.querySelector('.kayako-translate-preview');
+            if (prior) prior.remove();
+
+            const range = sel.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            const bubble = createTranslationBubble(timelineContainer, rect, 'Translating…', null);
+
+            // Ask background for translation (auto → en)
+            const ver = (chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
+            console.log('📡 Requesting translation (auto→en), v', ver, 'sample:', capped.slice(0, 60));
+            chrome.runtime.sendMessage({ action: 'translateText', text: capped, toLang: 'en' }, (resp) => {
+                const err = chrome.runtime?.lastError;
+                if (err) {
+                    console.log('⚠️ translate sendMessage error:', err.message);
+                    try { bubble.remove(); } catch(_) {}
+                    return;
+                }
+                if (!resp || !resp.success || !resp.translation) {
+                    updateTranslationBubble(bubble, 'Translation unavailable', null);
+                    return;
+                }
+                updateTranslationBubble(bubble, resp.translation, resp.sourceLang);
+            });
+        } catch (_) {}
+    }, true);
+}
+
+function createTranslationBubble(container, rect, message, sourceLang) {
+    const ui = document.createElement('div');
+    ui.className = 'kayako-translate-preview';
+    ui.style.cssText = `
+        position: absolute;
+        left: 0px;
+        top: 0px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+        padding: 8px 10px;
+        z-index: 10000;
+        max-width: 420px;
+        box-sizing: border-box;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 12px;
+        color: #333;
+    `;
+    ui.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:8px;">
+            <span class="kayako-translate-text" style="white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; display:block;">${message}</span>
+            <span class="kayako-translate-lang" style="color:#888;"></span>
+            <button class="kayako-translate-close" style="margin-left:auto;background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;">✕</button>
+        </div>
+    `;
+    // Position the bubble near selection
+    if (container !== document.body && getComputedStyle(container).position === 'static') {
+        container.style.position = 'relative';
+    }
+    container.appendChild(ui);
+    ui._container = container;
+    ui._rect = rect;
+    positionBubbleNearRect(ui, container, rect);
+
+    // Dismiss logic
+    const close = () => { try { ui.remove(); } catch(_) {} document.removeEventListener('click', onDoc, true); document.removeEventListener('keydown', onKey, true); };
+    ui.querySelector('.kayako-translate-close').addEventListener('click', close);
+    const onDoc = (ev) => { if (!ui.contains(ev.target)) close(); };
+    const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+    setTimeout(() => { document.addEventListener('click', onDoc, true); document.addEventListener('keydown', onKey, true); }, 50);
+    return ui;
+}
+
+function updateTranslationBubble(ui, translation, sourceLang) {
+    try {
+        const textEl = ui.querySelector('.kayako-translate-text');
+        const langEl = ui.querySelector('.kayako-translate-lang');
+        if (textEl) textEl.textContent = translation || 'Translation unavailable';
+        if (langEl) langEl.textContent = sourceLang ? `(${String(sourceLang).toUpperCase()}→EN)` : '';
+        // Re-clamp position in case size changed
+        if (ui._container && ui._rect) {
+            positionBubbleNearRect(ui, ui._container, ui._rect);
+        }
+    } catch (_) {}
+}
+
+function positionBubbleNearRect(ui, container, rect) {
+    try {
+        const containerRect = container.getBoundingClientRect();
+        const padding = 8;
+        let left = rect.left - containerRect.left;
+        let top = rect.top - containerRect.top - ui.offsetHeight - padding;
+        if (top < padding) top = rect.bottom - containerRect.top + padding;
+        const maxLeft = (containerRect.width || container.clientWidth) - ui.offsetWidth - padding;
+        left = Math.max(padding, Math.min(left, maxLeft));
+        ui.style.left = left + 'px';
+        ui.style.top = Math.max(padding, top) + 'px';
+    } catch (_) {}
+}
+
 // Function to setup Cmd+K / Ctrl+K shortcut for hyperlink insertion
 function setupHyperlinkShortcut() {
     // console.log('⌨️ Setting up Cmd+K / Ctrl+K hyperlink shortcut');
@@ -1807,6 +1927,7 @@ setupAutoHyperlinking();
 setupHyperlinkShortcut();
 setupAutoSizing();
 setupTicketHistoryTracking();
+setupInlineTranslation();
 
 // Apply saved visibility states on load
 try {
