@@ -689,9 +689,9 @@
       }
     } catch (_) {}
 
-    // Quietly short-circuit problematic activity/message detail requests with a safe, array-shaped payload
+    // Quietly short-circuit problematic activity detail requests with a safe payload
     try {
-      if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isMessageDetail(requestUrl) || isAttachmentDetail(requestUrl))) {
+      if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isAttachmentDetail(requestUrl))) {
         let stubPayload = null;
         if (isAttachmentDetail(requestUrl)) {
           try {
@@ -702,7 +702,7 @@
             stubPayload = { data: { id: null, resource_type: 'attachment' } };
           }
         } else {
-          // activities/messages → callers often expect array responses
+          // activities → callers often expect array responses
           stubPayload = { data: [] };
         }
         const text = JSON.stringify(stubPayload);
@@ -958,6 +958,14 @@
         // No reload/refresh. Ember store was updated incrementally as pages arrived.
         // Optionally show a small toast to indicate completion.
         try { showNotification('🆕 Posts updated', 'info'); } catch(_) {}
+        // Nudge Ember bindings: force a non-destructive reset of timeline array to trigger re-render
+        try { if (window.__KAYAKO_DBG && typeof window.__KAYAKO_DBG.forceReset === 'function') { window.__KAYAKO_DBG.forceReset(); } } catch(_) {}
+        // Expand visible window to include all loaded posts
+        try { if (window.__KAYAKO_DBG && typeof window.__KAYAKO_DBG.expandLimit === 'function') { window.__KAYAKO_DBG.expandLimit(); } } catch(_) {}
+        // Ensure starting index is zero so earliest messages are visible
+        try { if (window.__KAYAKO_DBG && typeof window.__KAYAKO_DBG.forceStartAtZero === 'function') { window.__KAYAKO_DBG.forceStartAtZero(); } } catch(_) {}
+        // Anchor the view to the very first post to expose earliest messages
+        try { if (window.__KAYAKO_DBG && typeof window.__KAYAKO_DBG.jumpToFirst === 'function') { window.__KAYAKO_DBG.jumpToFirst(); } } catch(_) {}
       } else {
         console.log('✅ Backfill finished. No new posts.');
       }
@@ -990,6 +998,7 @@
             if (store.push) {
               const postsData = [];
               const caseMsgData = [];
+              const relatedData = [];
               const currentCaseId = getCurrentCaseId();
               items.forEach(function(item){
                 var attrs = {};
@@ -1020,10 +1029,28 @@
                       if (item.is_requester != null) cmAttrs.is_requester = item.is_requester;
                       cmAttrs.created_at = item.created_at || attrs.createdAt || null;
                       cmAttrs.updated_at = item.updated_at || null;
+                      // Ensure Ember sees original.resource_type on the related case-message
+                      var oTypeNorm = (oType === 'case-message' || oType === 'case_message') ? 'case_message' : (oType || 'message');
+                      cmAttrs.resource_type = oTypeNorm;
                     } catch(_) {}
                     caseMsgData.push({ id: String(o.id), type: 'case-message', attributes: cmAttrs });
                     // Link as 'original' relationship (what templates normally use)
                     relationships['original'] = { data: { type: 'case-message', id: String(o.id) } };
+                  }
+                } catch(_) {}
+                // Creator and identity minimal relationships so templates don't skip rendering
+                try {
+                  function typeFromResource(rt){ try{ return String(rt||'').toLowerCase().replace(/_/g,'-'); } catch(_){ return ''; } }
+                  if (item && item.creator && item.creator.id && item.creator.resource_type) {
+                    var cType = typeFromResource(item.creator.resource_type);
+                    relationships['creator'] = { data: { type: cType || 'user', id: String(item.creator.id) } };
+                    // push minimal stub to satisfy belongsTo
+                    relatedData.push({ id: String(item.creator.id), type: cType || 'user', attributes: {} });
+                  }
+                  if (item && item.identity && item.identity.id && item.identity.resource_type) {
+                    var iType = typeFromResource(item.identity.resource_type);
+                    relationships['identity'] = { data: { type: iType || 'identity-email', id: String(item.identity.id) } };
+                    relatedData.push({ id: String(item.identity.id), type: iType || 'identity-email', attributes: {} });
                   }
                 } catch(_) {}
                 try {
@@ -1037,6 +1064,7 @@
                 try { postCaseMap.set(String(item.id), String(currentCaseId || '')); } catch(_) {}
                 postsData.push({ id: String(item.id), type: 'post', attributes: attrs, relationships: relationships });
               });
+              try { if (relatedData.length) store.push({ data: relatedData }); } catch(_) {}
               try { if (caseMsgData.length) store.push({ data: caseMsgData }); } catch(_) {}
               try { if (postsData.length) { store.push({ data: postsData }); pushed = postsData.length; } } catch(_) {}
             }
@@ -1216,7 +1244,7 @@
             let full = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
             full.sort(function(a,b){ return getCreated(a) - getCreated(b); });
             // Set back into the exact owner/path when known
-            if (Ember.set) {
+              if (Ember.set) {
               if (arrTokens && roots[arrTokens[0]]) {
                 const base = roots[arrTokens[0]];
                 const nestedPath = arrTokens.slice(1).join('.');
@@ -1240,6 +1268,20 @@
                       if (Array.isArray(timelineObj.sortedItems) || (timelineObj.sortedItems && timelineObj.sortedItems.toArray)) {
                         Ember.set(timelineObj, 'sortedItems', full);
                       }
+                        try {
+                          if (timelineObj.notifyPropertyChange) {
+                            timelineObj.notifyPropertyChange('posts');
+                            timelineObj.notifyPropertyChange('posts.[]');
+                            timelineObj.notifyPropertyChange('items');
+                            timelineObj.notifyPropertyChange('items.[]');
+                            timelineObj.notifyPropertyChange('visiblePosts');
+                            timelineObj.notifyPropertyChange('visiblePosts.[]');
+                            timelineObj.notifyPropertyChange('sortedPosts');
+                            timelineObj.notifyPropertyChange('sortedPosts.[]');
+                            timelineObj.notifyPropertyChange('sortedItems');
+                            timelineObj.notifyPropertyChange('sortedItems.[]');
+                          }
+                        } catch(_) {}
                     }
                   }
                 } catch(_) {}
@@ -1251,14 +1293,19 @@
               try {
                 if (controller && controller.timeline && controller.timeline.notifyPropertyChange) {
                   controller.timeline.notifyPropertyChange('posts');
+                  controller.timeline.notifyPropertyChange('posts.[]');
                 }
                 if (controller && controller.notifyPropertyChange) {
                   controller.notifyPropertyChange('timeline');
                   controller.notifyPropertyChange('timeline.posts');
+                    controller.notifyPropertyChange('timeline.posts.[]');
                 }
                 if (Ember.run && Ember.run.next) Ember.run.next(null, function(){
                   try {
-                    if (controller && controller.timeline && controller.timeline.notifyPropertyChange) controller.timeline.notifyPropertyChange('posts');
+                    if (controller && controller.timeline && controller.timeline.notifyPropertyChange) {
+                      controller.timeline.notifyPropertyChange('posts');
+                      controller.timeline.notifyPropertyChange('posts.[]');
+                    }
                   } catch(_) {}
                 });
               } catch(_) {}
@@ -1352,8 +1399,7 @@
       const currentCaseId = getCurrentCaseId();
       if (!currentCaseId) return false;
       const posts = (store.peekAll && store.peekAll('post')) || [];
-      const caseMsg = (store.peekAll && store.peekAll('case-message')) || [];
-      const allRaw = (posts.toArray ? posts.toArray() : posts).concat(caseMsg.toArray ? caseMsg.toArray() : caseMsg);
+      const allRaw = (posts.toArray ? posts.toArray() : posts);
       const all = allRaw.filter(function(rec){
         try {
           const pid = String(rec && (rec.id || (rec.get && rec.get('id'))));
@@ -1369,15 +1415,7 @@
       const { arrRef, visible } = collectVisibleThread();
       if (!arrRef) return false;
       const existingIds = new Set(visible.map(function(r){ try { return String(r.id || (r.get && r.get('id'))); } catch(_) { return null; } }).filter(Boolean));
-      const isPostModel = function(item){
-        try {
-          if (!item) return false;
-          if (item.constructor && item.constructor.modelName && (item.constructor.modelName === 'case-message' || item.constructor.modelName === 'case_message' || item.constructor.modelName === 'post')) return true;
-          if (item.get && (item.get('resource_type') === 'post')) return true;
-          return false;
-        } catch(_) { return false; }
-      };
-      const missing = all.filter(isPostModel).filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
+      const missing = all.filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
       if (!missing.length) return true;
       return tryAppendToVisibleThread(missing);
     } catch(_) { return false; }

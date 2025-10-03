@@ -664,7 +664,32 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
     ui.addEventListener('pointerdown', (e) => { try { e.preventDefault(); editor && editor.focus(); } catch(_) {} }, true);
 
     // Handlers
-    ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => ui.remove());
+    const keydownHandler = (e) => {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            try { editor && editor.focus(); } catch(_) {}
+            try {
+                const applied = replaceURLTextWithTitle(editor, url, title);
+                if (applied) {
+                    console.log('✅ Replaced URL text with title for', url, '(Tab accept)');
+                    showQuickNotification('🔗 Replaced link text with page title', 'success');
+                    editor.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                    showQuickNotification('Could not find pasted link to replace', 'error');
+                }
+            } catch (error) {
+                console.error('Replace with title (Tab) failed:', error);
+            } finally {
+                try { ui.remove(); } catch(_) {}
+                document.removeEventListener('keydown', keydownHandler, true);
+            }
+        }
+    };
+    document.addEventListener('keydown', keydownHandler, true);
+
+    ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => { try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); } });
     ui.querySelector('.kayako-link-suggest-apply').addEventListener('click', () => {
         try {
             try { editor && editor.focus(); } catch(_) {}
@@ -680,11 +705,12 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
             console.error('Replace with title failed:', error);
         } finally {
             ui.remove();
+            document.removeEventListener('keydown', keydownHandler, true);
         }
     });
     
     // Auto-dismiss on further typing in editor
-    const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); };
+    const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); document.removeEventListener('keydown', keydownHandler, true); };
     editor.addEventListener('input', inputHandler);
 }
 
