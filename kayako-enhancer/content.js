@@ -842,23 +842,29 @@ function setupInlineTranslation() {
 
             const range = sel.getRangeAt(0);
             const rect = range.getBoundingClientRect();
-            const bubble = createTranslationBubble(timelineContainer, rect, 'Translating…', null);
 
-            // Ask background for translation (auto → en)
+            // Ask background for translation (auto → en), only create bubble if non-EN
             const ver = (chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
             console.log('📡 Requesting translation (auto→en), v', ver, 'sample:', capped.slice(0, 60));
             chrome.runtime.sendMessage({ action: 'translateText', text: capped, toLang: 'en' }, (resp) => {
                 const err = chrome.runtime?.lastError;
                 if (err) {
                     console.log('⚠️ translate sendMessage error:', err.message);
-                    try { bubble.remove(); } catch(_) {}
                     return;
                 }
                 if (!resp || !resp.success || !resp.translation) {
-                    updateTranslationBubble(bubble, 'Translation unavailable', null);
+                    // Nothing to show
                     return;
                 }
-                updateTranslationBubble(bubble, resp.translation, resp.sourceLang);
+                const src = String(resp.sourceLang || '').toLowerCase();
+                const isEnglish = src === 'en' || src.startsWith('en-');
+                // Skip offering translation if detected source is English or translation equals original
+                const norm = (s) => String(s || '').trim();
+                if (isEnglish || norm(resp.translation) === norm(capped)) {
+                    return;
+                }
+                // Create bubble on demand with final text
+                createOrUpdateTranslationBubble(timelineContainer, rect, resp.translation, resp.sourceLang);
             });
         } catch (_) {}
     }, true);
@@ -875,19 +881,20 @@ function createTranslationBubble(container, rect, message, sourceLang) {
         border: 1px solid #ddd;
         border-radius: 6px;
         box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-        padding: 8px 10px;
+        padding: 10px 12px;
         z-index: 10000;
         max-width: 420px;
         box-sizing: border-box;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         font-size: 12px;
+        line-height: 1.45;
         color: #333;
     `;
     ui.innerHTML = `
-        <div style="display:flex;align-items:flex-start;gap:8px;">
-            <span class="kayako-translate-text" style="white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; display:block;">${message}</span>
-            <span class="kayako-translate-lang" style="color:#888;"></span>
-            <button class="kayako-translate-close" style="margin-left:auto;background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;">✕</button>
+        <div style=\"display:flex;align-items:flex-start;gap:8px;width:100%;\">
+            <span class=\"kayako-translate-text\" style=\"flex:1 1 auto; max-width:100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; display:block;\">${message}</span>
+            <span class=\"kayako-translate-lang\" style=\"flex:0 0 auto;color:#ff8c00;font-weight:600;margin-left:8px;white-space:nowrap;\"></span>
+            <button class=\"kayako-translate-close\" style=\"margin-left:auto;background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;\">✕</button>
         </div>
     `;
     // Position the bubble near selection
@@ -895,8 +902,23 @@ function createTranslationBubble(container, rect, message, sourceLang) {
         container.style.position = 'relative';
     }
     container.appendChild(ui);
+    // Set origin→EN label if known
+    try {
+        const langEl = ui.querySelector('.kayako-translate-lang');
+        if (langEl) {
+            let src = String(sourceLang || '').toUpperCase();
+            if (src.indexOf('-') !== -1) src = src.split('-')[0];
+            langEl.textContent = src ? `${src}→EN` : '';
+        }
+    } catch(_) {}
     ui._container = container;
     ui._rect = rect;
+    // Constrain bubble width to container to avoid text appearing outside panel
+    try {
+        const cr = container.getBoundingClientRect();
+        const maxW = Math.min(420, Math.max(160, (cr.width || container.clientWidth) - 16));
+        ui.style.maxWidth = maxW + 'px';
+    } catch(_) {}
     positionBubbleNearRect(ui, container, rect);
 
     // Dismiss logic
@@ -913,12 +935,29 @@ function updateTranslationBubble(ui, translation, sourceLang) {
         const textEl = ui.querySelector('.kayako-translate-text');
         const langEl = ui.querySelector('.kayako-translate-lang');
         if (textEl) textEl.textContent = translation || 'Translation unavailable';
-        if (langEl) langEl.textContent = sourceLang ? `(${String(sourceLang).toUpperCase()}→EN)` : '';
+        if (langEl) {
+            let src = String(sourceLang || '').toUpperCase();
+            if (src.indexOf('-') !== -1) src = src.split('-')[0];
+            langEl.textContent = src ? `${src}→EN` : '';
+        }
         // Re-clamp position in case size changed
         if (ui._container && ui._rect) {
+            try {
+                const cr = ui._container.getBoundingClientRect();
+                const maxW = Math.min(420, Math.max(160, (cr.width || ui._container.clientWidth) - 16));
+                ui.style.maxWidth = maxW + 'px';
+            } catch(_) {}
             positionBubbleNearRect(ui, ui._container, ui._rect);
         }
     } catch (_) {}
+}
+
+function createOrUpdateTranslationBubble(container, rect, message, sourceLang) {
+    // Remove any existing bubble
+    const prior = document.querySelector('.kayako-translate-preview');
+    if (prior) prior.remove();
+    const ui = createTranslationBubble(container, rect, message, sourceLang);
+    return ui;
 }
 
 function positionBubbleNearRect(ui, container, rect) {
