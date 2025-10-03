@@ -807,8 +807,8 @@
           }
           if (u.searchParams.get('limit') !== '100') u.searchParams.set('limit', '100');
           if (!u.searchParams.has('_flat')) u.searchParams.set('_flat', 'true');
-          // Reduce payload size and avoid corruption-prone expansions
-          if (u.searchParams.has('include')) u.searchParams.delete('include');
+          // Ensure include is present so relationships like original are available to templates
+          try { if (!u.searchParams.has('include')) u.searchParams.set('include', '*'); } catch(_) {}
           const urlAbs = u.toString();
           const bg = new OriginalXHR();
           bg.open('GET', urlAbs, true);
@@ -1205,14 +1205,22 @@
         arrPath = (arrOwner && arrKey) ? (arrKey) : 'unknown';
       }
       
-      // Merge unique by id
+      // Merge unique by id (support wrapper rows)
       const existingArr = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
-      const existingIds = new Set(existingArr.map(function(r){ try { return String(r.id || (r.get && r.get('id'))); } catch(_) { return null; } }).filter(Boolean));
-      const toAdd = records.filter(function(r){ try { return !existingIds.has(String(r.id || (r.get && r.get('id')))); } catch(_) { return false; } });
+      const idOf = function(x){
+        try {
+          const rec = (x && x.post) ? x.post : x;
+          return String(rec && (rec.id || (rec.get && rec.get('id'))));
+        } catch(_) { return null; }
+      };
+      const existingIds = new Set(existingArr.map(idOf).filter(Boolean));
+      const toAdd = records.filter(function(r){ try { return !existingIds.has(idOf(r)); } catch(_) { return false; } });
       if (!toAdd.length) return false;
       
       const getCreated = function(rec){
         try {
+          // Support wrapper rows shaped like { post: <postModel> }
+          if (rec && rec.post) rec = rec.post;
           let v = null;
           if (rec.get) {
             v = rec.get('createdAt') || rec.get('created_at') || rec.get('created') || rec.get('createdOn');
@@ -1236,19 +1244,45 @@
 
       Ember.run(function(){
         try {
-          if (arrRef.pushObjects) { arrRef.pushObjects(toAdd); }
-          else if (Array.isArray(arrRef)) { Array.prototype.push.apply(arrRef, toAdd); }
+          // Detect whether the target array holds wrapper rows instead of direct post models
+          const currentArr = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
+          const sample = currentArr[0];
+          const sampleIsWrapper = !!(sample && !isPostModel(sample) && sample.post && isPostModel(sample.post));
+          // If wrapper rows are expected, wrap our records accordingly
+          const materialized = (function(list){
+            if (!sampleIsWrapper) return list;
+            return list.map(function(rec){
+              try {
+                if (rec && rec.post) return rec; // already wrapped
+                if (typeof Ember !== 'undefined' && Ember.Object && Ember.Object.create) {
+                  return Ember.Object.create({ post: rec });
+                }
+              } catch(_) {}
+              return { post: rec };
+            });
+          })(toAdd);
+          if (arrRef.pushObjects) { arrRef.pushObjects(materialized); }
+          else if (Array.isArray(arrRef)) { Array.prototype.push.apply(arrRef, materialized); }
           else if (Ember.set && controller) { Ember.set(controller, arrPath, existingArr.concat(toAdd)); }
           // Attempt to re-sort by createdAt/created_at ascending to maintain chronological order
           try {
             let full = Array.isArray(arrRef) ? arrRef : (arrRef.toArray ? arrRef.toArray() : []);
             full.sort(function(a,b){ return getCreated(a) - getCreated(b); });
+            // Normalize to Ember.Array to ensure observers/computeds react properly
+            let emberFull = (typeof Ember !== 'undefined' && Ember.A) ? Ember.A(full.slice()) : full.slice();
             // Set back into the exact owner/path when known
               if (Ember.set) {
               if (arrTokens && roots[arrTokens[0]]) {
                 const base = roots[arrTokens[0]];
                 const nestedPath = arrTokens.slice(1).join('.');
-                if (base && nestedPath) Ember.set(base, nestedPath, full);
+                if (base && nestedPath) {
+                  // Prefer setObjects when available to avoid losing array observers
+                  try {
+                    const refObj = arrTokens.reduce((o,k)=> (o? o[k] : null), base);
+                    if (refObj && typeof refObj.setObjects === 'function') refObj.setObjects(emberFull);
+                    else Ember.set(base, nestedPath, emberFull);
+                  } catch(_) { Ember.set(base, nestedPath, emberFull); }
+                }
                 // Also try common sibling arrays used by templates (items/visiblePosts/sortedPosts)
                 try {
                   const timelineTokens = arrTokens.slice(1, -1); // e.g., ['timeline']
@@ -1257,17 +1291,30 @@
                     for (let i=0;i<timelineTokens.length;i++){ if (!timelineObj) break; timelineObj = timelineObj[timelineTokens[i]]; }
                     if (timelineObj) {
                       if (Array.isArray(timelineObj.items) || (timelineObj.items && timelineObj.items.toArray)) {
-                        Ember.set(timelineObj, 'items', full);
+                        try { if (timelineObj.items && typeof timelineObj.items.setObjects === 'function') timelineObj.items.setObjects(emberFull); else Ember.set(timelineObj, 'items', emberFull); } catch(_) { Ember.set(timelineObj, 'items', emberFull); }
                       }
                       if (Array.isArray(timelineObj.visiblePosts) || (timelineObj.visiblePosts && timelineObj.visiblePosts.toArray)) {
-                        Ember.set(timelineObj, 'visiblePosts', full);
+                        try { if (timelineObj.visiblePosts && typeof timelineObj.visiblePosts.setObjects === 'function') timelineObj.visiblePosts.setObjects(emberFull); else Ember.set(timelineObj, 'visiblePosts', emberFull); } catch(_) { Ember.set(timelineObj, 'visiblePosts', emberFull); }
                       }
                       if (Array.isArray(timelineObj.sortedPosts) || (timelineObj.sortedPosts && timelineObj.sortedPosts.toArray)) {
-                        Ember.set(timelineObj, 'sortedPosts', full);
+                        try { if (timelineObj.sortedPosts && typeof timelineObj.sortedPosts.setObjects === 'function') timelineObj.sortedPosts.setObjects(emberFull); else Ember.set(timelineObj, 'sortedPosts', emberFull); } catch(_) { Ember.set(timelineObj, 'sortedPosts', emberFull); }
                       }
                       if (Array.isArray(timelineObj.sortedItems) || (timelineObj.sortedItems && timelineObj.sortedItems.toArray)) {
-                        Ember.set(timelineObj, 'sortedItems', full);
+                        try { if (timelineObj.sortedItems && typeof timelineObj.sortedItems.setObjects === 'function') timelineObj.sortedItems.setObjects(emberFull); else Ember.set(timelineObj, 'sortedItems', emberFull); } catch(_) { Ember.set(timelineObj, 'sortedItems', emberFull); }
                       }
+                      // Keep limit/total in sync so virtualization recalculates
+                      try {
+                        const newLen = emberFull.length;
+                        if (typeof timelineObj.set === 'function') {
+                          try { timelineObj.set('limit', newLen); } catch(_) { timelineObj.limit = newLen; }
+                          try { timelineObj.set('total', newLen); } catch(_) { timelineObj.total = newLen; }
+                          try { timelineObj.set('total_count', newLen); } catch(_) { timelineObj.total_count = newLen; }
+                        } else {
+                          timelineObj.limit = newLen;
+                          timelineObj.total = newLen;
+                          timelineObj.total_count = newLen;
+                        }
+                      } catch(_) {}
                         try {
                           if (timelineObj.notifyPropertyChange) {
                             timelineObj.notifyPropertyChange('posts');
@@ -1280,20 +1327,24 @@
                             timelineObj.notifyPropertyChange('sortedPosts.[]');
                             timelineObj.notifyPropertyChange('sortedItems');
                             timelineObj.notifyPropertyChange('sortedItems.[]');
+                            timelineObj.notifyPropertyChange('limit');
+                            timelineObj.notifyPropertyChange('total');
+                            timelineObj.notifyPropertyChange('total_count');
                           }
                         } catch(_) {}
                     }
                   }
                 } catch(_) {}
               } else if (arrOwner && arrKey) {
-                Ember.set(arrOwner, arrKey, full);
+                try { if (arrOwner[arrKey] && typeof arrOwner[arrKey].setObjects === 'function') arrOwner[arrKey].setObjects(emberFull); else Ember.set(arrOwner, arrKey, emberFull); } catch(_) { Ember.set(arrOwner, arrKey, emberFull); }
               } else if (controller) {
-                Ember.set(controller, 'timeline.posts', full);
+                Ember.set(controller, 'timeline.posts', emberFull);
               }
               try {
                 if (controller && controller.timeline && controller.timeline.notifyPropertyChange) {
                   controller.timeline.notifyPropertyChange('posts');
                   controller.timeline.notifyPropertyChange('posts.[]');
+                  try { const newLen = emberFull.length; if (typeof controller.timeline.set === 'function') controller.timeline.set('limit', newLen); else controller.timeline.limit = newLen; controller.timeline.notifyPropertyChange('limit'); } catch(_) {}
                 }
                 if (controller && controller.notifyPropertyChange) {
                   controller.notifyPropertyChange('timeline');
@@ -1305,6 +1356,7 @@
                     if (controller && controller.timeline && controller.timeline.notifyPropertyChange) {
                       controller.timeline.notifyPropertyChange('posts');
                       controller.timeline.notifyPropertyChange('posts.[]');
+                      controller.timeline.notifyPropertyChange('limit');
                     }
                   } catch(_) {}
                 });
