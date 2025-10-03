@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "Kayako Simple Paginator",
+  "version": "1.0.0",
+  "description": "Clean, simple pagination fix for Kayako - increases limit from 30 to 100 posts per request",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.kayako.com/*",
+    "*://*.gfi.com/*",
+    "*://*.aurea.com/*",
+    "*://*.ignitetech.com/*",
+    "*://*.crossover.com/*",
+    "*://*.totogi.com/*",
+    "*://*.alpha.school/*",
+    "*://*.cloudsense.com/*",
+    "*://*.kandy.io/*",
+    "*://dnnsupport.dnnsoftware.com/*",
+    "*://csai.trilogy.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.kayako.com/agent/*",
+        "*://*.gfi.com/agent/*",
+        "*://*.aurea.com/agent/*",
+        "*://*.ignitetech.com/agent/*",
+        "*://*.crossover.com/agent/*",
+        "*://*.totogi.com/agent/*",
+        "*://*.alpha.school/agent/*",
+        "*://*.cloudsense.com/agent/*",
+        "*://*.kandy.io/agent/*",
+        "*://dnnsupport.dnnsoftware.com/agent/*",
+        "*://csai.trilogy.com/agent/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": [
+        "*://*.kayako.com/*",
+        "*://*.gfi.com/*",
+        "*://*.aurea.com/*",
+        "*://*.ignitetech.com/*",
+        "*://*.crossover.com/*",
+        "*://*.totogi.com/*",
+        "*://*.alpha.school/*",
+        "*://*.cloudsense.com/*",
+        "*://*.kandy.io/*",
+        "*://dnnsupport.dnnsoftware.com/*",
+        "*://csai.trilogy.com/*"
+      ]
+    }
+  ]
+}
+
