@@ -894,7 +894,10 @@ function createTranslationBubble(container, rect, message, sourceLang) {
         <div style=\"display:flex;align-items:flex-start;gap:8px;width:100%;\">
             <span class=\"kayako-translate-text\" style=\"flex:1 1 auto; max-width:100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; display:block;\">${message}</span>
             <span class=\"kayako-translate-lang\" style=\"flex:0 0 auto;color:#ff8c00;font-weight:600;margin-left:8px;white-space:nowrap;\"></span>
-            <button class=\"kayako-translate-close\" style=\"margin-left:auto;background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;\">✕</button>
+            <button class=\"kayako-translate-copy\" title=\"Copy translation\" style=\"background:transparent;border:none;padding:0;width:18px;height:18px;cursor:pointer;opacity:.6;display:flex;align-items:center;justify-content:center;\">
+                <svg viewBox=\"0 0 20 20\" width=\"16\" height=\"16\" aria-hidden=\"true\"><rect x=\"7\" y=\"3\" width=\"9\" height=\"9\" rx=\"2\" ry=\"2\" fill=\"none\" stroke=\"#666\" stroke-width=\"1.5\"></rect><rect x=\"4\" y=\"8\" width=\"9\" height=\"9\" rx=\"2\" ry=\"2\" fill=\"none\" stroke=\"#666\" stroke-width=\"1.5\"></rect></svg>
+            </button>
+            <button class=\"kayako-translate-close\" style=\"background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;\">✕</button>
         </div>
     `;
     // Position the bubble near selection
@@ -927,6 +930,56 @@ function createTranslationBubble(container, rect, message, sourceLang) {
     const onDoc = (ev) => { if (!ui.contains(ev.target)) close(); };
     const onKey = (ev) => { if (ev.key === 'Escape') close(); };
     setTimeout(() => { document.addEventListener('click', onDoc, true); document.addEventListener('keydown', onKey, true); }, 50);
+    // Copy handler (tiny icon toggles to a check briefly)
+    try {
+        const copyBtn = ui.querySelector('.kayako-translate-copy');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const textEl = ui.querySelector('.kayako-translate-text');
+                const txt = textEl ? (textEl.textContent || '') : '';
+                if (!txt) { showQuickNotification('Nothing to copy', 'error'); return; }
+                const showTick = () => {
+                    try {
+                        copyBtn.style.opacity = '1';
+                        copyBtn.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 10l3 3 7-7" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                        setTimeout(() => {
+                            copyBtn.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="7" y="3" width="9" height="9" rx="2" ry="2" fill="none" stroke="#666" stroke-width="1.5"></rect><rect x="4" y="8" width="9" height="9" rx="2" ry="2" fill="none" stroke="#666" stroke-width="1.5"></rect></svg>';
+                            copyBtn.style.opacity = '.6';
+                        }, 1200);
+                    } catch (_) {}
+                };
+                const fallback = () => {
+                    try {
+                        const ta = document.createElement('textarea');
+                        ta.value = txt;
+                        ta.style.position = 'fixed';
+                        ta.style.opacity = '0';
+                        document.body.appendChild(ta);
+                        ta.focus();
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                        showQuickNotification('📋 Copied translation', 'success');
+                        showTick();
+                    } catch (_) {
+                        showQuickNotification('Could not copy', 'error');
+                    }
+                };
+                try {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(txt).then(() => {
+                            showQuickNotification('📋 Copied translation', 'success');
+                            showTick();
+                        }).catch(() => { fallback(); });
+                    } else {
+                        fallback();
+                    }
+                } catch (_) { fallback(); }
+            });
+        }
+    } catch (_) {}
     return ui;
 }
 
