@@ -583,7 +583,8 @@ function suggestReplaceURLWithTitle(editor, url) {
                 console.log('⚠️ No title available for', url);
                 return;
             }
-            const title = String(response.title).trim();
+            const titleRaw = String(response.title).trim();
+            const title = decodeHtmlEntities(titleRaw).trim();
             if (!title || title.length === 0) {
                 console.log('⚠️ Empty title for', url);
                 return;
@@ -618,6 +619,28 @@ function titlesEquivalentOrUrlLike(title, url) {
     }
 }
 
+// Decode HTML entities (named and numeric) safely using a temporary textarea
+function decodeHtmlEntities(str) {
+    try {
+        const ta = document.createElement('textarea');
+        ta.innerHTML = String(str || '');
+        return ta.value;
+    } catch (_) {
+        return String(str || '');
+    }
+}
+
+// Escape for safe innerHTML interpolation
+function escapeHtml(str) {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Create a small inline UI offering to replace URL text with the page title
 function createOrUpdateLinkSuggestion(editor, url, title) {
     // Clean up any previous suggestion
@@ -644,9 +667,11 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         font-size: 12px;
     `;
-    const safeTitle = title.length > 90 ? title.slice(0, 87) + '…' : title;
+    const decodedTitle = decodeHtmlEntities(title);
+    const safeTitle = decodedTitle.length > 90 ? decodedTitle.slice(0, 87) + '…' : decodedTitle;
+    const safeHTMLTitle = escapeHtml(safeTitle);
     ui.innerHTML = `
-        <span style="color:#333;">Replace pasted link with “${safeTitle}”?</span>
+        <span style="color:#333;">Replace pasted link with “${safeHTMLTitle}”?</span>
         <button class="kayako-link-suggest-apply" style="background:#007bff;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">Replace</button>
         <button class="kayako-link-suggest-dismiss" style="background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:4px 8px;cursor:pointer;">Keep</button>
     `;
@@ -664,7 +689,7 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
     ui.addEventListener('pointerdown', (e) => { try { e.preventDefault(); editor && editor.focus(); } catch(_) {} }, true);
 
     // Handlers
-    const keydownHandler = (e) => {
+	const keydownHandler = (e) => {
         if (e.key === 'Tab') {
             e.preventDefault();
             e.stopPropagation();
@@ -686,10 +711,16 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
                 document.removeEventListener('keydown', keydownHandler, true);
             }
         }
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			e.stopImmediatePropagation();
+			try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); }
+		}
     };
     document.addEventListener('keydown', keydownHandler, true);
 
-    ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => { try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); } });
+	ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => { try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); } });
     ui.querySelector('.kayako-link-suggest-apply').addEventListener('click', () => {
         try {
             try { editor && editor.focus(); } catch(_) {}
@@ -703,23 +734,30 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
             }
         } catch (error) {
             console.error('Replace with title failed:', error);
-        } finally {
-            ui.remove();
-            document.removeEventListener('keydown', keydownHandler, true);
-        }
+		} finally {
+			ui.remove();
+			document.removeEventListener('keydown', keydownHandler, true);
+		}
     });
     
     // Auto-dismiss on further typing in editor
-    const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); document.removeEventListener('keydown', keydownHandler, true); };
+	const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); document.removeEventListener('keydown', keydownHandler, true); };
     editor.addEventListener('input', inputHandler);
+
+	// Mark the corresponding anchor as checked to avoid duplicate suggestions from auto-link scan
+	try {
+		const a = findAnchorForURL(editor, url);
+		if (a) a.dataset.titleSuggestChecked = '1';
+	} catch (_) {}
 }
 
 // Try to replace the last pasted URL's visible text with the fetched title
 function replaceURLTextWithTitle(editor, url, title) {
+    const cleanTitle = decodeHtmlEntities(title);
     // Prefer replacing an anchor that matches the URL
     const anchor = findAnchorForURL(editor, url);
     if (anchor) {
-        anchor.textContent = title;
+        anchor.textContent = cleanTitle;
         return true;
     }
     // Fallback: wrap the first matching text node occurrence
@@ -734,7 +772,7 @@ function replaceURLTextWithTitle(editor, url, title) {
                 range.setEnd(node, idx + url.length);
                 const link = document.createElement('a');
                 link.href = url;
-                link.textContent = title;
+                link.textContent = cleanTitle;
                 link.target = '_blank';
                 range.deleteContents();
                 range.insertNode(link);
@@ -1257,6 +1295,57 @@ function insertHyperlinkIntoEditor(text, url, targetEditor) {
     }
 }
 
+// Detect when plain URL text auto-converts into an anchor and offer title replacement
+function setupAutoLinkSuggestionOnAutoAnchor(editor) {
+    if (editor.dataset.autoLinkDetectSetup === 'true') return;
+    editor.dataset.autoLinkDetectSetup = 'true';
+    let scanTimer = null;
+    const scheduleScan = () => {
+        if (scanTimer) clearTimeout(scanTimer);
+        scanTimer = setTimeout(() => {
+            try { scanEditorForAutoLinks(editor); } catch (_) {}
+        }, 140);
+    };
+    editor.addEventListener('input', scheduleScan);
+    editor.addEventListener('keyup', (e) => {
+        if (e && (e.key === ' ' || e.key === 'Enter' || e.key === 'Tab')) {
+            scheduleScan();
+        }
+    });
+}
+
+function scanEditorForAutoLinks(editor) {
+    try {
+        const anchors = editor.querySelectorAll('a[href]');
+        anchors.forEach(a => {
+            try {
+                if (a.dataset.titleSuggestChecked === '1') return;
+                const text = (a.textContent || '').trim();
+                const href = a.getAttribute('href') || a.href || '';
+                if (!href) { a.dataset.titleSuggestChecked = '1'; return; }
+                if (isLikelyRawUrlText(text, href)) {
+                    a.dataset.titleSuggestChecked = '1';
+                    // Give DOM a moment to settle, then suggest
+                    setTimeout(() => { trySuggestTitleReplace(editor, href, 1); }, 50);
+                }
+            } catch (_) {}
+        });
+    } catch (_) {}
+}
+
+function isLikelyRawUrlText(text, href) {
+    if (!text) return false;
+    const t = String(text).trim();
+    const h = String(href).trim();
+    if (!t || !h) return false;
+    // If the visible text itself looks like a URL/domain
+    if (isValidURL(t)) return true;
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t) && !t.includes(' ')) return true;
+    // Normalize to compare ignoring protocol and trailing slash
+    const norm = (s) => s.replace(/^https?:\/\//i, '').replace(/\/$/, '').toLowerCase();
+    return norm(t) === norm(h);
+}
+
 // Function to show quick notifications
 function showQuickNotification(message, type = 'info') {
     // Remove existing notifications
@@ -1360,6 +1449,9 @@ function setupEditorAutoSizing() {
         
         // Always keep toolbar interactions expanding the editor
         setupToolbarButtonListeners(editor);
+
+		// Watch for Kayako auto-linking (URL text becomes anchor after typing space/enter)
+		setupAutoLinkSuggestionOnAutoAnchor(editor);
 
         // Set initial size based on current focus state and content
         if (document.activeElement === editor) {
