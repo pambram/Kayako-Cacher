@@ -1184,7 +1184,7 @@ class KayakoAIEnhancer {
       // Append formatting guidance for limited HTML output
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Return only the HTML.';
 
-      const generatedText = await this.callAI('Generate text based on the following request:', fullPrompt, ticketContext);
+      const generatedText = await this.callAI('Generate a customer facing response (i.e. a public response, or "PR") based on the following request:', fullPrompt, ticketContext);
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -1610,7 +1610,7 @@ class KayakoAIEnhancer {
 
   async callAI(prompt, text, ticketContext = '') {
     // Base system prompt
-    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary.';
+    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication.';
     
     // Append custom instructions if provided (don't override)
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
