@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Kayako Simple Paginator",
-  "version": "1.0.0",
-  "description": "Clean, simple pagination fix for Kayako - increases limit from 30 to 100 posts per request",
+  "version": "5.2.0",
+  "description": "Kayako pagination fix - increases limit and prevents 400 errors",
   "permissions": [
     "storage"
   ],

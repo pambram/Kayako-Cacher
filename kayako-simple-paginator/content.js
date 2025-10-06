@@ -2,14 +2,16 @@
  * Content Script - Kayako Simple Paginator
  * 
  * Single responsibility: Inject the XHR interceptor into the page context
+ * CRITICAL: Runs at document_start to intercept BEFORE Kayako's code
  */
 
 (function() {
   'use strict';
   
-  console.log('[Kayako Paginator] Content script initializing...');
+  console.log('[Kayako Paginator] Content script initializing at document_start...');
   
-  // Inject the XHR interceptor script into the page context
+  // Inject IMMEDIATELY - don't wait for DOM
+  // This ensures we capture the original fetch/XHR before Kayako wraps them
   function injectScript() {
     const script = document.createElement('script');
     script.src = chrome.runtime.getURL('injected.js');
@@ -21,16 +23,13 @@
       console.error('[Kayako Paginator] Failed to load injected script');
     };
     
+    // Inject into documentElement directly (available before head/body)
     (document.head || document.documentElement).appendChild(script);
   }
   
-  // Wait for DOM to be ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectScript);
-  } else {
-    injectScript();
-  }
+  // Inject IMMEDIATELY - no waiting
+  injectScript();
   
-  console.log('[Kayako Paginator] Content script ready');
+  console.log('[Kayako Paginator] Content script injected immediately');
 })();
 
