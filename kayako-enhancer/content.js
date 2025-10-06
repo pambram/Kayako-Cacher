@@ -1540,6 +1540,13 @@ function handleEditorFocus(editor) {
 // Handle editor blur - animate to min height
 function handleEditorBlur(editor) {
     // console.log('📏 Editor blurred, shrinking to min height');
+    // Do not shrink when the window/tab itself loses focus (user switched apps)
+    try {
+        if (!document.hasFocus()) {
+            // Skip shrink on window blur; we'll shrink later only on in-page interactions
+            return;
+        }
+    } catch (_) {}
     
     try {
         chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
@@ -1674,7 +1681,13 @@ function setupToolbarButtonListeners(editor) {
     const delegatedHandler = (e) => {
         if (isInteractive(e.target)) {
             // Ensure the editor stays expanded even if it blurs
-            setTimeout(() => activateEditor(editor), 0);
+            setTimeout(() => {
+                activateEditor(editor);
+                // Froala/Kayako may re-render the editor on macro/app actions; re-attach auto-sizing shortly after
+                setTimeout(() => {
+                    try { setupEditorAutoSizing(); } catch(_) {}
+                }, 50);
+            }, 0);
         }
     };
 
@@ -2137,3 +2150,22 @@ try {
         console.error('Error loading visibility settings:', error);
     }
 }
+
+// Shrink expanded editors when clicking elsewhere in the page (but not on window blur)
+// This ensures that after returning from another app, the next in-page click outside
+// the editor container will shrink it if appropriate.
+document.addEventListener('mousedown', (e) => {
+    try {
+        if (!document.hasFocus()) return; // ignore when switching apps
+        const clickContainer = e.target.closest('.ko-text-editor__container_1p5g6r');
+        const editors = document.querySelectorAll('.fr-element');
+        editors.forEach((ed) => {
+            const edContainer = ed.closest('.ko-text-editor__container_1p5g6r');
+            if (!edContainer) return;
+            // If the click is outside this editor's container and the editor isn't focused, shrink it
+            if (clickContainer !== edContainer && document.activeElement !== ed) {
+                handleEditorBlur(ed);
+            }
+        });
+    } catch (_) {}
+}, true);
