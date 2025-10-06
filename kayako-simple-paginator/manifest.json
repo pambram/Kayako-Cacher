@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako Simple Paginator",
-  "version": "5.2.0",
+  "version": "5.5.1",
   "description": "Kayako pagination fix - increases limit and prevents 400 errors",
   "permissions": [
     "storage"

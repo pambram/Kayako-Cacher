@@ -972,10 +972,138 @@
     } catch (_) {}
   }
 
+  /**
+   * Get existing post IDs from DOM
+   */
+  function getExistingPostIds() {
+    const posts = document.querySelectorAll('[data-id]');
+    const ids = new Set();
+    posts.forEach(post => {
+      const id = post.getAttribute('data-id');
+      if (id) ids.add(id);
+    });
+    return ids;
+  }
+  
+  /**
+   * Determine post type from API data
+   */
+  function getPostType(postData) {
+    try {
+      const originalType = postData.original?.resource_type?.toLowerCase();
+      if (originalType === 'note') return 'note';
+      if (originalType === 'activity') return 'activity';
+      if (originalType === 'case_message' || originalType === 'message') return 'message';
+      return 'message';
+    } catch (e) {
+      return 'message';
+    }
+  }
+  
+  /**
+   * Find a template element of the given type
+   */
+  function findTemplate(type) {
+    if (type === 'note') {
+      return document.querySelector('[class*="note"][data-id]');
+    } else if (type === 'activity') {
+      return document.querySelector('[class*="activity"][data-id]');
+    } else {
+      return document.querySelector('[class*="post"][data-id], [class*="message"][data-id]');
+    }
+  }
+  
+  /**
+   * Create a simple post placeholder that Kayako can populate
+   * Strategy: Just create a minimal div with data-id and let Kayako's rendering handle it
+   */
+  function createPostElement(postData) {
+    // Create a minimal wrapper div
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ko-timeline-2_list_post__item_1nm4l4';
+    wrapper.setAttribute('data-id', postData.id);
+    wrapper.setAttribute('data-post-id', postData.id);
+    
+    // Add minimal content so it's not completely empty
+    wrapper.innerHTML = `
+      <div style="padding: 8px; border-left: 3px solid #ddd; margin: 4px 0;">
+        <div style="font-size: 11px; color: #666; margin-bottom: 4px;">
+          ${postData.created_at ? new Date(postData.created_at).toLocaleDateString() : ''}
+        </div>
+        <div style="font-size: 13px;">
+          ${postData.contents || postData.subject || ''}
+        </div>
+      </div>
+    `;
+    
+    return wrapper;
+  }
+  
+  /**
+   * Append posts directly to DOM (bypasses Ember complexity)
+   */
+  function appendPostsToDOM(posts) {
+    try {
+      const existingPosts = document.querySelectorAll('[data-id]');
+      if (existingPosts.length === 0) return 0;
+      
+      const container = existingPosts[0].parentElement;
+      if (!container) return 0;
+      
+      const existingIds = getExistingPostIds();
+      const sorted = [...posts].sort((a, b) => parseInt(a.id) - parseInt(b.id));
+      
+      // Debug: log first post structure
+      if (sorted.length > 0 && !window.__kayako_dom_append_logged) {
+        window.__kayako_dom_append_logged = true;
+        console.log('🔍 Sample post data:', {
+          id: sorted[0].id,
+          subject: sorted[0].subject,
+          contents: sorted[0].contents,
+          hasOriginal: !!sorted[0].original,
+          originalType: sorted[0].original?.resource_type,
+          creator: sorted[0].creator,
+          created_at: sorted[0].created_at,
+          keys: Object.keys(sorted[0])
+        });
+      }
+      
+      let appended = 0;
+      // Insert in REVERSE order so oldest end up at the top
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const post = sorted[i];
+        if (!existingIds.has(String(post.id))) {
+          const element = createPostElement(post);
+          container.insertBefore(element, container.firstChild);
+          appended++;
+        }
+      }
+      
+      if (appended > 0) {
+        console.log('📌 Appended', appended, 'posts directly to DOM');
+      }
+      
+      return appended;
+    } catch (e) {
+      console.warn('DOM append failed:', e);
+      return 0;
+    }
+  }
+  
   // Push JSON:API payload into Ember Data store without reload
   function applyToEmberStore(payload) {
     try {
       if (!payload || !Array.isArray(payload.data) || payload.data.length === 0) return 0;
+      
+      // NEW: Try DOM append first (simpler and works!)
+      try {
+        const domAppended = appendPostsToDOM(payload.data);
+        if (domAppended > 0) {
+          return domAppended;
+        }
+      } catch (e) {
+        console.warn('DOM append attempt failed, falling back to Ember:', e);
+      }
       const container = getEmberContainer();
       if (!container) return 0;
       const store = (container.lookup && (container.lookup('service:store') || container.lookup('store:main'))) || null;

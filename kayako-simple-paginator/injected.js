@@ -134,58 +134,102 @@
   }
   
   /**
+   * Determine post type from API data
+   */
+  function getPostType(postData) {
+    try {
+      const originalType = postData.original?.resource_type?.toLowerCase();
+      
+      if (originalType === 'note') return 'note';
+      if (originalType === 'activity') return 'activity';
+      if (originalType === 'case_message' || originalType === 'message') return 'message';
+      
+      return 'message'; // Default
+    } catch (e) {
+      return 'message';
+    }
+  }
+  
+  /**
+   * Find a template element of the given type
+   */
+  function findTemplate(type) {
+    if (type === 'note') {
+      // Find a note (has yellow background, class contains 'note')
+      return document.querySelector('[class*="note"][data-id]');
+    } else if (type === 'activity') {
+      // Find an activity (has activity classes)
+      return document.querySelector('[class*="activity"][data-id]');
+    } else {
+      // Find a message (class contains 'post' or 'message')
+      return document.querySelector('[class*="post"][data-id], [class*="message"][data-id]');
+    }
+  }
+  
+  /**
    * Create a post element by cloning an existing template
    */
   function createPostElement(postData) {
-    // Try to find a real message post to use as a template
-    const existingMessages = Array.from(document.querySelectorAll('[data-id]')).filter(el => {
-      return el.classList.contains('ko-timeline-2_list_item__post_1oksrd') || 
-             el.querySelector('.ko-timeline-2_list_item__content_1oksrd');
-    });
+    const postType = getPostType(postData);
+    let template = findTemplate(postType);
     
-    let template = null;
-    if (existingMessages.length > 0) {
-      // Clone the first real message as a template
-      template = existingMessages[0].cloneNode(true);
-      
-      // Update data-id
-      template.setAttribute('data-id', postData.id);
-      
-      // Update the content
-      const contentDiv = template.querySelector('.ko-timeline-2_list_item__content_1oksrd');
-      if (contentDiv) {
-        contentDiv.textContent = postData.contents || postData.subject || 'Post #' + postData.id;
-      }
-      
-      // Update creator name if present
-      const creatorEl = template.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
-      if (creatorEl && postData.creator) {
-        creatorEl.textContent = postData.creator.full_name || 'User';
-      }
-      
-      // Update timestamp
-      const timeEl = template.querySelector('.ko-timeline-2_list_item__time_1oksrd');
-      if (timeEl && postData.created_at) {
-        const date = new Date(postData.created_at);
-        timeEl.textContent = 'on ' + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      }
-      
-      return template;
+    if (!template) {
+      // Fallback to any post
+      template = document.querySelector('[data-id]');
     }
     
-    // Fallback: create simple div
-    const div = document.createElement('div');
-    div.setAttribute('data-id', postData.id);
-    div.className = 'ko-timeline-2_list_post__item_1nm4l4';
-    div.innerHTML = `
-      <div class="ko-timeline-2_list_item__body_1oksrd">
-        <div class="ko-timeline-2_list_item__content_1oksrd">
-          ${postData.contents || postData.subject || 'Post #' + postData.id}
-        </div>
-      </div>
-    `;
+    if (!template) {
+      // Last resort: create basic div
+      const div = document.createElement('div');
+      div.setAttribute('data-id', postData.id);
+      div.innerHTML = `<div>${postData.contents || postData.subject || 'Post #' + postData.id}</div>`;
+      return div;
+    }
     
-    return div;
+    // Clone the template
+    const cloned = template.cloneNode(true);
+    
+    // Update data-id
+    cloned.setAttribute('data-id', postData.id);
+    
+    // Update the content (preserve HTML formatting!)
+    const contentDiv = cloned.querySelector('.ko-timeline-2_list_item__content_1oksrd');
+    if (contentDiv && (postData.contents || postData.subject)) {
+      contentDiv.innerHTML = postData.contents || postData.subject || '';
+    }
+    
+    // Update creator name
+    const creatorEl = cloned.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+    if (creatorEl) {
+      const creatorName = postData.creator?.full_name || postData.identity?.name || 'User';
+      if (creatorEl.tagName === 'A') {
+        creatorEl.textContent = creatorName;
+        // Update href if we have user ID
+        if (postData.creator?.id) {
+          creatorEl.href = `/agent/users/${postData.creator.id}`;
+        }
+      } else {
+        creatorEl.textContent = creatorName;
+      }
+    }
+    
+    // Update timestamp
+    const timeEl = cloned.querySelector('[class*="time"]');
+    if (timeEl && postData.created_at) {
+      try {
+        const date = new Date(postData.created_at);
+        const formatted = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        timeEl.textContent = 'on ' + formatted;
+      } catch (e) {}
+    }
+    
+    // Update avatar if present
+    const avatarImg = cloned.querySelector('.ko-user-avatar_image__image_kpxzg');
+    if (avatarImg && postData.creator?.avatar) {
+      avatarImg.src = postData.creator.avatar;
+    }
+    
+    return cloned;
   }
   
   /**
@@ -250,27 +294,88 @@
       urlObj.searchParams.set('limit', String(CONFIG.LIMIT));
       
       let currentUrl = urlObj.toString();
+      
+      console.log('[Kayako Paginator] 🔗 First background URL:', currentUrl.substring(0, 200));
+      
       let totalFetched = 0;
       
-      // Fetch all remaining pages
+      // Fetch all remaining pages - use CACHER's approach (which works!)
       while (currentUrl && totalFetched < 1000) { // Safety limit
-        console.log('[Kayako Paginator] 📥 Fetching background page...');
+        console.log('[Kayako Paginator] 📥 Fetching page via direct OriginalXHR...');
         
-        const response = await OriginalFetch(currentUrl, {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            'Accept': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest'
-          }
+        const { text, status } = await new Promise((resolve, reject) => {
+          // Create XHR using Reflect to bypass constructor wrapper
+          const bg = Reflect.construct(OriginalXHR, []);
+          
+          bg.open('GET', currentUrl, true);
+          
+          try { bg.responseType = 'json'; } catch (_) {}
+          try { bg.withCredentials = true; } catch (_) {}
+          try { bg.setRequestHeader('Accept', 'application/json'); } catch (_) {}
+          try { bg.setRequestHeader('X-Requested-With', 'XMLHttpRequest'); } catch (_) {}
+          
+          bg.onload = function() {
+            console.log('[Kayako Paginator] 🎉 Background XHR loaded, status:', this.status);
+            
+            if (this.status !== 200) {
+              reject(new Error('HTTP ' + this.status));
+              return;
+            }
+            
+            // Try to get parsed JSON response first
+            let text = null;
+            if (this.response && typeof this.response === 'object') {
+              try {
+                text = JSON.stringify(this.response);
+              } catch (_) {}
+            }
+            
+            // Fallback to responseText
+            if (!text) {
+              text = this.responseText || '{}';
+            }
+            
+            resolve({ text: text, status: this.status });
+          };
+          
+          bg.onerror = function() {
+            console.error('[Kayako Paginator] ❌ Network error');
+            reject(new Error('Network error'));
+          };
+          
+          console.log('[Kayako Paginator] 📤 Sending background XHR...');
+          bg.send();
         });
         
-        if (!response.ok) {
-          console.warn('[Kayako Paginator] Background fetch failed:', response.status);
+        console.log('[Kayako Paginator] 📡 XHR Response:', status, 'bytes:', text.length);
+        
+        if (status !== 200) {
+          console.warn('[Kayako Paginator] Background request failed:', status);
           break;
         }
         
-        const data = await response.json();
+        // Parse response with sanitization fallback
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (jsonError) {
+          console.warn('[Kayako Paginator] ⚠️ JSON parse failed, trying to sanitize...', jsonError.message);
+          
+          try {
+            const sanitized = text
+              .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+              .replace(/,(\s*[}\]])/g, '$1');
+            
+            data = JSON.parse(sanitized);
+            console.log('[Kayako Paginator] ✅ Sanitization worked!');
+          } catch (sanitizeError) {
+            console.error('[Kayako Paginator] ❌ Sanitization failed too, skipping page');
+            stats.backgroundPages++;
+            continue;
+          }
+        }
+        
+        console.log('[Kayako Paginator] 📦 Parsed response, data.data exists:', !!data.data, 'length:', data.data?.length || 0);
         const posts = data.data || [];
         
         stats.backgroundPages++;
@@ -278,25 +383,33 @@
         
         console.log('[Kayako Paginator] ✅ Background page', stats.backgroundPages, ':', posts.length, 'posts (total:', totalFetched, ')');
         
+        // Check if there's more BEFORE appending (so we know whether to continue)
+        const isLastPage = posts.length < CONFIG.LIMIT;
+        
         // Try to append posts to DOM
         try {
           const appended = appendPostsToDOM(posts);
           console.log('[Kayako Paginator] 📌 Appended', appended, 'posts to DOM');
+          stats.domsAppended = (stats.domsAppended || 0) + appended;
         } catch (e) {
           console.warn('[Kayako Paginator] Failed to append to DOM:', e);
         }
         
-        // Check if there's more
-        if (posts.length < CONFIG.LIMIT) {
-          console.log('[Kayako Paginator] 🏁 Reached end (partial page)');
+        // Check if this was the last page
+        if (isLastPage) {
+          console.log('[Kayako Paginator] 🏁 Reached end (got', posts.length, 'posts, less than limit', CONFIG.LIMIT, ')');
           break;
         }
         
-        // Construct next URL
+        console.log('[Kayako Paginator] ➡️  More posts available, continuing...');
+        
+        // Construct next URL - preserve the full path and params
         const nextMinId = Math.min(...posts.map(p => parseInt(p.id)));
         const nextUrlObj = new URL(currentUrl, window.location.origin);
         nextUrlObj.searchParams.set('after_id', String(nextMinId - 1));
         currentUrl = nextUrlObj.toString();
+        
+        console.log('[Kayako Paginator] 🔗 Next URL:', currentUrl.substring(currentUrl.indexOf('/api'), currentUrl.indexOf('/api') + 100));
         
         // Small delay
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -322,6 +435,12 @@
     let shouldTriggerBackground = false;
     
     xhr.open = function(method, url, ...rest) {
+      // Skip our interception for internal background requests
+      if (this.__internal_kayako_paginator) {
+        console.log('[Kayako Paginator] 🔓 Bypassing wrapper for internal request');
+        return originalOpen.apply(this, [method, url, ...rest]);
+      }
+      
       requestUrl = url;
       requestMethod = method;
       shouldTriggerBackground = false;
@@ -370,6 +489,12 @@
     };
     
     xhr.send = function(...args) {
+      // Skip our interception for internal background requests
+      if (this.__internal_kayako_paginator) {
+        console.log('[Kayako Paginator] 🔓 Bypassing send wrapper for internal request');
+        return originalSend.apply(this, args);
+      }
+      
       if (shouldTriggerBackground) {
         const originalOnLoad = xhr.onload;
         
