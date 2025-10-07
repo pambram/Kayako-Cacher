@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Kayako Pagination Cacher v3",
-  "version": "6.1.0",
-  "description": "Intercepts Kayako API requests to increase pagination limits and cache responses for better performance",
+  "name": "Kayako Enhancer",
+  "version": "6.1.1",
+  "description": "Kayako error prevention and image upload optimizer",
   "permissions": [
     "storage",
     "activeTab",

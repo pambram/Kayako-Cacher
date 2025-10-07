@@ -1446,6 +1446,13 @@ function setupEditorAutoSizing() {
         editor.addEventListener('blur', () => {
             handleEditorBlur(editor);
         });
+
+        // Expand when content changes (e.g., macro inserts template)
+        const expandOnChange = () => {
+            try { activateEditor(editor); } catch(_) {}
+        };
+        editor.addEventListener('input', expandOnChange);
+        editor.addEventListener('fr-change', expandOnChange);
         
         // Always keep toolbar interactions expanding the editor
         setupToolbarButtonListeners(editor);
@@ -1544,6 +1551,12 @@ function handleEditorBlur(editor) {
     try {
         if (!document.hasFocus()) {
             // Skip shrink on window blur; we'll shrink later only on in-page interactions
+            return;
+        }
+        // Only shrink on blur if the last page click was outside this editor's container
+        const lastClick = window.__kayakoLastMouseDownTarget;
+        const container = editor.closest('.ko-text-editor__container_1p5g6r');
+        if (!lastClick || (container && container.contains(lastClick))) {
             return;
         }
     } catch (_) {}
@@ -2156,6 +2169,8 @@ try {
 // the editor container will shrink it if appropriate.
 document.addEventListener('mousedown', (e) => {
     try {
+        // Record last page click target to coordinate with blur logic
+        window.__kayakoLastMouseDownTarget = e.target;
         if (!document.hasFocus()) return; // ignore when switching apps
         const clickContainer = e.target.closest('.ko-text-editor__container_1p5g6r');
         const editors = document.querySelectorAll('.fr-element');

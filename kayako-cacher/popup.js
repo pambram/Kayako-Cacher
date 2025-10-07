@@ -87,59 +87,6 @@ class KayakoCacherPopup {
   }
 
   setupEventListeners() {
-    // Pagination limit selector
-    const paginationLimit = document.getElementById('pagination-limit');
-    if (paginationLimit) {
-      paginationLimit.addEventListener('change', async (e) => {
-        this.config.paginationLimit = parseInt(e.target.value);
-        await this.saveConfig();
-      });
-    }
-
-    // Cache enabled toggle
-    const enableCache = document.getElementById('enable-cache');
-    if (enableCache) {
-      enableCache.addEventListener('change', async (e) => {
-        this.config.cacheEnabled = e.target.checked;
-        await this.saveConfig();
-      });
-    }
-
-    // Cache expiry selector
-    const cacheExpiry = document.getElementById('cache-expiry');
-    if (cacheExpiry) {
-      cacheExpiry.addEventListener('change', async (e) => {
-        this.config.cacheExpiry = parseInt(e.target.value);
-        await this.saveConfig();
-      });
-    }
-
-    // Preload-all deprecated: no handler
-
-    // Max cache size reserved: no handler
-
-    // Removed Load All Posts action
-
-    const clearCache = document.getElementById('clear-cache');
-    if (clearCache) {
-      clearCache.addEventListener('click', () => this.clearCache());
-    }
-
-    const refreshStats = document.getElementById('refresh-stats');
-    if (refreshStats) {
-      refreshStats.addEventListener('click', () => this.refreshCacheStats());
-    }
-
-    const showDebug = document.getElementById('show-debug');
-    if (showDebug) {
-      showDebug.addEventListener('click', () => this.showDebugInfo());
-    }
-
-    const toggleAdvanced = document.getElementById('toggle-advanced');
-    if (toggleAdvanced) {
-      toggleAdvanced.addEventListener('click', () => this.toggleAdvancedSection());
-    }
-
     // Image optimization toggle
     const enableImageOpt = document.getElementById('enable-image-optimization');
     if (enableImageOpt) {
@@ -214,40 +161,22 @@ class KayakoCacherPopup {
       imageMaxHeight.addEventListener('change', persistH);
       imageMaxHeight.addEventListener('blur', persistH);
     }
+    
+    // Debug button
+    const showDebug = document.getElementById('show-debug');
+    if (showDebug) {
+      showDebug.addEventListener('click', () => this.showDebugInfo());
+    }
+
+    // Advanced toggle
+    const toggleAdvanced = document.getElementById('toggle-advanced');
+    if (toggleAdvanced) {
+      toggleAdvanced.addEventListener('click', () => this.toggleAdvancedSection());
+    }
   }
 
   updateUI() {
     if (!this.config) return;
-
-    // Update pagination limit
-    const paginationLimit = document.getElementById('pagination-limit');
-    if (paginationLimit) {
-      paginationLimit.value = this.config.paginationLimit;
-    }
-
-    // Update cache enabled
-    const enableCache = document.getElementById('enable-cache');
-    if (enableCache) {
-      enableCache.checked = this.config.cacheEnabled;
-    }
-
-    // Update cache expiry
-    const cacheExpiry = document.getElementById('cache-expiry');
-    if (cacheExpiry) {
-      cacheExpiry.value = this.config.cacheExpiry;
-    }
-
-    // Update preload all
-    const preloadAll = document.getElementById('preload-all');
-    if (preloadAll) {
-      preloadAll.checked = this.config.preloadAll;
-    }
-
-    // Update max cache size (convert bytes to MB)
-    const maxCacheSize = document.getElementById('max-cache-size');
-    if (maxCacheSize) {
-      maxCacheSize.value = Math.round(this.config.maxCacheSize / 1024 / 1024);
-    }
 
     // Update image optimization toggle
     const enableImageOpt = document.getElementById('enable-image-optimization');
@@ -324,19 +253,12 @@ class KayakoCacherPopup {
   }
 
   async refreshCacheStats() {
-    try {
-      // Fallback to background script
-      const response = await chrome.runtime.sendMessage({ action: 'getCacheStats' });
-      
-      if (response && response.success) {
-        const stats = response.stats;
-        const savedSec = (stats.savedMsTotal || 0) / 1000;
-        document.getElementById('cache-saved-seconds').textContent = savedSec.toFixed(1) + 's';
-      }
-    } catch (error) {
-      console.error('Error getting cache stats:', error);
-      document.getElementById('cache-saved-seconds').textContent = '0.0s';
-    }
+    // No-op in v6 (caching removed)
+  }
+
+  async clearCache() {
+    // No-op in v6 (caching removed)
+    this.showSuccess('v6 has no cache to clear - Kayako loads all posts automatically now!');
   }
 
   async loadAllPosts() {
