@@ -1004,39 +1004,124 @@
    * Find a template element of the given type
    */
   function findTemplate(type) {
+    let template = null;
+    
     if (type === 'note') {
-      return document.querySelector('[class*="note"][data-id]');
+      template = document.querySelector('.qa-feed_item--note[data-id]') ||
+                 document.querySelector('[class*="__note_"][data-id]');
+    } else if (type === 'message') {
+      template = document.querySelector('.qa-feed_item--helpcenter-post[data-id]') ||
+                 document.querySelector('[class*="__post_"][data-id]') ||
+                 document.querySelector('[class*="__item_"][data-id]');
     } else if (type === 'activity') {
-      return document.querySelector('[class*="activity"][data-id]');
-    } else {
-      return document.querySelector('[class*="post"][data-id], [class*="message"][data-id]');
+      template = document.querySelector('[class*="activity"][data-id]');
     }
+    
+    if (!window.__kayako_template_finder_debug) {
+      window.__kayako_template_finder_debug = true;
+      console.log('🔍 Template finder:', { type: type, found: !!template, classes: template?.className });
+    }
+    
+    return template;
   }
   
   /**
-   * Create a simple post placeholder that Kayako can populate
-   * Strategy: Just create a minimal div with data-id and let Kayako's rendering handle it
+   * Create a post element by cloning an existing template
    */
   function createPostElement(postData) {
-    // Create a minimal wrapper div
-    const wrapper = document.createElement('div');
-    wrapper.className = 'ko-timeline-2_list_post__item_1nm4l4';
-    wrapper.setAttribute('data-id', postData.id);
-    wrapper.setAttribute('data-post-id', postData.id);
+    const postType = getPostType(postData);
+    let template = findTemplate(postType);
     
-    // Add minimal content so it's not completely empty
-    wrapper.innerHTML = `
-      <div style="padding: 8px; border-left: 3px solid #ddd; margin: 4px 0;">
-        <div style="font-size: 11px; color: #666; margin-bottom: 4px;">
-          ${postData.created_at ? new Date(postData.created_at).toLocaleDateString() : ''}
-        </div>
-        <div style="font-size: 13px;">
-          ${postData.contents || postData.subject || ''}
-        </div>
-      </div>
-    `;
+    // Debug what template we found
+    if (!window.__kayako_template_debug) {
+      window.__kayako_template_debug = true;
+      console.log('🔍 Template debug:', {
+        postType: postType,
+        foundTemplate: !!template,
+        templateClasses: template?.className,
+        templateHasContentDiv: !!template?.querySelector('.ko-timeline-2_list_item__content_1oksrd')
+      });
+    }
     
-    return wrapper;
+    if (!template) {
+      template = document.querySelector('[data-id]');
+    }
+    
+    if (!template) {
+      const div = document.createElement('div');
+      div.setAttribute('data-id', postData.id);
+      div.innerHTML = `<div>${postData.contents || postData.subject || 'Post #' + postData.id}</div>`;
+      return div;
+    }
+    
+    const cloned = template.cloneNode(true);
+    cloned.setAttribute('data-id', postData.id);
+    
+    // Try to find content div - use the EXACT class from real Kayako posts
+    let contentDiv = cloned.querySelector('.ko-timeline-2_list_item__content_1oksrd');
+    
+    // If not found, try activity text div
+    if (!contentDiv) {
+      contentDiv = cloned.querySelector('.ko-timeline-2_list_activity_standard__activity-text_1hqxr1');
+    }
+    
+    // If still not found, CREATE the content div
+    if (!contentDiv) {
+      const bodyDiv = cloned.querySelector('.ko-timeline-2_list_item__body_1oksrd');
+      if (bodyDiv) {
+        contentDiv = document.createElement('div');
+        contentDiv.className = 'ko-timeline-2_list_item__content_1oksrd';
+        bodyDiv.appendChild(contentDiv);
+      }
+    }
+    
+    // Now update content
+    if (contentDiv && (postData.contents || postData.subject)) {
+      contentDiv.innerHTML = postData.contents || postData.subject || '';
+    } else if (!contentDiv && (postData.contents || postData.subject)) {
+      // Last resort: inject content anywhere we can find in the clone
+      const wrapper = document.createElement('div');
+      wrapper.className = 'ko-timeline-2_list_item__content_1oksrd';
+      wrapper.innerHTML = postData.contents || postData.subject || '';
+      
+      // Try to append to body
+      const bodyDiv = cloned.querySelector('[class*="body"]');
+      if (bodyDiv) {
+        bodyDiv.appendChild(wrapper);
+      } else {
+        // Just append to the cloned element itself
+        cloned.appendChild(wrapper);
+      }
+    }
+    
+    const creatorEl = cloned.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+    if (creatorEl) {
+      const creatorName = postData.creator?.full_name || postData.identity?.name || 'User';
+      if (creatorEl.tagName === 'A') {
+        creatorEl.textContent = creatorName;
+        if (postData.creator?.id) {
+          creatorEl.href = `/agent/users/${postData.creator.id}`;
+        }
+      } else {
+        creatorEl.textContent = creatorName;
+      }
+    }
+    
+    const timeEl = cloned.querySelector('[class*="time"]');
+    if (timeEl && postData.created_at) {
+      try {
+        const date = new Date(postData.created_at);
+        const formatted = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        timeEl.textContent = 'on ' + formatted;
+      } catch (e) {}
+    }
+    
+    const avatarImg = cloned.querySelector('.ko-user-avatar_image__image_kpxzg');
+    if (avatarImg && postData.creator?.avatar) {
+      avatarImg.src = postData.creator.avatar;
+    }
+    
+    return cloned;
   }
   
   /**
@@ -1045,7 +1130,19 @@
   function appendPostsToDOM(posts) {
     try {
       const existingPosts = document.querySelectorAll('[data-id]');
-      if (existingPosts.length === 0) return 0;
+      if (existingPosts.length === 0) {
+        console.log('⏳ No templates in DOM yet, deferring append...');
+        return 0;
+      }
+      
+      // Wait for proper templates to exist (not just any [data-id])
+      const hasMessageTemplate = !!document.querySelector('.qa-feed_item--helpcenter-post[data-id]');
+      const hasNoteTemplate = !!document.querySelector('.qa-feed_item--note[data-id]');
+      
+      if (!hasMessageTemplate && !hasNoteTemplate) {
+        console.log('⏳ No message/note templates ready yet, deferring...');
+        return 0;
+      }
       
       const container = existingPosts[0].parentElement;
       if (!container) return 0;
@@ -1090,19 +1187,37 @@
     }
   }
   
+  // Queue posts for DOM append (wait for templates to be ready)
+  const domAppendQueue = [];
+  
+  function scheduleDOMAppend(posts) {
+    domAppendQueue.push(...posts);
+    
+    // Try to flush queue after a delay (let DOM stabilize)
+    setTimeout(() => {
+      if (domAppendQueue.length > 0) {
+        const appended = appendPostsToDOM(domAppendQueue);
+        if (appended > 0) {
+          domAppendQueue.length = 0; // Clear queue
+          console.log('✅ Flushed DOM queue:', appended, 'posts');
+        } else {
+          // Templates still not ready, will retry on next call
+          console.log('⏳ Templates not ready, keeping', domAppendQueue.length, 'in queue');
+        }
+      }
+    }, 500);
+  }
+  
   // Push JSON:API payload into Ember Data store without reload
   function applyToEmberStore(payload) {
     try {
       if (!payload || !Array.isArray(payload.data) || payload.data.length === 0) return 0;
       
-      // NEW: Try DOM append first (simpler and works!)
+      // NEW: Queue for DOM append (deferred until templates exist)
       try {
-        const domAppended = appendPostsToDOM(payload.data);
-        if (domAppended > 0) {
-          return domAppended;
-        }
+        scheduleDOMAppend(payload.data);
       } catch (e) {
-        console.warn('DOM append attempt failed, falling back to Ember:', e);
+        console.warn('DOM append queue failed:', e);
       }
       const container = getEmberContainer();
       if (!container) return 0;
