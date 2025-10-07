@@ -157,14 +157,21 @@ class KayakoImageOptimizer {
       img.onload = () => {
         // Calculate optimal dimensions
         let { width, height } = img;
-        const { maxWidth, maxHeight } = this.compressionSettings;
+        const { maxWidth, maxHeight, quality } = this.compressionSettings;
         
-        if (width > maxWidth || height > maxHeight) {
+        // If quality is 1.0, skip resizing entirely (preserve original dimensions)
+        const skipResize = (quality >= 1.0);
+        
+        if (!skipResize && (width > maxWidth || height > maxHeight)) {
           const ratio = Math.min(maxWidth / width, maxHeight / height);
           width *= ratio;
           height *= ratio;
+          try { console.log(`🧩 Image resize → ${Math.round(width)}x${Math.round(height)} (max ${maxWidth}x${maxHeight})`); } catch (_) {}
+        } else if (skipResize) {
+          try { console.log(`🧩 Quality=1.0: preserving original size ${width}x${height} (no resize)`); } catch (_) {}
+        } else {
+          try { console.log(`🧩 Image within limits: ${width}x${height} (no resize needed)`); } catch (_) {}
         }
-        try { console.log(`🧩 Image resize → ${Math.round(width)}x${Math.round(height)} (max ${maxWidth}x${maxHeight})`); } catch (_) {}
         
         // Ensure highest quality resampling
         try {
@@ -172,35 +179,41 @@ class KayakoImageOptimizer {
           ctx.imageSmoothingQuality = 'high';
         } catch (_) {}
 
-        // Progressive downscale to preserve detail when shrinking a lot
         const targetW = Math.max(1, Math.round(width));
         const targetH = Math.max(1, Math.round(height));
+        
+        // If no resize needed (original size preserved), draw directly
+        if (skipResize || (targetW === img.width && targetH === img.height)) {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+        } else {
+          // Progressive downscale to preserve detail when shrinking
+          let workCanvas = document.createElement('canvas');
+          let workCtx = workCanvas.getContext('2d');
+          try { workCtx.imageSmoothingEnabled = true; workCtx.imageSmoothingQuality = 'high'; } catch (_) {}
+          workCanvas.width = img.naturalWidth || img.width;
+          workCanvas.height = img.naturalHeight || img.height;
+          workCtx.drawImage(img, 0, 0, workCanvas.width, workCanvas.height);
 
-        // Start from original in a working canvas
-        let workCanvas = document.createElement('canvas');
-        let workCtx = workCanvas.getContext('2d');
-        try { workCtx.imageSmoothingEnabled = true; workCtx.imageSmoothingQuality = 'high'; } catch (_) {}
-        workCanvas.width = img.naturalWidth || img.width;
-        workCanvas.height = img.naturalHeight || img.height;
-        workCtx.drawImage(img, 0, 0, workCanvas.width, workCanvas.height);
+          // If large downscale, reduce by halves until close to target
+          while (workCanvas.width / 2 > targetW && workCanvas.height / 2 > targetH) {
+            const halfCanvas = document.createElement('canvas');
+            const halfCtx = halfCanvas.getContext('2d');
+            try { halfCtx.imageSmoothingEnabled = true; halfCtx.imageSmoothingQuality = 'high'; } catch (_) {}
+            halfCanvas.width = Math.max(targetW, Math.round(workCanvas.width / 2));
+            halfCanvas.height = Math.max(targetH, Math.round(workCanvas.height / 2));
+            halfCtx.clearRect(0, 0, halfCanvas.width, halfCanvas.height);
+            halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
+            workCanvas = halfCanvas;
+          }
 
-        // If large downscale, reduce by halves until close to target
-        while (workCanvas.width / 2 > targetW && workCanvas.height / 2 > targetH) {
-          const halfCanvas = document.createElement('canvas');
-          const halfCtx = halfCanvas.getContext('2d');
-          try { halfCtx.imageSmoothingEnabled = true; halfCtx.imageSmoothingQuality = 'high'; } catch (_) {}
-          halfCanvas.width = Math.max(targetW, Math.round(workCanvas.width / 2));
-          halfCanvas.height = Math.max(targetH, Math.round(workCanvas.height / 2));
-          halfCtx.clearRect(0, 0, halfCanvas.width, halfCanvas.height);
-          halfCtx.drawImage(workCanvas, 0, 0, halfCanvas.width, halfCanvas.height);
-          workCanvas = halfCanvas;
+          // Final draw to target canvas
+          canvas.width = targetW;
+          canvas.height = targetH;
+          ctx.clearRect(0, 0, targetW, targetH);
+          ctx.drawImage(workCanvas, 0, 0, targetW, targetH);
         }
-
-        // Final draw to target canvas
-        canvas.width = targetW;
-        canvas.height = targetH;
-        ctx.clearRect(0, 0, targetW, targetH);
-        ctx.drawImage(workCanvas, 0, 0, targetW, targetH);
         
         // Decide output format
         const requested = (this.compressionSettings.format || 'auto').toLowerCase();
