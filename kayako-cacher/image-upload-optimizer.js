@@ -231,14 +231,29 @@ class KayakoImageOptimizer {
   async uploadOptimized(file, current, total) {
     console.log(`📤 Uploading optimized image ${current}/${total}`);
     
+    // Wait for CSRF token to be captured (up to 5 seconds)
+    if (!window.kayako_csrf_token) {
+      console.log('⏳ Waiting for CSRF token to be captured...');
+      for (let i = 0; i < 50; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (window.kayako_csrf_token) {
+          console.log('✅ CSRF token captured after', (i + 1) * 100, 'ms');
+          break;
+        }
+      }
+    }
+    
     // Use FormData for direct upload
     const formData = new FormData();
     formData.append('files', file);
     
-    // Get CSRF token from the page
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content ||
+    // Get CSRF token - try captured token first (from XHR headers), then DOM extraction
+    let csrfToken = window.kayako_csrf_token ||
+                     document.querySelector('meta[name="csrf-token"]')?.content ||
                      window.csrfToken || 
                      this.extractCSRFFromDOM();
+    
+    console.log('🔑 CSRF token status:', csrfToken ? 'Found (' + csrfToken.substring(0, 10) + '...)' : 'NOT FOUND');
     
     try {
       const headers = { 'X-Requested-With': 'XMLHttpRequest' };
@@ -492,11 +507,11 @@ class KayakoImageOptimizer {
   extractCSRFFromDOM() {
     // Try multiple methods to get CSRF token (case-insensitive and cookie-based)
     const methods = [
+      () => window.kayako_csrf_token, // Try captured token first
       () => document.querySelector('meta[name="csrf-token" i]')?.content,
       () => document.querySelector('meta[name="x-csrf-token" i]')?.content,
       () => document.querySelector('input[name="_token" i]')?.value,
       () => window._token,
-      () => window.kayako_csrf_token,
       () => {
         // Search inline scripts for common patterns
         for (let script of document.scripts) {
@@ -517,6 +532,17 @@ class KayakoImageOptimizer {
           return [k, decodeURIComponent(v)];
         }));
         return map['XSRF-TOKEN'] || map['x-csrf-token'] || map['X-CSRF-Token'] || null;
+      },
+      () => {
+        // Try to extract from any recent XHR request headers in the network tab
+        // Look for X-CSRF-Token in any fetch/XHR headers that might have been set
+        if (typeof PerformanceObserver !== 'undefined') {
+          try {
+            const entries = performance.getEntriesByType('resource');
+            // This won't give us headers, but worth trying other approaches
+          } catch (_) {}
+        }
+        return null;
       }
     ];
     

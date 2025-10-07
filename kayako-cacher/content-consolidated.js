@@ -15,7 +15,7 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
     try {
       // Inject consolidated script as text (most reliable)
       const script = document.createElement('script');
-      script.src = chrome.runtime.getURL('clean-working-solution.js');
+      script.src = chrome.runtime.getURL('clean-working-solution-v6.js');
       
       script.onload = () => {
         // console.log('✅ Consolidated optimization loaded');

@@ -1001,28 +1001,11 @@
   }
   
   /**
-   * Find a template element of the given type
+   * DON'T find templates - cloning breaks everything. Build from scratch instead.
    */
   function findTemplate(type) {
-    let template = null;
-    
-    if (type === 'note') {
-      template = document.querySelector('.qa-feed_item--note[data-id]') ||
-                 document.querySelector('[class*="__note_"][data-id]');
-    } else if (type === 'message') {
-      template = document.querySelector('.qa-feed_item--helpcenter-post[data-id]') ||
-                 document.querySelector('[class*="__post_"][data-id]') ||
-                 document.querySelector('[class*="__item_"][data-id]');
-    } else if (type === 'activity') {
-      template = document.querySelector('[class*="activity"][data-id]');
-    }
-    
-    if (!window.__kayako_template_finder_debug) {
-      window.__kayako_template_finder_debug = true;
-      console.log('🔍 Template finder:', { type: type, found: !!template, classes: template?.className });
-    }
-    
-    return template;
+    // Always return null to force building from scratch
+    return null;
   }
   
   /**
@@ -1047,81 +1030,58 @@
       template = document.querySelector('[data-id]');
     }
     
-    if (!template) {
-      const div = document.createElement('div');
-      div.setAttribute('data-id', postData.id);
-      div.innerHTML = `<div>${postData.contents || postData.subject || 'Post #' + postData.id}</div>`;
-      return div;
-    }
+    // Always build from scratch - cloning templates is broken
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ko-timeline-2_list_post__item_1nm4l4';
+    wrapper.setAttribute('data-id', postData.id);
     
-    const cloned = template.cloneNode(true);
-    cloned.setAttribute('data-id', postData.id);
+    const date = postData.created_at ? new Date(postData.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+    const content = postData.contents || postData.subject || '';
+    const creator = postData.creator?.full_name || postData.identity?.name || 'User';
     
-    // Try to find content div - use the EXACT class from real Kayako posts
-    let contentDiv = cloned.querySelector('.ko-timeline-2_list_item__content_1oksrd');
+    // Build HTML based on type
+    if (postType === 'note') {
+      wrapper.className = 'ko-timeline-2_list_post__item_1nm4l4';
+      wrapper.style.background = '#fffbf0';
+      wrapper.style.borderLeft = '3px solid #ffd966';
+      wrapper.style.padding = '12px';
+      wrapper.style.margin = '8px 0';
+      wrapper.innerHTML = `
+        <div style="font-size: 11px; color: #666; margin-bottom: 6px;">
+          <strong>${creator}</strong> · ${date}
+        </div>
+        <div style="font-size: 13px; line-height: 1.5;">
+          ${content}
+        </div>
+      `;
+    } else if (postType === 'activity') {
+      wrapper.style.padding = '6px 12px';
+      wrapper.style.borderLeft = '2px solid #e0e0e0';
+      wrapper.style.margin = '4px 0';
+      wrapper.style.fontSize = '12px';
+      wrapper.style.color = '#666';
+      wrapper.innerHTML = `
+        <span style="margin-right: 8px;">•</span>
+        <span>${content}</span>
+        <span style="margin-left: 8px; color: #999;">${date}</span>
+      `;
+    } else {
+      // Message
+      wrapper.style.background = 'white';
+      wrapper.style.border = '1px solid #e0e0e0';
+      wrapper.style.borderRadius = '4px';
+      wrapper.style.padding = '12px';
+      wrapper.style.margin = '8px 0';
+      wrapper.innerHTML = `
+        <div style="font-size: 11px; color: #666; margin-bottom: 8px;">
+          <strong>${creator}</strong> · ${date}
+        </div>
+        <div style="font-size: 13px; line-height: 1.6;">
+          ${content}
+        </div>
+      `;
     
-    // If not found, try activity text div
-    if (!contentDiv) {
-      contentDiv = cloned.querySelector('.ko-timeline-2_list_activity_standard__activity-text_1hqxr1');
-    }
-    
-    // If still not found, CREATE the content div
-    if (!contentDiv) {
-      const bodyDiv = cloned.querySelector('.ko-timeline-2_list_item__body_1oksrd');
-      if (bodyDiv) {
-        contentDiv = document.createElement('div');
-        contentDiv.className = 'ko-timeline-2_list_item__content_1oksrd';
-        bodyDiv.appendChild(contentDiv);
-      }
-    }
-    
-    // Now update content
-    if (contentDiv && (postData.contents || postData.subject)) {
-      contentDiv.innerHTML = postData.contents || postData.subject || '';
-    } else if (!contentDiv && (postData.contents || postData.subject)) {
-      // Last resort: inject content anywhere we can find in the clone
-      const wrapper = document.createElement('div');
-      wrapper.className = 'ko-timeline-2_list_item__content_1oksrd';
-      wrapper.innerHTML = postData.contents || postData.subject || '';
-      
-      // Try to append to body
-      const bodyDiv = cloned.querySelector('[class*="body"]');
-      if (bodyDiv) {
-        bodyDiv.appendChild(wrapper);
-      } else {
-        // Just append to the cloned element itself
-        cloned.appendChild(wrapper);
-      }
-    }
-    
-    const creatorEl = cloned.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
-    if (creatorEl) {
-      const creatorName = postData.creator?.full_name || postData.identity?.name || 'User';
-      if (creatorEl.tagName === 'A') {
-        creatorEl.textContent = creatorName;
-        if (postData.creator?.id) {
-          creatorEl.href = `/agent/users/${postData.creator.id}`;
-        }
-      } else {
-        creatorEl.textContent = creatorName;
-      }
-    }
-    
-    const timeEl = cloned.querySelector('[class*="time"]');
-    if (timeEl && postData.created_at) {
-      try {
-        const date = new Date(postData.created_at);
-        const formatted = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        timeEl.textContent = 'on ' + formatted;
-      } catch (e) {}
-    }
-    
-    const avatarImg = cloned.querySelector('.ko-user-avatar_image__image_kpxzg');
-    if (avatarImg && postData.creator?.avatar) {
-      avatarImg.src = postData.creator.avatar;
-    }
-    
-    return cloned;
+    return wrapper;
   }
   
   /**
