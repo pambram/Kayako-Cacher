@@ -486,20 +486,44 @@ class KayakoImageOptimizer {
       if (!this.caretMarkerId) return false;
       const marker = document.getElementById(this.caretMarkerId);
       if (!marker) { this.caretMarkerId = null; return false; }
+      
       const img = document.createElement('img');
       img.src = url;
+      
+      // Insert image before marker
       marker.parentNode.insertBefore(img, marker);
+      
+      // Place cursor AFTER the image
+      const selection = window.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        const range = document.createRange();
+        
+        // Create a space after image for cursor
+        const space = document.createTextNode('\u00A0'); // non-breaking space
+        marker.parentNode.insertBefore(space, marker);
+        
+        // Set cursor after the space
+        range.setStartAfter(space);
+        range.collapse(true);
+        selection.addRange(range);
+      }
+      
+      // Remove marker
       marker.remove();
       this.caretMarkerId = null;
+      
       // Bubble change signals
       const editable = this.findEditableContainer(img);
       if (editable) {
         editable.dispatchEvent(new Event('input', { bubbles: true }));
         editable.dispatchEvent(new Event('keyup', { bubbles: true }));
       }
-      console.log('📍 Inserted image at saved caret');
+      
+      console.log('📍 Inserted image at saved caret with cursor positioned after');
       return true;
-    } catch (_) {
+    } catch (e) {
+      console.warn('Cursor positioning failed:', e);
       return false;
     }
   }

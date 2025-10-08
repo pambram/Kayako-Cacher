@@ -71,6 +71,16 @@
   }
   
   /**
+   * Helper: Check if URL is a note detail request
+   */
+  function isNoteDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/notes\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+  
+  /**
    * Helper: Check if URL is a write to posts endpoint
    */
   function isPostsWrite(url) {
@@ -109,9 +119,9 @@
       requestUrl = url;
       requestMethod = method;
       
-      // Strip include=* from activity/message/attachment detail requests to avoid server 400
+      // Strip include=* from detail requests to avoid server 400
       if (method === 'GET' && typeof url === 'string') {
-        if (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url)) {
+        if (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url) || isNoteDetail(url)) {
           try {
             const u = new URL(url, window.location.origin);
             if (u.searchParams.has('include')) {
@@ -125,19 +135,6 @@
       }
       
       return originalOpen.apply(this, [method, url, ...rest]);
-    };
-    
-    // Capture CSRF token from any page XHR headers
-    xhr.setRequestHeader = function(name, value) {
-      try {
-        if (typeof name === 'string' && /^x[-_]csrf[-_]token$/i.test(name) && typeof value === 'string' && value.length > 16) {
-          if (window.kayako_csrf_token !== value) {
-            window.kayako_csrf_token = value;
-            console.log('🔑 Captured CSRF token');
-          }
-        }
-      } catch (e) {}
-      return originalSetRequestHeader.apply(this, arguments);
     };
     
     xhr.send = function(data) {
@@ -201,9 +198,9 @@
         }
       } catch (_) {}
       
-      // Stub problematic activity/attachment detail requests with safe payloads
+      // Stub problematic detail requests with safe payloads
       try {
-        if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isAttachmentDetail(requestUrl))) {
+        if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isAttachmentDetail(requestUrl) || isNoteDetail(requestUrl))) {
           let stubPayload = null;
           if (isAttachmentDetail(requestUrl)) {
             try {
@@ -212,6 +209,14 @@
               stubPayload = { data: { id: Number(id), resource_type: 'attachment' } };
             } catch (_) {
               stubPayload = { data: { id: null, resource_type: 'attachment' } };
+            }
+          } else if (isNoteDetail(requestUrl)) {
+            try {
+              const u = new URL(requestUrl, window.location.origin);
+              const id = u.pathname.split('/').pop();
+              stubPayload = { data: { id: Number(id), resource_type: 'note' } };
+            } catch (_) {
+              stubPayload = { data: { id: null, resource_type: 'note' } };
             }
           } else {
             stubPayload = { data: [] };
@@ -273,8 +278,9 @@
     return window.kayakoCacheStats_live;
   };
   
-  console.log('✅ Kayako Cacher v6 ready - error prevention active');
-  console.log('🎯 Image optimization will be loaded separately');
+  console.log('✅ Kayako Optimizer v6 ready');
+  console.log('🛡️ Error prevention active');
+  console.log('🖼️ Image optimization available');
   
 })();
 

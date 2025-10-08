@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Kayako Enhancer",
-  "version": "6.1.1",
-  "description": "Kayako error prevention and image upload optimizer",
+  "name": "Kayako Optimizer",
+  "version": "6.3.0",
+  "description": "Kayako optimizer: image upload optimization and error prevention",
   "permissions": [
     "storage",
     "activeTab",
