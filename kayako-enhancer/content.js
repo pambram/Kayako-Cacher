@@ -34,21 +34,34 @@ const defaultMaxHeight = 600;
 const defaultSideMinWidth = 500;
 const defaultSideMinHeight = 100;
 const defaultSideMaxHeight = 300;
+const defaultSidebarWidth = 360;
+
+// Helpers to safely use chrome APIs when the extension context may be reloading
+function isStorageAvailable() {
+    try { return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local); } catch (_) { return false; }
+}
+function isRuntimeAvailable() {
+    try { return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage); } catch (_) { return false; }
+}
 
 // Function to apply saved or default sizes
 function applyAllEditorSizes() {
     try {
-        chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
+        if (!isStorageAvailable()) {
+            resizeEditor(defaultMinHeight, defaultMaxHeight);
+        } else chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
             if (chrome.runtime.lastError) {
-                console.log('Could not get editor size data, using defaults');
+                
                 resizeEditor(defaultMinHeight, defaultMaxHeight);
                 return;
             }
             resizeEditor(data.editorMinHeight || defaultMinHeight, data.editorMaxHeight || defaultMaxHeight);
         });
-        chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight"], (data) => {
+        if (!isStorageAvailable()) {
+            resizeSideConversationEditor(defaultSideMinWidth, defaultSideMinHeight, defaultSideMaxHeight);
+        } else chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight"], (data) => {
             if (chrome.runtime.lastError) {
-                console.log('Could not get side editor size data, using defaults');
+                
                 resizeSideConversationEditor(defaultSideMinWidth, defaultSideMinHeight, defaultSideMaxHeight);
                 return;
             }
@@ -56,7 +69,7 @@ function applyAllEditorSizes() {
         });
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
-            console.log('Extension was reloaded, using default editor sizes');
+            
             resizeEditor(defaultMinHeight, defaultMaxHeight);
             resizeSideConversationEditor(defaultSideMinWidth, defaultSideMinHeight, defaultSideMaxHeight);
         } else {
@@ -319,8 +332,7 @@ function toggleDaySeparators(hide) {
     }
     
     // Debug: Log the current state and found elements
-    console.log('Day separators hidden:', hide);
-    console.log('Found day separators:', document.querySelectorAll('.ko-timeline-2_list_days__day-separator_1bbqo9, [class*="day-separator"]').length);
+    
 }
 
 // --- VISIBILITY FUNCTIONALITY ENDS HERE ---
@@ -422,6 +434,30 @@ function removeTimelineMaxWidth() {
         `;
         document.head.appendChild(animationStyle);
     }
+}
+
+// Make internal notes (yellow background, identified by data-note-id) 10% narrower
+function narrowInternalNotes() {
+    const styleId = 'kayako-internal-note-narrow';
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+        /* Only target internal notes: containers that carry data-note-id */
+        body .message-or-note[data-note-id] .ko-timeline-2_list_item__note_1oksrd,
+        body .ko-timeline-2_list_post__post_1nm4l4.message-or-note[data-note-id] .ko-timeline-2_list_item__note_1oksrd,
+        body div[data-note-id][data-id][data-status][class*="ko-timeline-2_list_item__note"],
+        body .message-or-note[data-note-id] [class*="ko-timeline-2_list_item__note"],
+        body .message-or-note[data-note-id] [class*="ko-timeline-2_list_item__content"] {
+            width: 90% !important;
+            max-width: 90% !important;
+            margin-right: 10% !important; /* keep aligned to the left, create right gutter */
+            box-sizing: border-box !important;
+            flex: 0 0 auto !important; /* override earlier flex:1 to allow narrowing */
+            align-self: flex-start !important;
+        }
+    `;
+    document.head.appendChild(style);
 }
 
 // Function to setup auto-hyperlinking when pasting URLs
@@ -552,26 +588,34 @@ function suggestReplaceURLWithTitle(editor, url) {
         }
         
         // Ask background to fetch the page title
-        const ver = (chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
+        const ver = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
         console.log('📡 Requesting page title from background for:', url, 'enhancer v', ver);
         let responded = false;
         const timeoutId = setTimeout(() => {
             if (!responded) {
                 console.log('⏳ No response from service worker for title within 2s. Pinging…');
-                try {
-                    chrome.runtime.sendMessage({ action: 'ping' }, (pong) => {
-                        const err = chrome.runtime?.lastError;
-                        if (err) {
-                            console.log('⚠️ ping error:', err.message);
-                        } else {
-                            console.log('🏓 ping response:', pong);
-                        }
-                    });
-                } catch (e) {
-                    console.log('⚠️ ping threw:', e?.message || e);
+                if (isRuntimeAvailable()) {
+                    try {
+                        chrome.runtime.sendMessage({ action: 'ping' }, (pong) => {
+                            const err = chrome.runtime?.lastError;
+                            if (err) {
+                                console.log('⚠️ ping error:', err.message);
+                            } else {
+                                console.log('🏓 ping response:', pong);
+                            }
+                        });
+                    } catch (e) {
+                        console.log('⚠️ ping threw:', e?.message || e);
+                    }
+                } else {
+                    console.log('⚠️ runtime unavailable, skipping ping');
                 }
             }
         }, 2000);
+        if (!isRuntimeAvailable()) {
+            console.log('⚠️ runtime unavailable, cannot request fetchPageTitle');
+            return;
+        }
         chrome.runtime.sendMessage({ action: 'fetchPageTitle', url: url }, (response) => {
             responded = true;
             clearTimeout(timeoutId);
@@ -1490,6 +1534,126 @@ function setupEditorAutoSizing() {
     });
 }
 
+// Sidebar: collapse toggle and drag-to-resize (right-side details panel, not the side-conversations panel)
+function setupSidebarControls() {
+    try {
+        const container = document.querySelector('[class*="ko-agent-content_layout__container_"]');
+        if (!container) return;
+        const sidebar = container.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+        if (!sidebar) return;
+
+        if (!document.getElementById('kayako-sidebar-controls-style')) {
+            const style = document.createElement('style');
+            style.id = 'kayako-sidebar-controls-style';
+            style.textContent = `
+                .kayako-sidebar-resizer { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:col-resize; z-index:1000; }
+                .kayako-sidebar-toggle { position:absolute; left:-18px; top:10px; width:16px; height:24px; border-radius:4px 0 0 4px; background:#f1f3f5; border:1px solid #d0d5d8; color:#333; display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:1001; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+                .kayako-sidebar-toggle:hover { background:#e9ecef; }
+                .kayako-sidebar-ui { pointer-events:auto !important; visibility:visible !important; }
+                .kayako-sidebar-collapsed { width:12px !important; min-width:12px !important; max-width:12px !important; flex:0 0 12px !important; overflow:hidden !important; padding:0 !important; }
+                .kayako-sidebar-collapsed > *:not(.kayako-sidebar-ui) { display:none !important; }
+                .kayako-sidebar-collapsed .kayako-sidebar-toggle { left:0 !important; width:12px !important; height:24px; border-radius:0; }
+            `;
+            document.head.appendChild(style);
+        }
+
+        if (getComputedStyle(container).position === 'static') {
+            container.style.position = 'relative';
+        }
+        if (getComputedStyle(sidebar).position === 'static') {
+            sidebar.style.position = 'relative';
+        }
+        // Capture initial width once for fallback restores
+        if (!sidebar.dataset.initialWidth) {
+            try { sidebar.dataset.initialWidth = String(Math.round(sidebar.getBoundingClientRect().width || 360)); } catch(_) {}
+        }
+
+        if (!sidebar.querySelector('.kayako-sidebar-resizer')) {
+            const resizer = document.createElement('div');
+            resizer.className = 'kayako-sidebar-resizer kayako-sidebar-ui';
+            sidebar.appendChild(resizer);
+
+            let dragging = false; let startX = 0; let startW = 0; let rafQueued = false; let lastDX = 0;
+            const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+            const applyWidth = (w) => {
+                sidebar.style.width = w + 'px';
+                sidebar.style.minWidth = w + 'px';
+                sidebar.style.maxWidth = w + 'px';
+                sidebar.style.flex = `0 0 ${w}px`; 
+            };
+            const onMove = (e) => { lastDX = e.clientX - startX; if (!rafQueued) { rafQueued = true; requestAnimationFrame(() => { rafQueued = false; const newW = clamp(startW - lastDX, 12, 700); applyWidth(newW); try { chrome.storage.local.set({ sidebarWidth: newW, sidebarCollapsed: false }); } catch(_) {} }); } };
+            const onUp = () => { dragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
+            resizer.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; startX = e.clientX; startW = sidebar.getBoundingClientRect().width; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp); document.body.style.cursor = 'col-resize'; });
+        }
+
+        if (!sidebar.querySelector('.kayako-sidebar-toggle')) {
+            const toggle = document.createElement('div');
+            toggle.className = 'kayako-sidebar-toggle kayako-sidebar-ui';
+            toggle.title = 'Collapse/expand sidebar';
+            toggle.textContent = '‹';
+            sidebar.appendChild(toggle);
+
+            const setIcon = (collapsed) => { toggle.textContent = collapsed ? '‹' : '›'; };
+            const setCollapsed = (collapsed) => {
+                if (collapsed) {
+                    sidebar.classList.add('kayako-sidebar-collapsed');
+                    // Ensure toggle visible inside the stub
+                    toggle.style.left = '0px';
+                } else {
+                    sidebar.classList.remove('kayako-sidebar-collapsed');
+                    // Restore width from storage or default
+                    try {
+                        chrome.storage.local.get(['sidebarDefaultWidth'], (d) => {
+                            const initial = Number(sidebar.dataset.initialWidth) || Math.round(sidebar.getBoundingClientRect().width || 360);
+                            const preferred = d && d.sidebarDefaultWidth ? Number(d.sidebarDefaultWidth) : initial || defaultSidebarWidth;
+                            const w = Math.max(200, Math.min(700, preferred));
+                            sidebar.style.width = w + 'px';
+                            sidebar.style.minWidth = w + 'px';
+                            sidebar.style.maxWidth = w + 'px';
+                            sidebar.style.flex = `0 0 ${w}px`;
+                            try { chrome.storage.local.set({ sidebarWidth: w }); } catch(_) {}
+                        });
+                    } catch(_) {}
+                    // Float toggle into the gutter for easy click
+                    toggle.style.left = '-18px';
+                }
+                try { chrome.storage.local.set({ sidebarCollapsed: collapsed }); } catch(_) {}
+                setIcon(collapsed);
+            };
+
+            toggle.addEventListener('click', (e) => {
+                e.preventDefault();
+                const collapsed = sidebar.classList.contains('kayako-sidebar-collapsed');
+                if (!collapsed) {
+                    // Save current width prior to collapsing
+                    try { const w = sidebar.getBoundingClientRect().width; chrome.storage.local.set({ sidebarWidth: w }); } catch(_) {}
+                }
+                setCollapsed(!collapsed);
+            });
+
+            // Apply stored state on first setup
+            try {
+                chrome.storage.local.get(['sidebarCollapsed', 'sidebarWidth'], (d) => {
+                    const collapsed = !!(d && d.sidebarCollapsed);
+                    if (collapsed) {
+                        sidebar.classList.add('kayako-sidebar-collapsed');
+                        toggle.style.left = '0px';
+                    } else if (d && d.sidebarWidth) {
+                        const w = d.sidebarWidth;
+                        sidebar.style.width = w + 'px';
+                        sidebar.style.minWidth = w + 'px';
+                        sidebar.style.maxWidth = w + 'px';
+                        sidebar.style.flex = `0 0 ${w}px`;
+                        toggle.style.left = '-18px';
+                        if (!sidebar.dataset.initialWidth) { try { sidebar.dataset.initialWidth = String(w); } catch(_) {} }
+                    }
+                    setIcon(collapsed);
+                });
+            } catch(_) {}
+        }
+    } catch (_) {}
+}
+
 // Handle editor focus - smart sizing based on content and user intent
 function handleEditorFocus(editor) {
     // Check if this is a "first load" scenario: editor is focused but empty
@@ -1521,12 +1685,16 @@ function handleEditorFocus(editor) {
     }
     
     // Normal focus behavior - grow to max height
-    console.log('📏 Editor focused, growing to max height');
+    
     
     try {
+        if (!isStorageAvailable()) {
+            animateEditorToHeight(editor, defaultMaxHeight);
+            return;
+        }
         chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
             if (chrome.runtime.lastError) {
-                console.log('Could not get height data, using defaults for auto-sizing');
+                
                 animateEditorToHeight(editor, defaultMaxHeight);
                 return;
             }
@@ -1536,7 +1704,7 @@ function handleEditorFocus(editor) {
         });
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
-            console.log('Extension context invalidated, using default max height');
+            
             animateEditorToHeight(editor, defaultMaxHeight);
         } else {
             console.error('Error getting max height for auto-sizing:', error);
@@ -1549,6 +1717,10 @@ function handleEditorBlur(editor) {
     // console.log('📏 Editor blurred, shrinking to min height');
     // Do not shrink when the window/tab itself loses focus (user switched apps)
     try {
+        if (window.__kayakoMacroActive) {
+            // While macro selection UI is active, avoid shrinking
+            return;
+        }
         if (!document.hasFocus()) {
             // Skip shrink on window blur; we'll shrink later only on in-page interactions
             return;
@@ -1562,9 +1734,13 @@ function handleEditorBlur(editor) {
     } catch (_) {}
     
     try {
+        if (!isStorageAvailable()) {
+            animateEditorToHeight(editor, defaultMinHeight);
+            return;
+        }
         chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
             if (chrome.runtime.lastError) {
-                console.log('Could not get height data, using defaults for auto-sizing');
+                
                 animateEditorToHeight(editor, defaultMinHeight);
                 return;
             }
@@ -1574,7 +1750,7 @@ function handleEditorBlur(editor) {
         });
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
-            console.log('Extension context invalidated, using default min height');
+            
             animateEditorToHeight(editor, defaultMinHeight);
         } else {
             console.error('Error getting min height for auto-sizing:', error);
@@ -1701,6 +1877,13 @@ function setupToolbarButtonListeners(editor) {
                     try { setupEditorAutoSizing(); } catch(_) {}
                 }, 50);
             }, 0);
+
+            // If this is the Macro trigger/dropdown trigger, mark macro as active so blur won't shrink
+            const isMacroTrigger = !!e.target.closest('.ko-case_macro-selector__trigger_ltxhiw, .ko-case_macro-selector_trigger__trigger_7wpnlb, .ember-basic-dropdown-trigger');
+            if (isMacroTrigger) {
+                window.__kayakoMacroActive = true;
+                window.__kayakoLastMacroEditor = editor;
+            }
         }
     };
 
@@ -1758,6 +1941,10 @@ function activateEditor(editor) {
     
     // Expand to max height
     try {
+        if (!isStorageAvailable()) {
+            animateEditorToHeight(editor, defaultMaxHeight);
+            return;
+        }
         chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
             if (chrome.runtime.lastError) {
                 animateEditorToHeight(editor, defaultMaxHeight);
@@ -1824,6 +2011,23 @@ function setupTicketHistoryTracking() {
         if (isSendButton) {
             console.log('📚 Send button clicked - tracking ticket');
             trackCurrentTicket();
+            // Also minimize the relevant editor so user can review the ticket
+            try {
+                setTimeout(() => {
+                    try {
+                        const btn = target.closest('button') || target;
+                        const container = btn?.closest?.('.ko-text-editor__container_1p5g6r') || document.querySelector('.ko-text-editor__container_1p5g6r');
+                        const candidates = container ? container.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
+                        if (!candidates || candidates.length === 0) return;
+                        chrome.storage.local.get(["editorMinHeight"], (data) => {
+                            const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
+                            candidates.forEach((ed) => {
+                                try { animateEditorToHeight(ed, minHeight); } catch(_) {}
+                            });
+                        });
+                    } catch (_) {}
+                }, 0);
+            } catch (_) {}
         }
     });
 }
@@ -2084,6 +2288,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else if (request.action === "addTicketToHistory") {
             addTicketToHistory(request.ticketInfo, sendResponse);
             return true;
+        } else if (request.action === "getSidebarWidth") {
+            try {
+                const container = document.querySelector('[class*="ko-agent-content_layout__container_"]');
+                const sidebar = container ? container.querySelector('[class*="ko-agent-content_layout__sidebar_"]') : null;
+                const collapsed = !!(sidebar && sidebar.classList.contains('kayako-sidebar-collapsed'));
+                const rectW = sidebar ? Math.round(sidebar.getBoundingClientRect().width || 0) : 0;
+                if (!isStorageAvailable()) {
+                    sendResponse({ success: true, width: collapsed ? defaultSidebarWidth : (rectW || defaultSidebarWidth), collapsed });
+                } else {
+                    chrome.storage.local.get(['sidebarWidth', 'sidebarDefaultWidth'], (d) => {
+                        const stored = d && d.sidebarWidth ? Number(d.sidebarWidth) : 0;
+                        const pref = d && d.sidebarDefaultWidth ? Number(d.sidebarDefaultWidth) : defaultSidebarWidth;
+                        const width = collapsed ? (stored || pref || defaultSidebarWidth) : (rectW || stored || pref || defaultSidebarWidth);
+                        sendResponse({ success: true, width: width, collapsed });
+                    });
+                    return true;
+                }
+            } catch (e) {
+                sendResponse({ success: false, error: e?.message || String(e) });
+            }
+            return true;
         }
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
@@ -2111,6 +2336,9 @@ const observer = new MutationObserver(() => {
         attachAllListeners();
         // Ensure QOL improvements are applied to new content
         removeTimelineMaxWidth();
+        narrowInternalNotes();
+        // Ensure sidebar controls exist
+        setupSidebarControls();
         // Setup auto-sizing for any new editors
         setupEditorAutoSizing();
     } catch (error) {
@@ -2133,11 +2361,13 @@ attachAllListeners();
 
 // Initialize QOL improvements
 removeTimelineMaxWidth();
+narrowInternalNotes();
 setupAutoHyperlinking();
 setupHyperlinkShortcut();
 setupAutoSizing();
+setupSidebarControls();
 setupTicketHistoryTracking();
-setupInlineTranslation();
+try { if (typeof setupInlineTranslation === 'function') { setupInlineTranslation(); } } catch (_) {}
 
 // Apply saved visibility states on load
 try {
@@ -2172,15 +2402,40 @@ document.addEventListener('mousedown', (e) => {
         // Record last page click target to coordinate with blur logic
         window.__kayakoLastMouseDownTarget = e.target;
         if (!document.hasFocus()) return; // ignore when switching apps
+        // If user is clicking within macro dropdown/search UI, keep macro active and avoid shrinking
+        const inMacroMenu = !!e.target.closest('.ember-basic-dropdown-content, .ember-power-select-options, [class*="macro"][class*="dropdown"], [data-test-id*="macro"]');
+        if (inMacroMenu) {
+            window.__kayakoMacroActive = true;
+        } else {
+            // Clicking anywhere else clears macro-active state
+            window.__kayakoMacroActive = false;
+            window.__kayakoLastMacroEditor = null;
+        }
         const clickContainer = e.target.closest('.ko-text-editor__container_1p5g6r');
         const editors = document.querySelectorAll('.fr-element');
         editors.forEach((ed) => {
             const edContainer = ed.closest('.ko-text-editor__container_1p5g6r');
             if (!edContainer) return;
             // If the click is outside this editor's container and the editor isn't focused, shrink it
-            if (clickContainer !== edContainer && document.activeElement !== ed) {
+            if (!window.__kayakoMacroActive && clickContainer !== edContainer) {
                 handleEditorBlur(ed);
             }
         });
+    } catch (_) {}
+}, true);
+
+// When a macro option is selected, re-expand the last macro editor and clear macro-active flag
+document.addEventListener('click', (e) => {
+    try {
+        if (!window.__kayakoMacroActive) return;
+        const inMacroMenu = !!e.target.closest('.ember-basic-dropdown-content, .ember-power-select-options, [class*="macro"][class*="dropdown"], [data-test-id*="macro"]');
+        if (inMacroMenu) {
+            const ed = window.__kayakoLastMacroEditor;
+            setTimeout(() => {
+                try { if (ed) activateEditor(ed); } catch(_) {}
+                window.__kayakoMacroActive = false;
+                window.__kayakoLastMacroEditor = null;
+            }, 0);
+        }
     } catch (_) {}
 }, true);
