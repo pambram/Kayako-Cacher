@@ -1514,6 +1514,9 @@ function setupEditorAutoSizing() {
 		// Watch for Kayako auto-linking (URL text becomes anchor after typing space/enter)
 		setupAutoLinkSuggestionOnAutoAnchor(editor);
 
+        // Ctrl/Cmd+Enter shortcut to click Send
+        setupSendShortcut(editor);
+
         // Set initial size based on current focus state and content
         if (document.activeElement === editor) {
             // Check if this is an empty editor on page load
@@ -1908,6 +1911,34 @@ function setupToolbarButtonListeners(editor) {
     toolbar.addEventListener('click', delegatedHandler, true);
 
     toolbar.dataset.autoSizeListenersSetup = 'true';
+}
+
+// Ctrl/Cmd+Enter → click the Send button in this editor's container
+function setupSendShortcut(editor) {
+    try {
+        if (editor._sendShortcutHandler) return;
+        const handler = (e) => {
+            try {
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
+                    const container = editor.closest('.ko-text-editor__container_1p5g6r');
+                    let btn = null;
+                    if (container) {
+                        btn = container.querySelector('button[class*="ko-button__primary"], button[class*="ko-button__shared"]');
+                    }
+                    if (!btn) {
+                        btn = document.querySelector('button[class*="ko-button__primary"], button[class*="ko-button__shared"]');
+                    }
+                    if (btn) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        btn.click();
+                    }
+                }
+            } catch (_) {}
+        };
+        editor.addEventListener('keydown', handler);
+        editor._sendShortcutHandler = handler;
+    } catch (_) {}
 }
 
 // Clean up toolbar listeners after activation
