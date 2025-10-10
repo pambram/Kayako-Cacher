@@ -182,7 +182,7 @@ class KayakoAIEnhancer {
     buttonWrapper.className = 'ko-text-editor__item_1p5g6r ko-text-editor__itemWrap_1p5g6r kayako-ai-wrapper';
     
     // Define AI enhancement actions
-    const formatHint = 'Additionally, format the output using only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where appropriate; no headings, tables, images, or Markdown. Return only the HTML.';
+    const formatHint = 'Additionally, format the output using only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where appropriate; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders intact. Return only the HTML.';
     const actions = [
       {
         id: 'polish',
@@ -216,7 +216,7 @@ class KayakoAIEnhancer {
         id: 'beautify',
         icon: '🎛️',
         title: 'Beautify',
-        prompt: 'FORMAT-ONLY TRANSFORM. Do not add, remove, reorder, or alter ANY words or punctuation. Do not change casing or correct typos. Use the exact original text, only wrapping/structuring with simple HTML. Constraints: NO Markdown, NO code blocks, NO tables, NO images, NO headings. Use only <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] placeholders intact. You may split paragraphs and group lines into bullet lists without changing the text itself. Return ONLY the HTML.',
+        prompt: 'FORMAT-ONLY TRANSFORM. Do not add, remove, reorder, or alter ANY words or punctuation. Do not change casing or correct typos. Use the exact original text, only wrapping/structuring with simple HTML. Constraints: NO Markdown, NO code blocks, NO tables, NO images, NO headings. Use only <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. You may split paragraphs and group lines into bullet lists without changing the text itself. Return ONLY the HTML.',
         tooltip: 'Format-only: exact words preserved; structure with paragraphs and lists.'
       },
       {
@@ -410,7 +410,7 @@ class KayakoAIEnhancer {
 
   getEditorText(editorElement) {
     // Preserve links by replacing them with placeholders before text extraction
-    const { textWithPlaceholders, linkMap } = this.extractTextWithLinkPlaceholders(editorElement);
+    const { textWithPlaceholders, linkMap, imgMap } = this.extractTextWithLinkPlaceholders(editorElement);
 
     console.log('🔍 Raw extracted text (first 300 chars):', JSON.stringify(textWithPlaceholders.substring(0, 300)));
     console.log('🔗 Found links:', Object.keys(linkMap).length);
@@ -420,6 +420,7 @@ class KayakoAIEnhancer {
     
     // Add link information to the template data
     templateData.linkMap = linkMap;
+    templateData.imgMap = imgMap;
     
     return templateData;
   }
@@ -448,12 +449,25 @@ class KayakoAIEnhancer {
       link.parentNode.replaceChild(textNode, link);
     });
     
+    // Find all images and replace with placeholders to preserve them
+    const images = clonedElement.querySelectorAll('img');
+    const imgMap = {};
+    images.forEach((img, index) => {
+      const placeholder = `[IMG${index + 1}]`;
+      // Preserve the exact original markup to avoid losing inline styles/attrs
+      const html = img.outerHTML;
+      imgMap[placeholder] = html;
+      const textNode = document.createTextNode(placeholder);
+      img.parentNode.replaceChild(textNode, img);
+    });
+    
     // Extract text content from the modified clone with preserved breaks
     const textContent = this.getTextWithBreaks(clonedElement);
     
     return {
       textWithPlaceholders: textContent,
-      linkMap: linkMap
+      linkMap: linkMap,
+      imgMap: imgMap
     };
   }
 
@@ -552,6 +566,7 @@ class KayakoAIEnhancer {
   setEditorText(editorElement, textData, newText) {
     // Restore links in the enhanced text
     const textWithRestoredLinks = this.restoreLinksInText(newText, textData.linkMap);
+    const textWithRestoredMedia = this.restoreImagesInText(textWithRestoredLinks, textData.imgMap);
     
     // If user selected a specific range, replace only that selection
     if (textData.selectionRange) {
@@ -559,7 +574,7 @@ class KayakoAIEnhancer {
         const range = textData.selectionRange;
         const fragment = document.createDocumentFragment();
         const wrapper = document.createElement('div');
-        wrapper.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
+        wrapper.innerHTML = this.normalizeHTMLForInsert(textWithRestoredMedia);
         while (wrapper.firstChild) {
           fragment.appendChild(wrapper.firstChild);
         }
@@ -584,7 +599,7 @@ class KayakoAIEnhancer {
 
     if (textData.hasTemplate) {
       // Prefer DOM Range replacement between template markers for robustness
-      const inserted = this.replaceTemplatePlaceholder(editorElement, textWithRestoredLinks);
+      const inserted = this.replaceTemplatePlaceholder(editorElement, textWithRestoredMedia);
       if (!inserted) {
         console.warn('⚠️ Could not locate template markers reliably; falling back to regex replace');
         // Use innerHTML replacement with regex to preserve HTML structure
@@ -594,14 +609,14 @@ class KayakoAIEnhancer {
         const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const newHTML = textData.originalHTML.replace(
           new RegExp(escapedOriginalText, 'g'),
-          this.normalizeHTMLForInsert(textWithRestoredLinks)
+          this.normalizeHTMLForInsert(textWithRestoredMedia)
         );
         editorElement.innerHTML = newHTML;
       }
       
     } else {
       // Replace entire text
-      editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
+      editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredMedia);
     }
     
     // Trigger input event to notify Froala of the change
@@ -629,6 +644,19 @@ class KayakoAIEnhancer {
     });
     
     console.log('🔗 Links restored:', Object.keys(linkMap).length, 'links');
+    return restoredText;
+  }
+
+  restoreImagesInText(text, imgMap) {
+    if (!imgMap || Object.keys(imgMap).length === 0) {
+      return text;
+    }
+    let restoredText = text;
+    Object.entries(imgMap).forEach(([placeholder, html]) => {
+      const re = new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      restoredText = restoredText.replace(re, html);
+    });
+    console.log('🖼️ Images restored:', Object.keys(imgMap).length, 'images');
     return restoredText;
   }
 
@@ -814,11 +842,16 @@ class KayakoAIEnhancer {
   // Decide how to inject AI output: keep allowed HTML as-is; otherwise
   // convert plaintext bullets to lists or map newlines to <br>
   normalizeHTMLForInsert(html) {
-    const hasTags = /<(p|ul|ol|li|strong|em|a)\b/i.test(html || '');
+    const hasTags = /<(p|ul|ol|li|strong|em|a|img)\b/i.test(html || '');
     if (!hasTags) {
       const listified = this.convertPlaintextListToHTML(html || '');
       if (listified) return listified;
-      return (html || '').replace(/\n/g, '<br>');
+      // Wrap paragraphs separated by blank lines in <p>, keep single newlines as <br>
+      const text = (html || '');
+      const paragraphs = text.split(/\r?\n\s*\r?\n/);
+      return paragraphs
+        .map(p => `<p>${this.escapeHTML(p).replace(/\n/g, '<br>')}</p>`)
+        .join('');
     }
     return html;
   }
@@ -1403,7 +1436,12 @@ class KayakoAIEnhancer {
     // If selection was captured, prefer replacing that selection
     if (originalTextData && originalTextData.selectionRange) {
       const range = originalTextData.selectionRange;
-      const html = this.normalizeHTMLForInsert(this.restoreLinksInText(generatedText, originalTextData.linkMap));
+      const html = this.normalizeHTMLForInsert(
+        this.restoreImagesInText(
+          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          originalTextData.imgMap
+        )
+      );
       const fragment = document.createDocumentFragment();
       const wrapper = document.createElement('div');
       wrapper.innerHTML = html;
@@ -1435,8 +1473,11 @@ class KayakoAIEnhancer {
         // Use the same surgical approach as regular text replacement
         this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
-        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
+        const textWithRestored = this.restoreImagesInText(
+          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          originalTextData.imgMap
+        );
+        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
       }
     } else if (action === 'replace') {
       // Replace existing content - ALWAYS check for template first
@@ -1450,8 +1491,11 @@ class KayakoAIEnhancer {
         this.setEditorText(editorElement, currentTextData, generatedText);
       } else {
         console.log('📝 No template detected, replacing full content');
-        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
+        const textWithRestored = this.restoreImagesInText(
+          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          originalTextData.imgMap
+        );
+        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
       }
     } else if (action === 'append') {
       // Append at cursor position, not at the end
@@ -1464,7 +1508,10 @@ class KayakoAIEnhancer {
       if (range && editorElement.contains(range.commonAncestorContainer)) {
         // Insert at cursor position
         console.log('📍 Inserting at cursor position');
-        const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
+        const textWithRestoredLinks = this.restoreImagesInText(
+          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          originalTextData.imgMap
+        );
         
         // Create a document fragment with the new content
         const fragment = document.createDocumentFragment();
