@@ -622,6 +622,11 @@ function suggestReplaceURLWithTitle(editor, url) {
             const err = chrome.runtime?.lastError;
             if (err) {
                 console.log('⚠️ sendMessage error:', err.message);
+                if (/invalidated/i.test(err.message || '')) {
+                    console.log('🔁 SW context invalidated; retrying title fetch shortly…');
+                    setTimeout(() => { try { suggestReplaceURLWithTitle(editor, url); } catch(_) {} }, 600);
+                    return;
+                }
             }
             if (!response || !response.success || !response.title) {
                 console.log('⚠️ No title available for', url);
@@ -643,7 +648,12 @@ function suggestReplaceURLWithTitle(editor, url) {
             createOrUpdateLinkSuggestion(editor, url, title);
         });
     } catch (error) {
-        console.log('Title suggestion failed:', error?.message || error);
+        const msg = error?.message || String(error || '');
+        console.log('Title suggestion failed:', msg);
+        if (/invalidated/i.test(msg)) {
+            console.log('🔁 SW context invalidated during suggest; retrying…');
+            setTimeout(() => { try { suggestReplaceURLWithTitle(editor, url); } catch(_) {} }, 600);
+        }
     }
 }
 
