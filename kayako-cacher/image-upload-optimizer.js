@@ -409,14 +409,32 @@ class KayakoImageOptimizer {
         if (url) {
           // First try to insert exactly at saved caret marker
           const placed = this.tryInsertAtCaretMarker(url);
-          if (!placed) {
+          if (placed) {
+            // Use Froala's API to ensure cursor is positioned correctly after our insert
+            try {
+              const editor = $editor.data('froala.editor');
+              
+              // Force focus
+              $editor.froalaEditor('events.focus');
+              
+              // Try to find the image we just inserted and move cursor after it
+              const imgs = activeEditor.querySelectorAll('img');
+              const lastImg = imgs[imgs.length - 1];
+              if (lastImg && lastImg.src === url) {
+                // Use Froala's selection API to position cursor after image
+                $editor.froalaEditor('selection.setAfter', lastImg);
+                $editor.froalaEditor('selection.restore');
+              }
+              
+              console.log('✅ Froala cursor positioned after image');
+            } catch (e) {
+              console.warn('Froala cursor positioning failed:', e);
+            }
+          } else {
             $editor.froalaEditor('image.insert', url, true, null, null, null);
+            // Froala's insert already positions cursor correctly
           }
           $editor.froalaEditor('events.trigger', 'contentChanged');
-          try {
-            const html = $editor.froalaEditor('html.get');
-            $editor.froalaEditor('html.set', html);
-          } catch (_) {}
           return; // Avoid fallback duplicating insertion
         } else {
           console.warn('⚠️ No contentUrl on attachment; skipping insert');
@@ -487,40 +505,53 @@ class KayakoImageOptimizer {
       const marker = document.getElementById(this.caretMarkerId);
       if (!marker) { this.caretMarkerId = null; return false; }
       
+      // Get the editable container before we modify DOM
+      const editable = this.findEditableContainer(marker);
+      
       const img = document.createElement('img');
       img.src = url;
       
       // Insert image before marker
       marker.parentNode.insertBefore(img, marker);
       
-      // Place cursor AFTER the image
+      // Create a space after image for cursor positioning
+      const space = document.createTextNode('\u00A0'); // non-breaking space
+      marker.parentNode.insertBefore(space, marker);
+      
+      // Remove marker (no longer needed)
+      marker.remove();
+      this.caretMarkerId = null;
+      
+      // Ensure editor has focus
+      if (editable) {
+        editable.focus();
+      }
+      
+      // Place cursor AFTER the image and space
       const selection = window.getSelection();
       if (selection) {
         selection.removeAllRanges();
         const range = document.createRange();
         
-        // Create a space after image for cursor
-        const space = document.createTextNode('\u00A0'); // non-breaking space
-        marker.parentNode.insertBefore(space, marker);
-        
         // Set cursor after the space
         range.setStartAfter(space);
         range.collapse(true);
         selection.addRange(range);
+        
+        // Force focus again to ensure it sticks
+        if (editable) {
+          editable.focus();
+        }
       }
       
-      // Remove marker
-      marker.remove();
-      this.caretMarkerId = null;
-      
       // Bubble change signals
-      const editable = this.findEditableContainer(img);
       if (editable) {
         editable.dispatchEvent(new Event('input', { bubbles: true }));
         editable.dispatchEvent(new Event('keyup', { bubbles: true }));
+        editable.dispatchEvent(new Event('change', { bubbles: true }));
       }
       
-      console.log('📍 Inserted image at saved caret with cursor positioned after');
+      console.log('📍 Inserted image at caret, focus restored, cursor positioned after');
       return true;
     } catch (e) {
       console.warn('Cursor positioning failed:', e);
