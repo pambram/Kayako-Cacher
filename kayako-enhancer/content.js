@@ -1735,8 +1735,14 @@ function handleEditorBlur(editor) {
             // Skip shrink on window blur; we'll shrink later only on in-page interactions
             return;
         }
-        // Only shrink on blur if the last page click was outside this editor's container
+        // Ignore clicks on Froala's inline link popup/buttons (open/edit/unlink)
         const lastClick = window.__kayakoLastMouseDownTarget;
+        try {
+            if (lastClick && lastClick.closest('.fr-popup, .fr-buttons, .fr-command, button[id^="link"], [data-cmd^="link"]')) {
+                return;
+            }
+        } catch (_) {}
+        // Only shrink on blur if the last page click was outside this editor's container
         const container = editor.closest('.ko-text-editor__container_1p5g6r');
         if (!lastClick || (container && container.contains(lastClick))) {
             return;
@@ -2420,6 +2426,15 @@ document.addEventListener('mousedown', (e) => {
             // Clicking anywhere else clears macro-active state
             window.__kayakoMacroActive = false;
             window.__kayakoLastMacroEditor = null;
+        }
+        // Do not shrink when clicking Froala link popup actions (open/edit/unlink)
+        const inFroalaLinkPopup = !!e.target.closest('.fr-popup, .fr-buttons, .fr-command, button[id^="link"], [data-cmd^="link"]');
+        if (inFroalaLinkPopup) {
+            try {
+                const activeEd = document.querySelector('.fr-element[contenteditable="true"]');
+                if (activeEd) activateEditor(activeEd);
+            } catch (_) {}
+            return;
         }
         const clickContainer = e.target.closest('.ko-text-editor__container_1p5g6r');
         const editors = document.querySelectorAll('.fr-element');
