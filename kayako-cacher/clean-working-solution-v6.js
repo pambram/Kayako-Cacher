@@ -18,7 +18,7 @@
 (function() {
   'use strict';
   
-  console.log('🚀 Kayako Cacher v6 starting...');
+  // console.log('🚀 Kayako Cacher v6 starting...');
   
   // Store original XMLHttpRequest
   const OriginalXHR = window.XMLHttpRequest;
