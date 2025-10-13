@@ -1879,7 +1879,7 @@ class KayakoAIEnhancer {
 
   async callAI(prompt, text, ticketContext = '') {
     // Base system prompt
-    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication.';
+    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions.';
     
     // Append custom instructions if provided (don't override)
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
