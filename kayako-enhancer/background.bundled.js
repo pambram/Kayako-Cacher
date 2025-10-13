@@ -431,6 +431,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  // Open a URL in a background tab
+  if (message.action === 'openInBackground' && message.url) {
+    try {
+      chrome.tabs.create({ url: message.url, active: false }, () => {
+        sendResponse({ success: true });
+      });
+    } catch (e) {
+      sendResponse({ success: false, error: e?.message || String(e) });
+    }
+    return true;
+  }
+  // Fetch a lightweight preview for a ticket (latest post snippet)
+  if (message.action === 'fetchTicketPreview' && message.ticketId && message.domain) {
+    fetchTicketPreview(message.domain, message.ticketId).then((preview) => {
+      sendResponse({ success: true, preview });
+    }).catch(err => {
+      console.warn('[SW] fetchTicketPreview failed:', err?.message || err);
+      sendResponse({ success: false, error: err?.message || String(err) });
+    });
+    return true;
+  }
 });
 
 // --- Page title fetcher ---
@@ -546,6 +567,99 @@ async function fetchLatestPostId(domain, ticketId) {
     if (pid > latest) latest = pid;
   }
   return latest;
+}
+
+/** Fetch latest few posts and return a small preview object */
+async function fetchTicketPreview(domain, ticketId) {
+  const url = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=5`;
+  const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching preview for ${ticketId}`);
+  const json = await res.json();
+  const posts = normalizePostsPayload(json);
+  let latest = null;
+  let latestId = 0;
+  for (const p of posts) {
+    const pid = Number(p?.id) || 0;
+    if (pid > latestId) { latestId = pid; latest = p; }
+  }
+  const selected = latest || posts?.[0] || {};
+  const snippet = extractPostText(selected) || '';
+  const html = extractPostHtml(selected) || '';
+  const mapped = posts.map(p => ({
+    id: String(p?.id || ''),
+    createdAt: extractPostCreatedAt(p),
+    html: extractPostHtml(p) || '',
+    text: extractPostText(p) || ''
+  }));
+  try {
+    mapped.sort((a,b) => {
+      const ta = Date.parse(a.createdAt || '') || 0;
+      const tb = Date.parse(b.createdAt || '') || 0;
+      if (ta !== tb) return ta - tb; // earliest first
+      const ia = Number(a.id) || 0, ib = Number(b.id) || 0;
+      return ia - ib;
+    });
+  } catch (_) {}
+  return {
+    ticketId: String(ticketId),
+    lastPostId: latestId || 0,
+    snippet: snippet.slice(0, 1000),
+    html: html, // send raw-ish html; content script sanitizes
+    posts: mapped,
+    fetchedAt: Date.now(),
+  };
+}
+
+/** Try to extract readable text from diverse post payloads */
+function extractPostText(post) {
+  if (!post) return '';
+  const candidates = [post.text, post.body, post.content, post.message, post.description, post.plain_text, post.plainText, post.contents];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  // Try HTML field
+  const html = post.html || post.body_html || post.richText || post.contents || '';
+  if (typeof html === 'string' && html.trim()) return htmlToText(html);
+  try { return JSON.stringify(post); } catch (_) { return ''; }
+}
+
+function extractPostHtml(post) {
+  if (!post) return '';
+  const candidates = [post.html, post.body_html, post.richText, post.rich_text, post.content_html, post.description_html, post.contents];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c;
+  }
+  // Fallback: wrap plain text as HTML
+  const txt = extractPostText(post);
+  if (!txt) return '';
+  const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `<div>${esc(txt).replace(/\n/g,'<br>')}</div>`;
+}
+
+function extractPostCreatedAt(post) {
+  try {
+    const candidates = [post.created_at, post.createdAt, post.created_on, post.date, post.timestamp];
+    for (const c of candidates) {
+      if (!c) continue;
+      const t = Date.parse(c);
+      if (!isNaN(t)) return new Date(t).toISOString();
+      if (typeof c === 'number' && c > 0) return new Date(c).toISOString();
+    }
+  } catch (_) {}
+  return null;
+}
+
+function htmlToText(html) {
+  try {
+    return String(html)
+      .replace(/<\s*br\s*\/?>/gi, '\n')
+      .replace(/<\s*\/p\s*>/gi, '\n')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } catch (_) { return String(html || ''); }
 }
 
 /** Baseline a single ticket's lastKnownPostId without flagging unread */

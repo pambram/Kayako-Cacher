@@ -44,6 +44,25 @@ function isRuntimeAvailable() {
     try { return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage); } catch (_) { return false; }
 }
 
+// Wait for the extension runtime to become available again (e.g., after reload)
+function waitForRuntimeAvailable(timeoutMs = 6000) {
+    return new Promise((resolve) => {
+        const start = Date.now();
+        const tick = () => {
+            if (isRuntimeAvailable()) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - start >= timeoutMs) {
+                resolve(false);
+                return;
+            }
+            setTimeout(tick, 300);
+        };
+        tick();
+    });
+}
+
 // Function to apply saved or default sizes
 function applyAllEditorSizes() {
     try {
@@ -588,7 +607,8 @@ function suggestReplaceURLWithTitle(editor, url) {
         }
         
         // Ask background to fetch the page title
-        const ver = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest().version : 'unknown';
+        let ver = 'unknown';
+        try { if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) { ver = chrome.runtime.getManifest().version; } } catch (_) { ver = 'unknown'; }
         console.log('📡 Requesting page title from background for:', url, 'enhancer v', ver);
         let responded = false;
         const timeoutId = setTimeout(() => {
@@ -613,7 +633,14 @@ function suggestReplaceURLWithTitle(editor, url) {
             }
         }, 2000);
         if (!isRuntimeAvailable()) {
-            console.log('⚠️ runtime unavailable, cannot request fetchPageTitle');
+            console.log('⚠️ runtime unavailable, will retry shortly to request fetchPageTitle');
+            waitForRuntimeAvailable(8000).then((ok) => {
+                if (ok) {
+                    try { suggestReplaceURLWithTitle(editor, url); } catch (_) {}
+                } else {
+                    console.log('⚠️ runtime still unavailable after wait; giving up for now');
+                }
+            });
             return;
         }
         chrome.runtime.sendMessage({ action: 'fetchPageTitle', url: url }, (response) => {
@@ -1813,7 +1840,7 @@ function setupFirstLoadInteractionListeners(editor) {
     
     // Create handlers that will clean themselves up
     const clickHandler = (e) => {
-        console.log('📏 User clicked in empty editor - activating and expanding');
+        // console.log('📏 User clicked in empty editor - activating and expanding');
         activateEditor(editor);
         cleanupAllFirstLoadListeners(editor, { clickHandler, keydownHandler, inputHandler, pasteHandler });
     };
@@ -1956,7 +1983,7 @@ function cleanupToolbarListeners(toolbar, buttons, handler) {
 
 // Clean up all first load listeners after activation
 function cleanupAllFirstLoadListeners(editor, handlers) {
-    console.log('📏 Cleaning up all first-load listeners');
+    // console.log('📏 Cleaning up all first-load listeners');
     
     // Clean up editor listeners
     editor.removeEventListener('click', handlers.clickHandler);
@@ -2415,6 +2442,8 @@ setupAutoSizing();
 setupSidebarControls();
 setupTicketHistoryTracking();
 try { if (typeof setupInlineTranslation === 'function') { setupInlineTranslation(); } } catch (_) {}
+// Search page hover preview
+try { setupSearchHoverPreview(); } catch (_) {}
 
 // Apply saved visibility states on load
 try {
@@ -2438,6 +2467,253 @@ try {
         console.log('Extension was reloaded, could not load visibility settings');
     } else {
         console.error('Error loading visibility settings:', error);
+    }
+}
+
+// --- Search page hover preview (initial minimal implementation) ---
+function setupSearchHoverPreview() {
+    try {
+        const isSearch = /\/agent\/search(\/|$)/.test(window.location.pathname) || /[?&]search/i.test(window.location.search) || /\/agent\/search\//.test(window.location.href);
+        if (!isSearch) return;
+        if (document.body.dataset.kayakoSearchPreviewSetup === 'true') return;
+        document.body.dataset.kayakoSearchPreviewSetup = 'true';
+
+        let hoverTimer = null;
+        let activeBubble = null;
+        let lastMouse = { x: 0, y: 0 };
+        const cache = Object.create(null); // ticketId -> { html, snippet, ts }
+        let activeRowId = null;
+        let suppressRowId = null;
+        let suppressUntil = 0;
+        let isBubbleHovered = false;
+        let hideTimerId = null;
+
+        const getRowTicketId = (row) => {
+            try {
+                const idEl = row.querySelector('[class*="ko-cases-list_column_conv-composite__ticket-id_"]');
+                if (!idEl) return null;
+                const txt = idEl.textContent || '';
+                const m = txt.match(/#?(\d{4,})/);
+                return m ? m[1] : null;
+            } catch (_) { return null; }
+        };
+
+        const ensureStyles = () => {
+            if (document.getElementById('kayako-search-preview-style')) return;
+            const st = document.createElement('style');
+            st.id = 'kayako-search-preview-style';
+            st.textContent = `
+                .kayako-search-preview-bubble{position:absolute;z-index:10000;width:900px;max-width:85vw;max-height:70vh;background:#fff;border:1px solid #d0d5d8;border-radius:10px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:12px 14px;font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;display:flex;flex-direction:column}
+                .kayako-search-preview-actions{display:flex;gap:8px;align-items:center;margin-top:10px}
+                .kayako-search-preview-btn{background:#f1f3f5;color:#333;border:1px solid #d0d5d8;border-radius:6px;padding:6px 10px;cursor:pointer}
+                .kayako-search-preview-title{font-weight:600;margin:0 0 8px 0;font-size:13px}
+                .kayako-search-preview-content{flex:1 1 auto;overflow:auto;border:1px solid #eef1f3;border-radius:6px;padding:10px;background:#fafbfc;max-height:60vh;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+                .kayako-search-preview-content :is(h1,h2,h3){font-size:15px;margin:8px 0}
+                .kayako-search-preview-content p{margin:6px 0}
+                .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
+            `;
+            document.head.appendChild(st);
+        };
+
+        const showBubble = (row) => {
+            try { if (activeBubble) activeBubble.remove(); } catch(_) {}
+            ensureStyles();
+            const bubble = document.createElement('div');
+            bubble.className = 'kayako-search-preview-bubble';
+            bubble.textContent = 'Loading preview…';
+            // Keep bubble alive while hovering over it
+            bubble.addEventListener('mouseenter', () => {
+                isBubbleHovered = true;
+                if (hideTimerId) { clearTimeout(hideTimerId); hideTimerId = null; }
+            });
+            bubble.addEventListener('mouseleave', () => {
+                isBubbleHovered = false;
+                // hide a bit later if also not on row
+                hideTimerId = setTimeout(() => { if (!isBubbleHovered && !currentRowHover) hideBubbleWithSuppress(); }, 140);
+            });
+            document.body.appendChild(bubble);
+            positionBubbleNearRow(bubble, row);
+            activeBubble = bubble;
+            return bubble;
+        };
+
+        const positionBubbleNearRow = (bubble, row) => {
+            try {
+                const rr = row.getBoundingClientRect();
+                const br = bubble.getBoundingClientRect();
+                const padding = 12;
+                const vw = document.documentElement.clientWidth;
+                const vh = document.documentElement.clientHeight;
+
+                // Decide horizontal side (prefer right if space, else left)
+                const spaceRight = vw - rr.right - padding;
+                const spaceLeft = rr.left - padding;
+                const placeRight = spaceRight >= br.width || spaceRight >= spaceLeft;
+                let left;
+                if (placeRight) {
+                    left = Math.max(rr.right + padding, lastMouse.x + 18); // avoid under pointer
+                } else {
+                    left = Math.min(rr.left - br.width - padding, lastMouse.x - br.width - 18);
+                    left = Math.max(padding, left);
+                }
+
+                // Vertical placement: prefer aligning around mouse Y; place above if not enough below
+                const spaceBelow = vh - rr.bottom - padding;
+                const spaceAbove = rr.top - padding;
+                const preferBelow = spaceBelow >= br.height || spaceBelow >= spaceAbove;
+                let top;
+                if (preferBelow) {
+                    top = Math.min(Math.max(padding, lastMouse.y - 24), vh - br.height - padding);
+                    if (top < rr.top) top = rr.top; // keep around row
+                } else {
+                    top = Math.max(padding, Math.min(rr.bottom - br.height, lastMouse.y - br.height - 16));
+                }
+
+                // Ensure bubble does not overlap pointer exactly
+                const pointerBox = { x: lastMouse.x - 6, y: lastMouse.y - 6, w: 12, h: 12 };
+                const wouldCoverPointer = (
+                    left <= pointerBox.x + pointerBox.w && left + br.width >= pointerBox.x &&
+                    top <= pointerBox.y + pointerBox.h && top + br.height >= pointerBox.y
+                );
+                if (wouldCoverPointer) {
+                    top = Math.min(vh - br.height - padding, Math.max(padding, top + (preferBelow ? 16 : -16)));
+                }
+
+                bubble.style.left = Math.max(padding, Math.min(left, vw - br.width - padding)) + 'px';
+                bubble.style.top = Math.max(padding, Math.min(top, vh - br.height - padding)) + 'px';
+            } catch (_) {}
+        };
+
+        let currentRowHover = false;
+        const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } };
+        const hideBubbleWithSuppress = () => { hideBubble(); suppressRowId = activeRowId; suppressUntil = Date.now() + 400; activeRowId = null; };
+
+        const onEnter = (row) => {
+            const id = getRowTicketId(row);
+            if (!id) return;
+            if (id === suppressRowId && Date.now() < suppressUntil) return;
+            if (activeBubble && id === activeRowId) return; // no recalculation while same bubble
+            currentRowHover = true;
+            if (hoverTimer) clearTimeout(hoverTimer);
+            const delay = (cache[id] && cache[id].html && Date.now() - cache[id].ts < 10 * 60 * 1000) ? 0 : 250;
+            hoverTimer = setTimeout(() => {
+                const bubble = showBubble(row);
+                const domain = window.location.hostname;
+                const subjectEl = row.querySelector('[class*="__subject-text_"]');
+                const subject = subjectEl ? (subjectEl.textContent || '').trim() : '';
+                const titleDiv = document.createElement('div');
+                titleDiv.className = 'kayako-search-preview-title';
+                titleDiv.textContent = subject ? `#${id} • ${subject}` : `#${id}`;
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'kayako-search-preview-content';
+                contentDiv.textContent = 'Fetching latest post…';
+                bubble.innerHTML = '';
+                bubble.appendChild(titleDiv);
+                bubble.appendChild(contentDiv);
+                // No actions for now (open bg removed)
+                activeRowId = id;
+
+                // If cached, render immediately then refresh in background
+                if (cache[id] && cache[id].html && Date.now() - cache[id].ts < 10 * 60 * 1000) {
+                    contentDiv.innerHTML = sanitizeHtml(cache[id].html);
+                    setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
+                }
+
+                if (!isRuntimeAvailable()) return;
+                chrome.runtime.sendMessage({ action: 'fetchTicketPreview', domain, ticketId: id }, (resp) => {
+                    const err = chrome.runtime?.lastError;
+                    if (err) { contentDiv.textContent = 'Preview unavailable'; return; }
+                    if (!resp || !resp.success) { contentDiv.textContent = 'Preview unavailable'; return; }
+                    const posts = (resp.preview && Array.isArray(resp.preview.posts)) ? resp.preview.posts : [];
+                    if (posts.length) {
+                        cache[id] = { html: renderPostsHtml(posts), snippet: '', ts: Date.now() };
+                    } else {
+                        const html = (resp.preview && resp.preview.html) ? String(resp.preview.html) : '';
+                        const snip = (resp.preview && resp.preview.snippet) ? String(resp.preview.snippet) : '';
+                        cache[id] = { html: html || `<div>${escapeHtml(snip)}</div>`, snippet: snip, ts: Date.now() };
+                    }
+                    contentDiv.innerHTML = sanitizeHtml(cache[id].html);
+                    setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
+                });
+            }, 250);
+        };
+
+        const onLeave = () => {
+            currentRowHover = false;
+            if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+            // delay hiding to allow moving into bubble
+            if (hideTimerId) { clearTimeout(hideTimerId); }
+            hideTimerId = setTimeout(() => {
+                if (!currentRowHover && activeBubble && !isBubbleHovered) {
+                    hideBubbleWithSuppress();
+                }
+            }, 220);
+        };
+
+        // Delegate events from the table body
+        document.addEventListener('mousemove', (e) => { lastMouse = { x: e.clientX, y: e.clientY }; }, true);
+        document.addEventListener('mouseover', (e) => {
+            const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
+            if (row) onEnter(row);
+        }, true);
+        document.addEventListener('mouseout', (e) => {
+            const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
+            if (row) {
+                // If moving into the bubble, do not hide
+                try { if (activeBubble && activeBubble.contains(e.relatedTarget)) return; } catch(_) {}
+                onLeave();
+            }
+        }, true);
+        // Close on outside click
+        document.addEventListener('mousedown', (e) => {
+            try {
+                if (!activeBubble) return;
+                const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
+                if (activeBubble.contains(e.target) || row) return;
+                hideBubbleWithSuppress();
+            } catch (_) {}
+        }, true);
+    } catch (_) {}
+}
+
+function renderPostsHtml(posts) {
+    try {
+        const fmt = (d) => {
+            try { return new Date(d).toLocaleString(); } catch (_) { return d || ''; }
+        };
+        const parts = posts.map(p => {
+            const date = p.createdAt ? `<div style="color:#57606a;font-size:12px;margin:6px 0 4px 0;">${escapeHtml(fmt(p.createdAt))}</div>` : '';
+            const body = p.html ? p.html : `<div>${escapeHtml(p.text || '')}</div>`;
+            return `<div style="border-top:1px solid #eef1f3;padding-top:6px;margin-top:6px;">${date}${body}</div>`;
+        });
+        return parts.join('');
+    } catch (_) { return ''; }
+}
+
+// Basic HTML sanitizer for preview content
+function sanitizeHtml(html) {
+    try {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = String(html || '');
+        const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_ELEMENT, null);
+        const toRemove = [];
+        while (walker.nextNode()) {
+            const el = walker.currentNode;
+            const tag = el.tagName ? el.tagName.toLowerCase() : '';
+            if (['script','style','iframe','object','embed','link','meta'].includes(tag)) { toRemove.push(el); continue; }
+            [...el.attributes].forEach(attr => {
+                const n = attr.name.toLowerCase();
+                if (n.startsWith('on') || n === 'srcdoc') el.removeAttribute(attr.name);
+            });
+            if (tag === 'a') {
+                el.setAttribute('target','_blank');
+                el.setAttribute('rel','noopener noreferrer nofollow');
+            }
+        }
+        toRemove.forEach(n => n.remove());
+        return wrapper.innerHTML;
+    } catch (_) {
+        return escapeHtml(String(html || ''));
     }
 }
 
