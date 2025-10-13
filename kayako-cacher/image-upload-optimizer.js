@@ -27,7 +27,7 @@ class KayakoImageOptimizer {
       this.optimizeImageUploads();
     }
     
-    console.log('✅ Image upload optimizer ready');
+    // console.log('✅ Image upload optimizer ready');
   }
 
   optimizeImageUploads() {
