@@ -220,6 +220,13 @@ class KayakoAIEnhancer {
         tooltip: 'Format-only: exact words preserved; structure with paragraphs and lists.'
       },
       {
+        id: 'hone_in',
+        icon: '🎯',
+        title: 'Help me hone in',
+        prompt: 'custom_hone',
+        tooltip: 'Refine the current response using your instructions.'
+      },
+      {
         id: 'help_write',
         icon: '✍️',
         title: 'Help me write',
@@ -244,7 +251,7 @@ class KayakoAIEnhancer {
     // Add action buttons to dropdown
     actions.forEach((action, index) => {
       // Add separator before "Help me write" (like Gmail)
-      if (action.id === 'beautify' || action.id === 'help_write') {
+      if (action.id === 'beautify' || action.id === 'hone_in' || action.id === 'help_write') {
         const separator = document.createElement('div');
         separator.className = 'kayako-ai-dropdown-separator';
         dropdownMenu.appendChild(separator);
@@ -263,6 +270,8 @@ class KayakoAIEnhancer {
         
         if (action.id === 'help_write') {
           this.showCustomPromptModal(editorElement);
+        } else if (action.id === 'hone_in') {
+          this.showHoneInModal(editorElement);
         } else {
           this.handleAIAction(action, editorElement);
         }
@@ -849,11 +858,12 @@ class KayakoAIEnhancer {
       // Wrap paragraphs separated by blank lines in <p>, keep single newlines as <br>
       const text = (html || '');
       const paragraphs = text.split(/\r?\n\s*\r?\n/);
-      return paragraphs
+      const wrapped = paragraphs
         .map(p => `<p>${this.escapeHTML(p).replace(/\n/g, '<br>')}</p>`)
         .join('');
+      return this.stabilizeHTMLForEditor(wrapped);
     }
-    return html;
+    return this.stabilizeHTMLForEditor(html || '');
   }
 
   // Convert plaintext lines starting with -, *, •, or 1. into simple lists (markup only; keep text as-is)
@@ -879,6 +889,22 @@ class KayakoAIEnhancer {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+  }
+
+  // Minimize Froala reflow issues by removing stray <br> and empty blocks
+  stabilizeHTMLForEditor(html) {
+    let out = (html || '').toString();
+    // Collapse consecutive <br>
+    out = out.replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
+    // Remove leading/trailing <br> inside paragraphs and list items
+    out = out.replace(/<p>\s*(?:<br\s*\/?>\s*)+/gi, '<p>');
+    out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/p>/gi, '</p>');
+    out = out.replace(/<li>\s*(?:<br\s*\/?>\s*)+/gi, '<li>');
+    out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/li>/gi, '</li>');
+    // Drop empty list items and empty paragraphs created by LLMs
+    out = out.replace(/<li>\s*<\/li>/gi, '');
+    out = out.replace(/<p>\s*<\/p>/gi, '<p></p>');
+    return out;
   }
 
   showAIPreview(editorElement, originalTextData, enhancedText, actionTitle) {
@@ -931,10 +957,12 @@ class KayakoAIEnhancer {
     // Add event listeners
     preview.querySelector('.ai-preview-close').addEventListener('click', () => {
       preview.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     preview.querySelector('.ai-preview-cancel').addEventListener('click', () => {
       preview.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     // Copy button functionality
@@ -977,12 +1005,22 @@ class KayakoAIEnhancer {
       this.setEditorText(editorElement, originalTextData, enhancedText);
       this.showNotification(`✅ ${actionTitle} applied successfully`, 'success');
       preview.remove();
+      document.removeEventListener('keydown', onKeyDown);
       
       // Highlight the new text briefly
       setTimeout(() => {
         this.highlightNewText(editorElement);
       }, 100);
     });
+
+    // ESC to close
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        preview.remove();
+        document.removeEventListener('keydown', onKeyDown);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
   }
 
   highlightNewText(editorElement) {
@@ -1130,18 +1168,29 @@ class KayakoAIEnhancer {
     }, 100);
 
     // Add event listeners
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        modal.remove();
+        document.removeEventListener('keydown', onKeyDown);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+
     modal.querySelector('.ai-custom-prompt-close').addEventListener('click', () => {
       modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     modal.querySelector('.ai-custom-prompt-cancel').addEventListener('click', () => {
       modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     modal.querySelector('.ai-custom-prompt-generate').addEventListener('click', () => {
       const customPrompt = modal.querySelector('#customPromptInput').value.trim();
       if (customPrompt) {
         modal.remove();
+        document.removeEventListener('keydown', onKeyDown);
         this.handleCustomPrompt(customPrompt, editorElement);
       } else {
         this.showNotification('Please enter a prompt', 'warning');
@@ -1155,6 +1204,163 @@ class KayakoAIEnhancer {
         modal.querySelector('.ai-custom-prompt-generate').click();
       }
     });
+  }
+
+  showHoneInModal(editorElement) {
+    // Capture current selection inside the editor BEFORE showing the modal
+    let capturedRange = null;
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0);
+        if (!r.collapsed && editorElement.contains(r.commonAncestorContainer)) {
+          capturedRange = r.cloneRange();
+        }
+      }
+    } catch (_) {}
+    // Remove any existing modal
+    const existingModal = document.querySelector('.kayako-ai-custom-prompt');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    // Reuse custom prompt modal styling
+    const modal = document.createElement('div');
+    modal.className = 'kayako-ai-custom-prompt';
+    
+    modal.innerHTML = `
+      <div class="ai-custom-prompt-header">
+        <span class="ai-custom-prompt-title">🎯 Help me hone in</span>
+        <button class="ai-custom-prompt-close" type="button">×</button>
+      </div>
+      <div class="ai-custom-prompt-content">
+        <div class="ai-custom-prompt-input-group">
+          <label for="honeInInput">What should we refine in this response?</label>
+          <textarea id="honeInInput" placeholder="e.g., Be more assertive in the last paragraph; emphasize timeline." rows="3"></textarea>
+          <small style="color: #6c757d; font-size: 11px; margin-top: 4px; display: block;">
+            💡 Your instructions will refine the current response. Existing links and inline images will be preserved.
+          </small>
+        </div>
+      </div>
+      <div class="ai-custom-prompt-actions">
+        <button class="ai-custom-prompt-btn ai-custom-prompt-cancel" type="button">Cancel</button>
+        <button class="ai-custom-prompt-btn ai-custom-prompt-generate" type="button">Hone</button>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    this.makeDraggable(modal);
+    
+    setTimeout(() => {
+      modal.querySelector('#honeInInput').focus();
+    }, 100);
+    
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        modal.remove();
+        document.removeEventListener('keydown', onKeyDown);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+
+    modal.querySelector('.ai-custom-prompt-close').addEventListener('click', () => {
+      modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
+    });
+    modal.querySelector('.ai-custom-prompt-cancel').addEventListener('click', () => {
+      modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
+    });
+    
+    modal.querySelector('.ai-custom-prompt-generate').addEventListener('click', () => {
+      const instructions = modal.querySelector('#honeInInput').value.trim();
+      if (instructions) {
+        modal.remove();
+        document.removeEventListener('keydown', onKeyDown);
+        this.handleHoneIn(instructions, editorElement, capturedRange);
+      } else {
+        this.showNotification('Please enter instructions', 'warning');
+      }
+    });
+    
+    modal.querySelector('#honeInInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        modal.querySelector('.ai-custom-prompt-generate').click();
+      }
+    });
+  }
+
+  async handleHoneIn(instructions, editorElement, preCapturedRange = null) {
+    if (this.isProcessing) {
+      this.showNotification('⏳ Already processing, please wait...', 'warning');
+      return;
+    }
+    if (!this.config?.apiKey) {
+      this.showNotification('❌ Please configure your AI API key in the extension settings', 'error');
+      return;
+    }
+
+    // Prefer selection when present; else template area; else full editor
+    let textData = null;
+    try {
+      const range = preCapturedRange;
+      const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
+      if (isInEditor) {
+        const cloned = range.cloneContents();
+        const holder = document.createElement('div');
+        holder.appendChild(cloned);
+        const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
+        textData = {
+          hasTemplate: false,
+          extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
+          fullText: tmpExtraction.textWithPlaceholders || '',
+          linkMap: tmpExtraction.linkMap || {},
+          imgMap: tmpExtraction.imgMap || {},
+          selectionRange: range,
+          editorElement: editorElement
+        };
+      }
+    } catch (_) {}
+    if (!textData) {
+      textData = this.getEditorText(editorElement);
+    }
+
+    if (!textData.extractedText || textData.extractedText.trim().length === 0) {
+      this.showNotification('❌ No response found to hone', 'error');
+      return;
+    }
+
+    this.isProcessing = true;
+    const processingNotification = this.showPersistentNotification('🤖 Honing in...', 'info', null, this.getAnchorForEditor(editorElement));
+    
+    try {
+      // Optional ticket context (like other actions; skip would be fine too)
+      let ticketContext = '';
+      if (this.config?.useTicketContext) {
+        ticketContext = this.extractTicketContext();
+      }
+
+      const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
+      const honePrompt = `Refine the following customer-facing response according to these instructions: "${instructions}". Preserve the meaning and keep the message customer-appropriate. Do not remove placeholders or content. ${formatting}`;
+
+      let enhancedText = await this.callAI(honePrompt, textData.extractedText, ticketContext);
+
+      processingNotification.remove();
+
+      if (enhancedText) {
+        const cleanEnhancedText = this.normalizeHTMLForInsert(enhancedText.trim().replace(/^\s+/gm, ''));
+        this.showAIPreview(editorElement, textData, cleanEnhancedText, 'Help me hone in');
+      } else {
+        this.showNotification('❌ No enhancement was generated', 'error');
+      }
+    } catch (error) {
+      processingNotification.remove();
+      console.error('Hone-in error:', error);
+      this.showNotification(`❌ Hone-in failed: ${error.message}`, 'error');
+    } finally {
+      this.isProcessing = false;
+    }
   }
 
   async handleCustomPrompt(customPrompt, editorElement) {
@@ -1179,12 +1385,15 @@ class KayakoAIEnhancer {
       // Otherwise, use the entire editor text.
       const textData = this.getEditorText(editorElement);
 
+      // Context for the model (template: use Additional Context; otherwise whole text)
       let contextText = '';
       if (textData.hasTemplate) {
         contextText = this.extractAdditionalContextSection(textData.fullText).trim();
       } else {
         contextText = (textData.fullText || '').trim();
       }
+      // What the UI should show as "Current text" and what REPLACE operates on: PR placeholder (or whole text when no template)
+      const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
       // Enhanced prompt with customer context and product detection
       let enhancedPrompt = customPrompt;
@@ -1197,7 +1406,7 @@ class KayakoAIEnhancer {
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${enhancedPrompt}\n\nCurrent text for context:\n${contextText}`;
+        fullPrompt = `${enhancedPrompt}\n\nCurrent text for context (not to rewrite directly):\n${contextText}`;
       }
 
       // Get ticket context if enabled
@@ -1227,7 +1436,7 @@ class KayakoAIEnhancer {
         const cleanGeneratedText = this.normalizeHTMLForInsert(generatedText.trim().replace(/^\s+/gm, ''));
         
         // For custom prompts, show preview with option to replace or append
-        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, contextText);
+        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, currentResponseText);
       } else {
         this.showNotification('❌ No content was generated', 'error');
       }
@@ -1302,10 +1511,12 @@ class KayakoAIEnhancer {
     // Add event listeners
     preview.querySelector('.ai-preview-close').addEventListener('click', () => {
       preview.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     preview.querySelector('.ai-preview-cancel').addEventListener('click', () => {
       preview.remove();
+      document.removeEventListener('keydown', onKeyDown);
     });
 
     // Handle insert/replace/append actions
@@ -1315,6 +1526,7 @@ class KayakoAIEnhancer {
         this.insertCustomText(editorElement, originalTextData, generatedText, 'insert');
         this.showNotification(`✅ Content inserted successfully`, 'success');
         preview.remove();
+        document.removeEventListener('keydown', onKeyDown);
       });
     }
 
@@ -1324,6 +1536,7 @@ class KayakoAIEnhancer {
         this.insertCustomText(editorElement, originalTextData, generatedText, 'replace');
         this.showNotification(`✅ Content replaced successfully`, 'success');
         preview.remove();
+        document.removeEventListener('keydown', onKeyDown);
       });
     }
 
@@ -1333,6 +1546,7 @@ class KayakoAIEnhancer {
         this.insertCustomText(editorElement, originalTextData, generatedText, 'append');
         this.showNotification(`✅ Content appended successfully`, 'success');
         preview.remove();
+        document.removeEventListener('keydown', onKeyDown);
       });
     }
 
@@ -1371,6 +1585,14 @@ class KayakoAIEnhancer {
         }
       });
     }
+    // ESC to close
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        preview.remove();
+        document.removeEventListener('keydown', onKeyDown);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
   }
 
   makeDraggable(modal) {
