@@ -108,7 +108,7 @@
         if (typeof name === 'string' && /^x[-_]csrf[-_]token$/i.test(name) && typeof value === 'string' && value.length > 16) {
           if (window.kayako_csrf_token !== value) {
             window.kayako_csrf_token = value;
-            console.log('🔑 Captured CSRF token from XHR header');
+            // console.log('🔑 Captured CSRF token from XHR header');
           }
         }
       } catch (e) {}
@@ -279,8 +279,8 @@
   };
   
   console.log('✅ Kayako Optimizer v6 ready');
-  console.log('🛡️ Error prevention active');
-  console.log('🖼️ Image optimization available');
+  // console.log('🛡️ Error prevention active');
+  // console.log('🖼️ Image optimization available');
   
 })();
 
