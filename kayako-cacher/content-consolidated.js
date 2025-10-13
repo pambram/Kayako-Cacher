@@ -27,17 +27,7 @@ if (supportedDomains.some(domain => window.location.href.includes(domain))) {
           completed = true;
           // console.log('✅ Clean solution reported ready');
           // Success indicator disabled; rely on small toasts only
-          // Inject persistent debug helper so __KAYAKO_DBG is always available
-          try {
-            const existingDbg = document.getElementById('kayako-debug-helper-script');
-            if (!existingDbg) {
-              const dbgScript = document.createElement('script');
-              dbgScript.id = 'kayako-debug-helper-script';
-              dbgScript.src = chrome.runtime.getURL('debug-helper.js');
-              dbgScript.onerror = (e) => console.warn('❌ Debug helper failed to load', e);
-              (document.head || document.documentElement).appendChild(dbgScript);
-            }
-          } catch (e) { console.warn('⚠️ Failed to inject debug helper:', e); }
+          // Debug helper removed in v6 (not needed without Ember manipulation)
           // Inject image upload optimizer (config-gated)
           try {
             chrome.runtime.sendMessage({ action: 'getConfig' }, (resp) => {
