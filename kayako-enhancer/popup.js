@@ -16,11 +16,6 @@ document.addEventListener("DOMContentLoaded", function () {
     let sideMaxHeightInput = document.getElementById("side-max-height");
     let applySideButton = document.getElementById("apply-side");
     
-    // Sidebar controls
-    let sidebarDefaultWidthInput = document.getElementById("sidebar-default-width");
-    let sidebarUseCurrentBtn = document.getElementById("sidebar-use-current");
-    let sidebarApplyBtn = document.getElementById("sidebar-apply");
-    
     // Ticket history elements
     let refreshHistoryBtn = document.getElementById("refresh-history");
     let addCurrentTicketBtn = document.getElementById("add-current-ticket");
@@ -34,14 +29,10 @@ document.addEventListener("DOMContentLoaded", function () {
     });
 
     // Load stored values or set defaults for side conversation editor and toggles
-    chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight", "hideEvents", "hideInternalNotes", "hideDates", "sidebarDefaultWidth", "sidebarWidth"], (data) => {
+    chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight", "hideEvents", "hideInternalNotes", "hideDates"], (data) => {
         sideMinWidthInput.value = data.sideMinWidth || 500;
         sideMinHeightInput.value = data.sideMinHeight || 100;
         sideMaxHeightInput.value = data.sideMaxHeight || 300;
-        if (sidebarDefaultWidthInput) {
-            const pref = data.sidebarDefaultWidth || data.sidebarWidth || 360;
-            sidebarDefaultWidthInput.value = pref;
-        }
         if (hideEventsToggle) {
             hideEventsToggle.checked = data.hideEvents || false;
         }
@@ -163,54 +154,6 @@ document.addEventListener("DOMContentLoaded", function () {
     
     if (clearHistoryBtn) {
         clearHistoryBtn.addEventListener("click", clearTicketHistory);
-    }
-
-    // Sidebar: Use current width
-    if (sidebarUseCurrentBtn) {
-        sidebarUseCurrentBtn.addEventListener('click', () => {
-            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                const tabId = tabs && tabs[0] && tabs[0].id;
-                if (!tabId) return;
-                try {
-                    chrome.tabs.sendMessage(tabId, { action: 'getSidebarWidth' }, (resp) => {
-                        const err = chrome.runtime && chrome.runtime.lastError;
-                        if (err) {
-                            // Fallback to stored width
-                            chrome.storage.local.get(['sidebarWidth'], (d) => {
-                                const w = d && d.sidebarWidth ? d.sidebarWidth : 360;
-                                sidebarDefaultWidthInput.value = w;
-                                chrome.storage.local.set({ sidebarDefaultWidth: w });
-                                showNotification(`Sidebar default width set to ${w}px`, 'success');
-                            });
-                            return;
-                        }
-                        const w = resp && Number(resp.width) ? Math.round(resp.width) : 360;
-                        sidebarDefaultWidthInput.value = w;
-                        chrome.storage.local.set({ sidebarDefaultWidth: w });
-                        showNotification(`Sidebar default width set to ${w}px`, 'success');
-                    });
-                } catch (_) {
-                    chrome.storage.local.get(['sidebarWidth'], (d) => {
-                        const w = d && d.sidebarWidth ? d.sidebarWidth : 360;
-                        sidebarDefaultWidthInput.value = w;
-                        chrome.storage.local.set({ sidebarDefaultWidth: w });
-                        showNotification(`Sidebar default width set to ${w}px`, 'success');
-                    });
-                }
-            });
-        });
-    }
-
-    // Sidebar: Save default width
-    if (sidebarApplyBtn) {
-        sidebarApplyBtn.addEventListener('click', () => {
-            const v = Number(sidebarDefaultWidthInput && sidebarDefaultWidthInput.value);
-            if (!v || isNaN(v)) return;
-            const clamped = Math.max(200, Math.min(700, Math.round(v)));
-            chrome.storage.local.set({ sidebarDefaultWidth: clamped }, () => {
-                showNotification(`Saved sidebar default width: ${clamped}px`, 'success');
-            });
-        });
     }
     
     // Load ticket history on popup open (non-blocking: show cached → background refresh → animate diffs)
