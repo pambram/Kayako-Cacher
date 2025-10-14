@@ -63,6 +63,17 @@ function waitForRuntimeAvailable(timeoutMs = 6000) {
     });
 }
 
+// Track permanent invalidation (occurs when extension is reloaded; page must refresh)
+let runtimePermanentlyInvalidated = false;
+let runtimeInvalidationLogged = false;
+function markRuntimeInvalidated(reason) {
+    runtimePermanentlyInvalidated = true;
+    if (!runtimeInvalidationLogged) {
+        console.log('🛑 Extension runtime invalidated – page reload required for title suggestions.', reason || '');
+        runtimeInvalidationLogged = true;
+    }
+}
+
 // Function to apply saved or default sizes
 function applyAllEditorSizes() {
     try {
@@ -225,6 +236,39 @@ function initSideConversationDraggable(panel) {
             document.addEventListener('mouseup', up);
         }
     });
+}
+
+// Ensure the hidden side panel doesn't reserve layout space when closed
+function ensureSidePanelClosedFixStyle() {
+    if (document.getElementById('kayako-side-panel-closed-fix')) return;
+    try {
+        const style = document.createElement('style');
+        style.id = 'kayako-side-panel-closed-fix';
+        style.textContent = `
+            /* When side panel is not open, force it to occupy no width */
+            .side-conversations-panel__side-panel_4k6b2r:not(.side-conversations-panel__open_4k6b2r) {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+            }
+        `;
+        document.head.appendChild(style);
+    } catch(_) {}
+}
+
+// Clear inline widths on side panel when it closes to avoid leftover whitespace
+function normalizeSidePanelSpace() {
+    try {
+        const panels = document.querySelectorAll('.side-conversations-panel__side-panel_4k6b2r');
+        panels.forEach((p) => {
+            const isOpen = p.classList.contains('side-conversations-panel__open_4k6b2r');
+            if (!isOpen) {
+                p.style.minWidth = '';
+                p.style.width = '';
+                p.style.maxWidth = '';
+            }
+        });
+    } catch (_) {}
 }
 
 
@@ -600,6 +644,10 @@ function trySuggestTitleReplace(pasteTarget, url, attempt) {
 // Suggest replacing a just-pasted raw URL with the page title as the link text
 function suggestReplaceURLWithTitle(editor, url) {
     try {
+        if (runtimePermanentlyInvalidated) {
+            console.log('⚠️ runtime permanently invalidated; aborting title fetch until page reload');
+            return;
+        }
         // Avoid duplicate prompts for same URL if one is already showing
         const existing = document.querySelector('.kayako-link-title-suggestion');
         if (existing && existing.dataset.url === url) {
@@ -620,12 +668,15 @@ function suggestReplaceURLWithTitle(editor, url) {
                             const err = chrome.runtime?.lastError;
                             if (err) {
                                 console.log('⚠️ ping error:', err.message);
+                                if (/invalidated/i.test(err.message || '')) { markRuntimeInvalidated('ping'); }
                             } else {
                                 console.log('🏓 ping response:', pong);
                             }
                         });
                     } catch (e) {
-                        console.log('⚠️ ping threw:', e?.message || e);
+                        const msg = e?.message || String(e || '');
+                        console.log('⚠️ ping threw:', msg);
+                        if (/invalidated/i.test(msg)) { markRuntimeInvalidated('ping-throw'); }
                     }
                 } else {
                     console.log('⚠️ runtime unavailable, skipping ping');
@@ -635,7 +686,7 @@ function suggestReplaceURLWithTitle(editor, url) {
         if (!isRuntimeAvailable()) {
             console.log('⚠️ runtime unavailable, will retry shortly to request fetchPageTitle');
             waitForRuntimeAvailable(8000).then((ok) => {
-                if (ok) {
+                if (ok && !runtimePermanentlyInvalidated) {
                     try { suggestReplaceURLWithTitle(editor, url); } catch (_) {}
                 } else {
                     console.log('⚠️ runtime still unavailable after wait; giving up for now');
@@ -649,11 +700,7 @@ function suggestReplaceURLWithTitle(editor, url) {
             const err = chrome.runtime?.lastError;
             if (err) {
                 console.log('⚠️ sendMessage error:', err.message);
-                if (/invalidated/i.test(err.message || '')) {
-                    console.log('🔁 SW context invalidated; retrying title fetch shortly…');
-                    setTimeout(() => { try { suggestReplaceURLWithTitle(editor, url); } catch(_) {} }, 600);
-                    return;
-                }
+                if (/invalidated/i.test(err.message || '')) { markRuntimeInvalidated('sendMessage'); return; }
             }
             if (!response || !response.success || !response.title) {
                 console.log('⚠️ No title available for', url);
@@ -677,10 +724,7 @@ function suggestReplaceURLWithTitle(editor, url) {
     } catch (error) {
         const msg = error?.message || String(error || '');
         console.log('Title suggestion failed:', msg);
-        if (/invalidated/i.test(msg)) {
-            console.log('🔁 SW context invalidated during suggest; retrying…');
-            setTimeout(() => { try { suggestReplaceURLWithTitle(editor, url); } catch(_) {} }, 600);
-        }
+        if (/invalidated/i.test(msg)) { markRuntimeInvalidated('catch'); }
     }
 }
 
@@ -2408,6 +2452,9 @@ const observer = new MutationObserver(() => {
         applyAllEditorSizes();
         // Attach the interactive draggable listeners
         attachAllListeners();
+        // Ensure side panel closed state doesn't leave whitespace
+        ensureSidePanelClosedFixStyle();
+        normalizeSidePanelSpace();
         // Ensure QOL improvements are applied to new content
         removeTimelineMaxWidth();
         narrowInternalNotes();
@@ -2440,6 +2487,8 @@ setupAutoHyperlinking();
 setupHyperlinkShortcut();
 setupAutoSizing();
 setupSidebarControls();
+ensureSidePanelClosedFixStyle();
+normalizeSidePanelSpace();
 setupTicketHistoryTracking();
 try { if (typeof setupInlineTranslation === 'function') { setupInlineTranslation(); } } catch (_) {}
 // Search page hover preview
@@ -2487,14 +2536,33 @@ function setupSearchHoverPreview() {
         let suppressUntil = 0;
         let isBubbleHovered = false;
         let hideTimerId = null;
+        let keepAliveUntil = 0;
+
+        // Generalized selectors (hashed class suffix changes between builds)
+        const rowSelector = [
+            'tr[class*="ko-table_row__container_"]',
+            '[role="row"][class*="ko-table_row__container_"]',
+            'div[role="row"]',
+            '[class*="session_agent_search__row-styles_"]'
+        ].join(',');
 
         const getRowTicketId = (row) => {
             try {
-                const idEl = row.querySelector('[class*="ko-cases-list_column_conv-composite__ticket-id_"]');
-                if (!idEl) return null;
-                const txt = idEl.textContent || '';
-                const m = txt.match(/#?(\d{4,})/);
-                return m ? m[1] : null;
+                let idEl = row.querySelector('[class*="ko-cases-list_column_conv-composite__ticket-id_"]');
+                if (idEl) {
+                    const txt = idEl.textContent || '';
+                    const m = txt.match(/#?(\d{4,})/);
+                    if (m) return m[1];
+                }
+                // Fallback: look for link to conversation or any #12345 text
+                const a = row.querySelector('a[href*="/agent/conversations/"]');
+                if (a) {
+                    const m = a.getAttribute('href').match(/conversations\/(\d+)/);
+                    if (m) return m[1];
+                }
+                const txtAll = row.textContent || '';
+                const m2 = txtAll.match(/#(\d{4,})/);
+                return m2 ? m2[1] : null;
             } catch (_) { return null; }
         };
 
@@ -2513,6 +2581,19 @@ function setupSearchHoverPreview() {
                 .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
             `;
             document.head.appendChild(st);
+        };
+
+        // Attach non-bubbling listeners to rows (for pages where events don't bubble reliably)
+        const attachRowHover = () => {
+            try {
+                const rows = document.querySelectorAll(rowSelector);
+                rows.forEach((row) => {
+                    if (row.dataset.kayakoPreviewHoverAttached === '1') return;
+                    row.addEventListener('mouseenter', () => onEnter(row));
+                    row.addEventListener('mouseleave', () => onLeave());
+                    row.dataset.kayakoPreviewHoverAttached = '1';
+                });
+            } catch (_) {}
         };
 
         const showBubble = (row) => {
@@ -2534,6 +2615,7 @@ function setupSearchHoverPreview() {
             document.body.appendChild(bubble);
             positionBubbleNearRow(bubble, row);
             activeBubble = bubble;
+            keepAliveUntil = Date.now() + 350;
             return bubble;
         };
 
@@ -2634,6 +2716,7 @@ function setupSearchHoverPreview() {
                     }
                     contentDiv.innerHTML = sanitizeHtml(cache[id].html);
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
+                    keepAliveUntil = Date.now() + 300;
                 });
             }, 250);
         };
@@ -2642,6 +2725,7 @@ function setupSearchHoverPreview() {
             currentRowHover = false;
             if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
             // delay hiding to allow moving into bubble
+            if (Date.now() < keepAliveUntil) return;
             if (hideTimerId) { clearTimeout(hideTimerId); }
             hideTimerId = setTimeout(() => {
                 if (!currentRowHover && activeBubble && !isBubbleHovered) {
@@ -2650,20 +2734,34 @@ function setupSearchHoverPreview() {
             }, 220);
         };
 
-        // Delegate events from the table body
+        // Delegate events from the table body (fallback) and also attach direct row listeners
         document.addEventListener('mousemove', (e) => { lastMouse = { x: e.clientX, y: e.clientY }; }, true);
         document.addEventListener('mouseover', (e) => {
-            const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
+            const row = e.target && e.target.closest && e.target.closest(rowSelector);
             if (row) onEnter(row);
-        }, true);
+        }, { capture: true, passive: true });
         document.addEventListener('mouseout', (e) => {
-            const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
+            const row = e.target && e.target.closest && e.target.closest(rowSelector);
             if (row) {
                 // If moving into the bubble, do not hide
-                try { if (activeBubble && activeBubble.contains(e.relatedTarget)) return; } catch(_) {}
+                try {
+                    if (activeBubble && activeBubble.contains(e.relatedTarget)) return;
+                    // Ignore mouseout transitions within the same row
+                    if (row.contains && row.contains(e.relatedTarget)) return;
+                } catch(_) {}
                 onLeave();
             }
-        }, true);
+        }, { capture: true, passive: true });
+        attachRowHover();
+        // Observe for dynamic result lists (Kayako tabs/virtualized lists)
+        try {
+            let rafQueued = false;
+            const observer = new MutationObserver(() => {
+                if (rafQueued) return; rafQueued = true;
+                requestAnimationFrame(() => { rafQueued = false; attachRowHover(); });
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+        } catch (_) {}
         // Close on outside click
         document.addEventListener('mousedown', (e) => {
             try {
