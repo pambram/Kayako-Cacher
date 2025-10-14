@@ -893,18 +893,101 @@ class KayakoAIEnhancer {
 
   // Minimize Froala reflow issues by removing stray <br> and empty blocks
   stabilizeHTMLForEditor(html) {
-    let out = (html || '').toString();
-    // Collapse consecutive <br>
-    out = out.replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
-    // Remove leading/trailing <br> inside paragraphs and list items
-    out = out.replace(/<p>\s*(?:<br\s*\/?>\s*)+/gi, '<p>');
-    out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/p>/gi, '</p>');
-    out = out.replace(/<li>\s*(?:<br\s*\/?>\s*)+/gi, '<li>');
-    out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/li>/gi, '</li>');
-    // Drop empty list items and empty paragraphs created by LLMs
-    out = out.replace(/<li>\s*<\/li>/gi, '');
-    out = out.replace(/<p>\s*<\/p>/gi, '<p></p>');
-    return out;
+    try {
+      const container = document.createElement('div');
+      container.innerHTML = (html || '').toString();
+
+      const isMeaningful = (node) => {
+        if (!node) return false;
+        if (node.nodeType === Node.TEXT_NODE) {
+          return node.nodeValue && node.nodeValue.replace(/[\s\u00a0]/g, '') !== '';
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return false;
+        const tag = node.tagName.toLowerCase();
+        if (tag === 'img' || tag === 'br') return true;
+        // Anchors/formatting are meaningful if they contain meaningful descendants
+        return Array.from(node.childNodes).some(isMeaningful);
+      };
+
+      const removeWhitespaceTextNodes = (el) => {
+        Array.from(el.childNodes).forEach((n) => {
+          if (n.nodeType === Node.TEXT_NODE && (!n.nodeValue || n.nodeValue.replace(/[\s\u00a0]/g, '') === '')) {
+            el.removeChild(n);
+          }
+        });
+      };
+
+      const collapseConsecutiveBr = (el) => {
+        let i = 0;
+        while (i < el.childNodes.length - 1) {
+          const a = el.childNodes[i];
+          const b = el.childNodes[i + 1];
+          if (a.nodeType === Node.ELEMENT_NODE && b && b.nodeType === Node.ELEMENT_NODE && a.tagName === 'BR' && b.tagName === 'BR') {
+            el.removeChild(b);
+            continue; // stay on same index to catch further BRs
+          }
+          i++;
+        }
+      };
+
+      const trimBrEdges = (el) => {
+        // leading
+        while (el.firstChild && el.firstChild.nodeType === Node.ELEMENT_NODE && el.firstChild.tagName === 'BR') {
+          el.removeChild(el.firstChild);
+        }
+        // trailing
+        while (el.lastChild && el.lastChild.nodeType === Node.ELEMENT_NODE && el.lastChild.tagName === 'BR') {
+          el.removeChild(el.lastChild);
+        }
+      };
+
+      const clean = (node) => {
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const tag = node.tagName.toLowerCase();
+
+        if (tag === 'p' || tag === 'li' || tag === 'div') {
+          removeWhitespaceTextNodes(node);
+          collapseConsecutiveBr(node);
+          trimBrEdges(node);
+        }
+
+        // Recurse
+        Array.from(node.childNodes).forEach(clean);
+
+        // Remove empty blocks that are not meaningful
+        if ((tag === 'p' || tag === 'li' || tag === 'div') && !isMeaningful(node)) {
+          node.remove();
+          return;
+        }
+
+        // Ensure UL/OL contain only LI children; remove direct BR or whitespace
+        if (tag === 'ul' || tag === 'ol') {
+          Array.from(node.childNodes).forEach((n) => {
+            if (n.nodeType === Node.TEXT_NODE && (!n.nodeValue || n.nodeValue.replace(/[\s\u00a0]/g, '') === '')) n.remove();
+            if (n.nodeType === Node.ELEMENT_NODE && n.tagName.toLowerCase() === 'br') n.remove();
+          });
+        }
+      };
+
+      clean(container);
+      let out = container.innerHTML;
+
+      // Final fallback collapses
+      out = out.replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
+      out = out.replace(/<li>\s*<\/li>/gi, '');
+      return out;
+    } catch (_) {
+      // Regex fallback if DOM ops fail
+      let out = (html || '').toString();
+      out = out.replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
+      out = out.replace(/<p>\s*(?:<br\s*\/?>\s*)+/gi, '<p>');
+      out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/p>/gi, '</p>');
+      out = out.replace(/<li>\s*(?:<br\s*\/?>\s*)+/gi, '<li>');
+      out = out.replace(/(?:<br\s*\/?>\s*)+\s*<\/li>/gi, '</li>');
+      out = out.replace(/<li>\s*<\/li>/gi, '');
+      out = out.replace(/<p>\s*<\/p>/gi, '<p></p>');
+      return out;
+    }
   }
 
   showAIPreview(editorElement, originalTextData, enhancedText, actionTitle) {
@@ -1738,7 +1821,8 @@ class KayakoAIEnhancer {
         // Create a document fragment with the new content
         const fragment = document.createDocumentFragment();
         const wrapper = document.createElement('span');
-        wrapper.innerHTML = '<br><br>' + this.normalizeHTMLForInsert(textWithRestoredLinks);
+        // Do not force line breaks; let the normalized HTML define structure
+        wrapper.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
         
         // Move all child nodes to the fragment
         while (wrapper.firstChild) {
@@ -1765,7 +1849,9 @@ class KayakoAIEnhancer {
           const currentHTML = editorElement.innerHTML;
           const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
           const newContentHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
-          editorElement.innerHTML = currentHTML + '<br><br>' + newContentHTML;
+          // Append without forcing extra <br>, to avoid Froala expanding blanks
+          const combined = this.stabilizeHTMLForEditor(currentHTML + newContentHTML);
+          editorElement.innerHTML = combined;
         }
       }
     }
