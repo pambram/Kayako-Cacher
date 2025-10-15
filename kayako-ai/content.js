@@ -2001,21 +2001,19 @@ class KayakoAIEnhancer {
       requestBody.temperature = this.config.temperature || 0.7;
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
+    const result = await new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ action: 'openaiChat', requestBody }, (resp) => {
+          resolve(resp || { success: false, error: 'No response from background' });
+        });
+      } catch (e) {
+        resolve({ success: false, error: e?.message || 'Message failed' });
+      }
     });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || `HTTP ${response.status}`);
+    if (!result?.success) {
+      throw new Error(result?.error || 'AI request failed');
     }
-
-    const data = await response.json();
+    const data = result.data || {};
     return data.choices?.[0]?.message?.content?.trim() || '';
   }
 

@@ -39,6 +39,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'testConnection':
       handleTestConnection(request.config, sendResponse);
       return true;
+    
+    case 'openaiChat':
+      handleOpenAIChat(request.requestBody, sendResponse);
+      return true;
       
     default:
       sendResponse({ success: false, error: 'Unknown action' });
@@ -52,6 +56,49 @@ async function handleGetConfig(sendResponse) {
     sendResponse({ success: true, config });
   } catch (error) {
     console.error('Error getting config:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+async function handleOpenAIChat(requestBody, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    if (!config.apiKey) {
+      throw new Error('API key is required');
+    }
+    const model = requestBody?.model || config.model || 'gpt-5-mini';
+    const body = {
+      model,
+      messages: requestBody?.messages || [],
+      max_completion_tokens: requestBody?.max_completion_tokens || (config.useTicketContext ? 3000 : 2000)
+    };
+    if (!model.startsWith('gpt-5')) {
+      body.temperature = requestBody?.temperature ?? config.temperature ?? 0.7;
+    }
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      let errText = `HTTP ${resp.status}`;
+      try {
+        const errJson = await resp.json();
+        errText = errJson.error?.message || errText;
+      } catch (_) {}
+      throw new Error(errText);
+    }
+
+    const data = await resp.json();
+    sendResponse({ success: true, data });
+  } catch (error) {
+    console.error('openaiChat failed:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
