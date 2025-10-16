@@ -79,6 +79,50 @@
       return /\/api\/v1\/notes\/\d+$/.test(u.pathname);
     } catch (e) { return false; }
   }
+
+  /**
+   * Helper: Check if URL is a case detail request
+   */
+  function isCaseDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+
+  // (Removed SLA helpers from active use to minimize interference)
+
+  /**
+   * Helper: Check if URL is a notes list for a case
+   */
+  function isNotesList(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/cases\/\d+\/notes$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+
+  /**
+   * Helper: Check if URL is a users list
+   */
+  function isUsersList(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/users$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+
+  /**
+   * Helper: Check if URL is a user detail request
+   */
+  function isUserDetail(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      return /\/api\/v1\/users\/\d+$/.test(u.pathname);
+    } catch (e) { return false; }
+  }
+
+  // (Removed case-channel helper from active use to minimize interference)
   
   /**
    * Helper: Check if URL is a write to posts endpoint
@@ -119,16 +163,16 @@
       requestUrl = url;
       requestMethod = method;
       
-      // Strip include=* from detail requests to avoid server 400
+      // Minimal fix: only strip include=* on specific detail/list endpoints known to 400
       if (method === 'GET' && typeof url === 'string') {
-        if (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url) || isNoteDetail(url)) {
+        if (isActivityDetail(url) || isMessageDetail(url) || isAttachmentDetail(url) || isNoteDetail(url) || isNotesList(url) || isUserDetail(url)) {
           try {
             const u = new URL(url, window.location.origin);
-            if (u.searchParams.has('include')) {
+            const inc = u.searchParams.get('include');
+            if (inc && String(inc).trim() === '*') {
               u.searchParams.delete('include');
               url = u.toString();
               window.kayakoCacheStats_live.detailRequestsFixed++;
-              console.log('🛡️ Stripped include from detail request');
             }
           } catch (_) {}
         }
@@ -198,9 +242,9 @@
         }
       } catch (_) {}
       
-      // Stub problematic detail requests with safe payloads
+      // Minimal stubbing: only for attachment/note details
       try {
-        if (requestMethod === 'GET' && requestUrl && (isActivityDetail(requestUrl) || isAttachmentDetail(requestUrl) || isNoteDetail(requestUrl))) {
+        if (requestMethod === 'GET' && requestUrl && (isAttachmentDetail(requestUrl) || isNoteDetail(requestUrl))) {
           let stubPayload = null;
           if (isAttachmentDetail(requestUrl)) {
             try {

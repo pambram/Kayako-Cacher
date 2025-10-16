@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako Optimizer",
-  "version": "6.3.2",
+  "version": "6.3.9",
   "description": "Kayako optimizer: image upload optimization and error prevention",
   "permissions": [
     "storage",
@@ -46,8 +46,7 @@
     {
       "resources": [
         "clean-working-solution-v6.js",
-        "image-upload-optimizer.js",
-        "debug-helper.js"
+        "image-upload-optimizer.js"
       ],
       "matches": [
         "*://*.kayako.com/*",
