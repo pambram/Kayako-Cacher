@@ -2337,7 +2337,9 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         // Decide whether to strip footer based on whether macro already added one
         const footerStart = findFooterStartInEditor(editor);
         // Extract only the "PR to the customer" section as HTML; optionally strip footer
-        const extracted = extractQCResponseHtmlFromHtml(html, !!footerStart) || '';
+        let extracted = extractQCResponseHtmlFromHtml(html, !!footerStart) || '';
+        // Normalize spacing to avoid Froala reflow inserting NBSP/tabs while editing
+        extracted = sanitizeHtmlForEditor(extracted);
         if (!extracted || !extracted.trim()) {
             // console.log('✂️ QC paste skipped: empty extraction');
             return;
@@ -2346,6 +2348,16 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         wrapper.setAttribute('data-kayako-qc-snippet', '1');
         // Preserve HTML formatting to match what the customer receives
         wrapper.innerHTML = extracted;
+        // Remove any unintended leading gap: drop leading <br> and cancel first block's top margin
+        try {
+            while (wrapper.firstChild && String(wrapper.firstChild.nodeName).toLowerCase() === 'br') {
+                wrapper.removeChild(wrapper.firstChild);
+            }
+            const firstBlock = wrapper.querySelector('p, div, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
+            if (firstBlock && firstBlock.style) {
+                firstBlock.style.marginTop = '0';
+            }
+        } catch (_) {}
         if (footerStart && footerStart.parentNode) {
             // add a blank line before our insert
             const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
@@ -2354,9 +2366,43 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         } else {
             editor.appendChild(wrapper);
         }
+        // Normalize top spacing of the entire editor so first line starts flush
+        try { normalizeEditorTopSpacing(editor); } catch(_) {}
         try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
         try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
     } catch (_) {}
+}
+
+// Sanitize whitespace for contentEditable editing (outside of <pre>/<code>)
+function sanitizeHtmlForEditor(html) {
+    try {
+        const root = document.createElement('div');
+        root.innerHTML = html;
+        const walk = (node, inPre) => {
+            if (!node) return;
+            const name = node.nodeName ? String(node.nodeName).toLowerCase() : '';
+            const nowInPre = inPre || name === 'pre' || name === 'code';
+            if (node.nodeType === 3) {
+                if (!nowInPre) {
+                    let t = node.nodeValue || '';
+                    t = t.replace(/\u00a0|&nbsp;/g, ' '); // NBSP → space
+                    t = t.replace(/\t+/g, ' ');           // tabs → space
+                    t = t.replace(/ {2,}/g, ' ');          // collapse runs
+                    // trim leading spaces if first in parent block
+                    if (!node.previousSibling) t = t.replace(/^ +/, '');
+                    // trim trailing spaces if last in parent block
+                    if (!node.nextSibling) t = t.replace(/ +$/, '');
+                    node.nodeValue = t;
+                }
+            } else if (node.nodeType === 1) {
+                // Recurse
+                const children = Array.from(node.childNodes || []);
+                for (const c of children) walk(c, nowInPre);
+            }
+        };
+        walk(root, false);
+        return root.innerHTML;
+    } catch (_) { return html; }
 }
 
 function extractQCResponseTextFromHtml(html, stripFooter) {
@@ -2383,6 +2429,47 @@ function extractQCResponseTextFromHtml(html, stripFooter) {
         // Trim leading/trailing whitespace but preserve internal spacing
         return body.replace(/^\s+|\s+$/g, '');
     } catch (_) { return ''; }
+}
+
+function normalizeEditorTopSpacing(editor) {
+    try {
+        const isWhitespaceNode = (n) => {
+            if (!n) return false;
+            if (n.nodeType === 3) return !(/[^\s\u00a0]/.test(n.nodeValue || ''));
+            if (String(n.nodeName).toLowerCase() === 'br') return true;
+            if (n.nodeType === 1) {
+                const html = String(n.innerHTML || '').replace(/\s|&nbsp;/g, '').toLowerCase();
+                return html === '' || html === '<br>';
+            }
+            return false;
+        };
+        // Remove leading ignorable nodes
+        while (editor.firstChild && isWhitespaceNode(editor.firstChild)) {
+            editor.removeChild(editor.firstChild);
+        }
+        // If the first element is an empty p/div with just a br, remove it
+        const firstEl = editor.firstElementChild;
+        if (firstEl) {
+            const clean = String(firstEl.innerHTML || '').replace(/\s|&nbsp;/g, '').toLowerCase();
+            if (clean === '' || clean === '<br>') {
+                editor.removeChild(firstEl);
+            }
+        }
+        // Ensure first visible block has no top margin
+        let firstBlock = null;
+        const blocks = editor.children;
+        for (let i = 0; i < blocks.length; i++) {
+            const el = blocks[i];
+            const tag = String(el.nodeName).toLowerCase();
+            const text = (el.textContent || '').trim();
+            if (['p','div','ul','ol','table','pre','blockquote','h1','h2','h3','h4','h5','h6'].includes(tag) && text) {
+                firstBlock = el; break;
+            }
+        }
+        if (firstBlock && firstBlock.style) {
+            firstBlock.style.marginTop = '0';
+        }
+    } catch (_) {}
 }
 
 // HTML-preserving extraction of the PR section
@@ -2969,7 +3056,10 @@ try {
 function setupSearchHoverPreview() {
     try {
         const isSearch = /\/agent\/search(\/|$)/.test(window.location.pathname) || /[?&]search/i.test(window.location.search) || /\/agent\/search\//.test(window.location.href);
-        if (!isSearch) return;
+        // Fallback for when search results are shown inside Kayako tabs without /search in the URL
+        // Proceed if we can find likely result rows in the DOM
+        const probableRowsPresent = !!document.querySelector('tr[class*="ko-table_row__container_"], [role="row"][class*="ko-table_row__container_"], div[role="row"], [class*="session_agent_search__row-styles_"], tr[class*="ko-cases-list_row__container_"], li[class*="ko-cases-list_row__container_"], li[class*="ko-cases-list_list__row_"]');
+        if (!isSearch && !probableRowsPresent) return;
         if (document.body.dataset.kayakoSearchPreviewSetup === 'true') return;
         document.body.dataset.kayakoSearchPreviewSetup = 'true';
 
@@ -2989,7 +3079,14 @@ function setupSearchHoverPreview() {
             'tr[class*="ko-table_row__container_"]',
             '[role="row"][class*="ko-table_row__container_"]',
             'div[role="row"]',
-            '[class*="session_agent_search__row-styles_"]'
+            '[class*="session_agent_search__row-styles_"]',
+            // Cases list variants observed in some search pages
+            'tr[class*="ko-cases-list_row__container_"]',
+            'li[class*="ko-cases-list_row__container_"]',
+            'li[class*="ko-cases-list_list__row_"]',
+            // Conservative generic fallbacks; filtered by getRowTicketId at runtime
+            'tr',
+            'li'
         ].join(',');
 
         const getRowTicketId = (row) => {
@@ -3035,6 +3132,9 @@ function setupSearchHoverPreview() {
                 const rows = document.querySelectorAll(rowSelector);
                 rows.forEach((row) => {
                     if (row.dataset.kayakoPreviewHoverAttached === '1') return;
+                    // Only attach to elements that resolve to a ticket id to avoid noise
+                    const id = getRowTicketId(row);
+                    if (!id) return;
                     row.addEventListener('mouseenter', () => onEnter(row));
                     row.addEventListener('mouseleave', () => onLeave());
                     row.dataset.kayakoPreviewHoverAttached = '1';
@@ -3184,7 +3284,10 @@ function setupSearchHoverPreview() {
         document.addEventListener('mousemove', (e) => { lastMouse = { x: e.clientX, y: e.clientY }; }, true);
         document.addEventListener('mouseover', (e) => {
             const row = e.target && e.target.closest && e.target.closest(rowSelector);
-            if (row) onEnter(row);
+            if (row) {
+                const id = getRowTicketId(row);
+                if (id) onEnter(row);
+            }
         }, { capture: true, passive: true });
         document.addEventListener('mouseout', (e) => {
             const row = e.target && e.target.closest && e.target.closest(rowSelector);
