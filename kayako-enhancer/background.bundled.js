@@ -452,6 +452,118 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  // Ignored bots lists get/set (separate for public vs internal)
+  if (message.action === 'getIgnoredBotsLists') {
+    chrome.storage.local.get(['ignoredBotsPublic','ignoredBotsInternal'], (data) => {
+      const pub = Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic : ['hermes'];
+      const intl = Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal : ['centralsupport-ai-acc','lachesis'];
+      sendResponse({ success: true, public: pub, internal: intl });
+    });
+    return true;
+  }
+  if (message.action === 'setIgnoredBotsLists') {
+    const pub = Array.isArray(message.public) ? message.public : [];
+    const intl = Array.isArray(message.internal) ? message.internal : [];
+    chrome.storage.local.set({ ignoredBotsPublic: pub, ignoredBotsInternal: intl }, () => sendResponse({ success: true }));
+    return true;
+  }
+  // Backwards-compat single list
+  if (message.action === 'getIgnoredBots') {
+    chrome.storage.local.get(['ignoredBotsPublic','ignoredBotsInternal'], (data) => {
+      const merged = [
+        ...(Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic : ['hermes']),
+        ...(Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal : ['centralsupport-ai-acc','lachesis'])
+      ];
+      sendResponse({ success: true, bots: Array.from(new Set(merged)) });
+    });
+    return true;
+  }
+  if (message.action === 'setIgnoredBots') {
+    const list = Array.isArray(message.bots) ? message.bots : [];
+    // Store to both as a convenience
+    chrome.storage.local.set({ ignoredBotsPublic: list, ignoredBotsInternal: list }, () => sendResponse({ success: true }));
+    return true;
+  }
+  // Ignored bots get/set
+  if (message.action === 'getIgnoredBots') {
+    chrome.storage.local.get(['ignoredBots'], (data) => {
+      const list = Array.isArray(data.ignoredBots) ? data.ignoredBots : ['centralsupport-ai-acc','lachesis','hermes'];
+      sendResponse({ success: true, bots: list });
+    });
+    return true;
+  }
+  if (message.action === 'setIgnoredBots' && Array.isArray(message.bots)) {
+    chrome.storage.local.set({ ignoredBots: message.bots }, () => sendResponse({ success: true }));
+    return true;
+  }
+  // Recent tickets (rolling 15) touch
+  if (message.action === 'touchTicket' && message.ticket) {
+    (async () => {
+      try {
+        const t = message.ticket;
+        const data = await storageGet(['recentTickets']);
+        let recents = Array.isArray(data.recentTickets) ? data.recentTickets : [];
+        const key = (x) => `${x.domain||''}:${x.id}`;
+        recents = recents.filter(x => key(x) !== key(t));
+        recents.unshift({ ...t, touchedAt: Date.now() });
+        if (recents.length > 15) recents = recents.slice(0, 15);
+        await storageSet({ recentTickets: recents });
+        sendResponse({ success: true });
+      } catch (e) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+  if (message.action === 'getRecentTickets') {
+    chrome.storage.local.get(['recentTickets'], (data) => {
+      const recents = Array.isArray(data.recentTickets) ? data.recentTickets : [];
+      sendResponse({ success: true, recentTickets: recents });
+    });
+    return true;
+  }
+  // Bookmarks CRUD
+  if (message.action === 'getBookmarks') {
+    chrome.storage.local.get(['ticketBookmarks'], (data) => {
+      const list = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+      sendResponse({ success: true, bookmarks: list });
+    });
+    return true;
+  }
+  if (message.action === 'addBookmark' && message.bookmark) {
+    (async () => {
+      const data = await storageGet(['ticketBookmarks']);
+      let list = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+      const key = (x) => `${x.domain||''}:${x.id}`;
+      list = list.filter(x => key(x) !== key(message.bookmark));
+      list.unshift({ ...message.bookmark, createdAt: Date.now() });
+      await storageSet({ ticketBookmarks: list });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+  if (message.action === 'updateBookmark' && message.bookmark) {
+    (async () => {
+      const data = await storageGet(['ticketBookmarks']);
+      let list = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+      const key = (x) => `${x.domain||''}:${x.id}`;
+      list = list.map(b => key(b) === key(message.bookmark) ? { ...b, ...message.bookmark } : b);
+      await storageSet({ ticketBookmarks: list });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+  if (message.action === 'deleteBookmark' && message.ticket) {
+    (async () => {
+      const data = await storageGet(['ticketBookmarks']);
+      let list = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+      const key = (x) => `${x.domain||''}:${x.id}`;
+      list = list.filter(b => key(b) !== key(message.ticket));
+      await storageSet({ ticketBookmarks: list });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
 });
 
 // --- Page title fetcher ---
@@ -708,9 +820,74 @@ async function checkAllTrackedTickets() {
         continue;
       }
       if (latest > baseline) {
-        const unreadCount = Number(t.unreadCount || 0) + (latest - baseline);
-        history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now() };
-        mutated = true;
+        // Fetch recent posts and apply classification using editable bot list
+        const postsUrl = `https://${t.domain}/api/v1/cases/${t.id}/posts?limit=25`;
+        let posts = [];
+        try {
+          const res = await fetch(postsUrl, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+          const json = await res.json();
+          posts = normalizePostsPayload(json);
+        } catch (_) {}
+        const dataBots = await storageGet(['ignoredBotsPublic','ignoredBotsInternal']);
+        const ignoredPublic = Array.isArray(dataBots.ignoredBotsPublic) ? dataBots.ignoredBotsPublic.map(b => String(b).toLowerCase()) : ['hermes'];
+        const ignoredInternal = Array.isArray(dataBots.ignoredBotsInternal) ? dataBots.ignoredBotsInternal.map(b => String(b).toLowerCase()) : ['centralsupport-ai-acc','lachesis'];
+        const lc = (s)=> (s||'').toString().toLowerCase();
+        const nameOf = (p)=> lc(p?.creator?.name || p?.author?.name || p?.actor?.name || p?.created_by?.name || p?.user?.name || p?.sender?.name || p?.from?.name || p?.from_name || '');
+        const emailOf = (p)=> lc(p?.creator?.email || p?.author?.email || p?.actor?.email || p?.created_by?.email || p?.user?.email || p?.sender?.email || p?.from?.email || p?.email || '');
+        const typeOf = (p)=> lc(p?.creator?.type || p?.actor?.type || p?.created_by?.type || p?.user?.type || p?.creator_type || p?.actor_type || p?.role || '');
+        const isInternal = (p)=> {
+          const t = lc(p?.type || p?.post_type || p?.category || '');
+          const vis = lc(p?.visibility || '');
+          const ch = lc(p?.channel || '');
+          return p?.is_internal === true || p?.isInternal === true || vis === 'internal' || ch === 'internal' || t.includes('note') || t.includes('internal') || p?.private === true;
+        };
+        const isPublic = (p)=> {
+          if (isInternal(p)) return false;
+          if (p?.is_public === true || p?.isPublic === true) return true;
+          const vis = lc(p?.visibility || '');
+          return vis ? vis === 'public' : true;
+        };
+        const isBotPublic = (p)=> {
+          const nm = nameOf(p), em = emailOf(p);
+          return ignoredPublic.some(b => nm.includes(b) || em.includes(b));
+        };
+        const isBotInternal = (p)=> {
+          const nm = nameOf(p), em = emailOf(p);
+          return ignoredInternal.some(b => nm.includes(b) || em.includes(b));
+        };
+        const isCustomer = (p)=> {
+          const t = typeOf(p);
+          if (t && ['customer','user','requester','end_user','end-user','client','contact'].some(k => t.includes(k))) return true;
+          const flags = [p?.is_customer, p?.isCustomer, p?.from_customer, p?.fromCustomer, p?.is_user, p?.isUser, p?.is_requester, p?.isRequester, p?.requester === true, p?.contact_type === 'customer'];
+          return flags.some(Boolean);
+        };
+        const pid = (p)=> Number(p?.id || p?.post_id || p?.uid || p?.postId || p?.message_id || 0) || 0;
+        const relevant = posts
+          .filter(p => pid(p) > baseline)
+          .filter(p => {
+            if (isInternal(p)) {
+              // internal note: ignore if from internal-bot list
+              if (isBotInternal(p)) return false;
+              return true; // human/internal
+            }
+            if (isPublic(p)) {
+              // public reply: ignore if from public-bot list
+              if (isBotPublic(p)) return false;
+              return isCustomer(p); // customer public reply only
+            }
+            return false;
+          });
+        const unreadCount = relevant.length;
+        if (unreadCount > 0) {
+          history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now() };
+          mutated = true;
+        } else if (t.hasUnseenActivity || t.unreadCount) {
+          history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+          mutated = true;
+        } else {
+          history[i] = { ...t, lastCheckedAt: Date.now() };
+          mutated = true;
+        }
       } else if (t.hasUnseenActivity || t.unreadCount) {
         history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
         mutated = true;

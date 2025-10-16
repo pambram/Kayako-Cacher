@@ -57,7 +57,23 @@
     </div>
 
     <div class="section">
-        <h3>📚 Ticket History</h3>
+        <h3>Macros</h3>
+        <label class="toggle-container">
+            <input type="checkbox" id="auto-paste-qc">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Auto‑paste QC “Send to Customer” template</span>
+        </label>
+    </div>
+
+    <div class="section">
+        <h3>📚 Ticket Center</h3>
+        <div class="tabbar">
+            <button class="tab-btn active" data-target="recent">Recent</button>
+            <button class="tab-btn" data-target="bookmarks">Bookmarks</button>
+            <button class="tab-btn" data-target="bots">Bots</button>
+        </div>
+
+        <div id="tab-recent" class="tab-panel active">
         <div class="ticket-history-controls">
             <button id="refresh-history" class="small-btn">🔄 Refresh</button>
             <button id="add-current-ticket" class="small-btn">➕ Add Current</button>
@@ -70,6 +86,47 @@
         
         <div class="ticket-history-footer">
             <small>Automatically tracks tickets when you click "Send"</small>
+        </div>
+        </div>
+
+        <div id="tab-bookmarks" class="tab-panel">
+            <div class="ticket-history-controls">
+                <button id="refresh-bookmarks" class="small-btn">🔄 Refresh</button>
+            </div>
+            <div id="bookmarks-container" class="ticket-history">
+                <div class="loading">Loading bookmarks…</div>
+            </div>
+            <div class="ticket-history-footer">
+                <small>Bookmarks are permanent and can have notes</small>
+            </div>
+        </div>
+
+        <div id="tab-bots" class="tab-panel">
+            <div class="bot-settings">
+                <label for="ignored-bots-public">Ignore these for Public replies (comma separated)</label>
+                <input id="ignored-bots-public" type="text" value="hermes" placeholder="hermes" />
+                <label for="ignored-bots-internal">Ignore these for Internal notes (comma separated)</label>
+                <input id="ignored-bots-internal" type="text" value="centralsupport-ai-acc, lachesis" placeholder="centralsupport-ai-acc, lachesis" />
+                <div class="ticket-history-controls">
+                    <button id="save-ignored-bots" class="small-btn">💾 Save</button>
+                </div>
+                <small>Posts from these names/emails are ignored for unread notifications.</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bookmark modal -->
+    <div id="bookmark-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <h4 id="bookmark-modal-title">Bookmark</h4>
+            <textarea id="bookmark-note" rows="6" placeholder="Add an optional note…"></textarea>
+            <div class="modal-actions">
+                <button id="bookmark-suggest" class="small-btn">✨ Suggest</button>
+                <span class="spacer"></span>
+                <button id="bookmark-cancel" class="small-btn">Cancel</button>
+                <button id="bookmark-save" class="small-btn primary">Save</button>
+            </div>
         </div>
     </div>
 

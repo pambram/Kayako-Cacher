@@ -250,6 +250,7 @@ function ensureSidePanelClosedFixStyle() {
                 width: 0 !important;
                 min-width: 0 !important;
                 max-width: 0 !important;
+                flex-basis: 0 !important;
             }
         `;
         document.head.appendChild(style);
@@ -548,15 +549,30 @@ function setupAutoHyperlinking() {
             console.log('Could not get clipboard data from paste event:', error.message);
         }
         
-        // If no selection (collapsed) and clipboard has a URL, let paste happen, then offer title replacement
+        // If no selection (collapsed) and clipboard contains ONLY a standalone raw URL,
+        // let paste happen, then offer title replacement. If other text exists too,
+        // skip here (auto-link scan will catch the URL later if needed).
         if (!selection.rangeCount || selection.isCollapsed) {
-            if (clipboardText && isValidURL(clipboardText)) {
-                console.log('📎 Pasted URL without selection, will suggest title:', clipboardText);
-                // Give the editor a moment to insert/auto-link, then suggest replacement
-                setTimeout(() => {
-                    console.log('⏱️ Title suggestion timer fired for', clipboardText);
-                    trySuggestTitleReplace(target, clipboardText, 1);
-                }, 150);
+            if (clipboardText) {
+                // If clipboard already contains a titled <a>, skip entirely
+                try {
+                    const titled = extractTitledAnchorFromClipboardEvent(e);
+                    if (titled) {
+                        console.log('🛑 Skipping title suggestion: clipboard already has titled link →', titled.text);
+                        return;
+                    }
+                } catch (_) {}
+                const standalone = extractStandaloneUrl(clipboardText);
+                if (standalone) {
+                    console.log('📎 Pasted standalone URL, will suggest title:', standalone);
+                    // Give the editor a moment to insert/auto-link, then suggest replacement
+                    setTimeout(() => {
+                        trySuggestTitleReplace(target, standalone, 1);
+                    }, 150);
+                } else {
+                    // Not just a URL → do nothing now; rely on auto-link scan after paste
+                    setTimeout(() => { try { scanEditorForAutoLinks(target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element')); } catch(_) {} }, 250);
+                }
             }
             return;
         }
@@ -657,7 +673,7 @@ function suggestReplaceURLWithTitle(editor, url) {
         // Ask background to fetch the page title
         let ver = 'unknown';
         try { if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) { ver = chrome.runtime.getManifest().version; } } catch (_) { ver = 'unknown'; }
-        console.log('📡 Requesting page title from background for:', url, 'enhancer v', ver);
+        console.log('📡 Requesting page title from background for URL:', url, 'enhancer v', ver);
         let responded = false;
         const timeoutId = setTimeout(() => {
             if (!responded) {
@@ -1239,6 +1255,24 @@ function isValidURL(string) {
     }
 }
 
+// Extract a single standalone raw URL from plain text; return null if the
+// text contains any additional non-URL content besides trivial whitespace
+function extractStandaloneUrl(text) {
+    try {
+        let s = String(text || '').trim();
+        // Collapse whitespace/newlines to a single space and trim
+        s = s.replace(/\s+/g, ' ').trim();
+        const m = s.match(/^(https?:\/\/[\S<>]+|www\.[\S<>]+)$/i);
+        if (!m) return null;
+        // Strip trailing punctuation commonly copied with URLs
+        let url = m[1].replace(/[),.;:!?]+$/, '');
+        if (/^www\./i.test(url)) url = 'http://' + url;
+        return isValidURL(url) ? url : null;
+    } catch (_) {
+        return null;
+    }
+}
+
 // Function to show hyperlink insertion dialog
 function showHyperlinkDialog(selectedText, targetEditor) {
     // Remove any existing dialog
@@ -1471,6 +1505,26 @@ function isLikelyRawUrlText(text, href) {
     return norm(t) === norm(h);
 }
 
+// From clipboard HTML, detect an <a> whose visible text is NOT a raw URL
+function extractTitledAnchorFromClipboardEvent(e) {
+    try {
+        if (!e || !e.clipboardData || !e.clipboardData.getData) return null;
+        const html = e.clipboardData.getData('text/html') || '';
+        if (!html || !/<a\s/i.test(html)) return null;
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const a = doc.querySelector('a[href]');
+        if (!a) return null;
+        const text = (a.textContent || '').trim();
+        const href = a.getAttribute('href') || a.href || '';
+        if (!href || !text) return null;
+        if (!isLikelyRawUrlText(text, href)) return { text, href };
+        return null;
+    } catch (_) {
+        return null;
+    }
+}
+
 // Function to show quick notifications
 function showQuickNotification(message, type = 'info') {
     // Remove existing notifications
@@ -1618,6 +1672,76 @@ function setupEditorAutoSizing() {
     });
 }
 
+let __kayakoSidebarPreferredWidthCache = null;
+
+function getPreferredSidebarWidth(sidebar, cb) {
+    try {
+        if (typeof cb !== 'function') return;
+        const fallback = () => {
+            const initial = Number(sidebar && sidebar.dataset && sidebar.dataset.initialWidth) || Math.round((sidebar && sidebar.getBoundingClientRect && sidebar.getBoundingClientRect().width) || 360);
+            const clamped = Math.max(200, Math.min(700, initial || defaultSidebarWidth));
+            __kayakoSidebarPreferredWidthCache = clamped;
+            cb(clamped);
+        };
+        if (__kayakoSidebarPreferredWidthCache != null) {
+            cb(__kayakoSidebarPreferredWidthCache);
+            return;
+        }
+        if (!isStorageAvailable()) {
+            fallback();
+            return;
+        }
+        chrome.storage.local.get(['sidebarDefaultWidth'], (d) => {
+            const preferred = d && d.sidebarDefaultWidth ? Number(d.sidebarDefaultWidth) : null;
+            if (preferred && !Number.isNaN(preferred)) {
+                const clamped = Math.max(200, Math.min(700, preferred));
+                __kayakoSidebarPreferredWidthCache = clamped;
+                cb(clamped);
+            } else {
+                fallback();
+            }
+        });
+    } catch (_) { try { cb(defaultSidebarWidth); } catch(_) {} }
+}
+
+function applySidebarWidthInline(sidebar, widthPx, important) {
+    const w = Math.round(widthPx);
+    const set = important ? (p, v) => { try { sidebar.style.setProperty(p, v, 'important'); } catch(_) {} } : (p, v) => { sidebar.style[p.replace(/-([a-z])/g,(m,g1)=>g1.toUpperCase())] = v; };
+    set('width', w + 'px');
+    set('min-width', w + 'px');
+    set('max-width', w + 'px');
+    set('flex', `0 0 ${w}px`);
+    set('flex-basis', w + 'px');
+    const inner = sidebar && sidebar.querySelector && sidebar.querySelector('[class*="ko-agent-content_layout__fields_"]');
+    if (inner) {
+        const setIn = important ? (p, v) => { try { inner.style.setProperty(p, v, 'important'); } catch(_) {} } : (p, v) => { inner.style[p.replace(/-([a-z])/g,(m,g1)=>g1.toUpperCase())] = v; };
+        ['width','min-width','max-width','flex-basis'].forEach(k => setIn(k, w + 'px'));
+        setIn('flex', `0 0 ${w}px`);
+    }
+}
+
+function attachSidebarObserver(sidebar) {
+    try {
+        if (!sidebar || sidebar.dataset.sidebarObserverAttached === 'true') return;
+        const mo = new MutationObserver(() => {
+            // If not collapsed, enforce preferred width when class/style changes
+            const collapsed = sidebar.classList.contains('kayako-sidebar-collapsed');
+            if (collapsed) return;
+            if (sidebar.dataset.userResizing === 'true') return;
+            const untilTs = Number(sidebar.dataset.enforceUntilTs || 0);
+            if (!untilTs || Date.now() > untilTs) return;
+            getPreferredSidebarWidth(sidebar, (w) => {
+                const rectW = Math.round(sidebar.getBoundingClientRect().width || 0);
+                if (Math.abs(rectW - w) > 2) {
+                    applySidebarWidthInline(sidebar, w, true);
+                }
+            });
+        });
+        mo.observe(sidebar, { attributes: true, attributeFilter: ['class','style'], childList: false, subtree: false });
+        sidebar.dataset.sidebarObserverAttached = 'true';
+    } catch (_) {}
+}
+
 // Sidebar: collapse toggle and drag-to-resize (right-side details panel, not the side-conversations panel)
 function setupSidebarControls() {
     try {
@@ -1634,7 +1758,7 @@ function setupSidebarControls() {
                 .kayako-sidebar-toggle { position:absolute; left:-18px; top:10px; width:16px; height:24px; border-radius:4px 0 0 4px; background:#f1f3f5; border:1px solid #d0d5d8; color:#333; display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:1001; box-shadow:0 1px 3px rgba(0,0,0,.08); }
                 .kayako-sidebar-toggle:hover { background:#e9ecef; }
                 .kayako-sidebar-ui { pointer-events:auto !important; visibility:visible !important; }
-                .kayako-sidebar-collapsed { width:12px !important; min-width:12px !important; max-width:12px !important; flex:0 0 12px !important; overflow:hidden !important; padding:0 !important; }
+                .kayako-sidebar-collapsed { width:12px !important; min-width:12px !important; max-width:12px !important; flex:0 0 12px !important; flex-basis:12px !important; overflow:hidden !important; padding:0 !important; }
                 .kayako-sidebar-collapsed > *:not(.kayako-sidebar-ui) { display:none !important; }
                 .kayako-sidebar-collapsed .kayako-sidebar-toggle { left:0 !important; width:12px !important; height:24px; border-radius:0; }
             `;
@@ -1659,15 +1783,42 @@ function setupSidebarControls() {
 
             let dragging = false; let startX = 0; let startW = 0; let rafQueued = false; let lastDX = 0;
             const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-            const applyWidth = (w) => {
-                sidebar.style.width = w + 'px';
-                sidebar.style.minWidth = w + 'px';
-                sidebar.style.maxWidth = w + 'px';
-                sidebar.style.flex = `0 0 ${w}px`; 
+            const applyWidth = (w, important) => {
+                if (important) {
+                    try {
+                        sidebar.style.setProperty('width', w + 'px', 'important');
+                        sidebar.style.setProperty('min-width', w + 'px', 'important');
+                        sidebar.style.setProperty('max-width', w + 'px', 'important');
+                        sidebar.style.setProperty('flex', `0 0 ${w}px`, 'important');
+                        sidebar.style.setProperty('flex-basis', `${w}px`, 'important');
+                        const inner = sidebar.querySelector('[class*="ko-agent-content_layout__fields_"]');
+                        if (inner) {
+                            inner.style.setProperty('width', w + 'px', 'important');
+                            inner.style.setProperty('max-width', w + 'px', 'important');
+                            inner.style.setProperty('min-width', w + 'px', 'important');
+                            inner.style.setProperty('flex-basis', `${w}px`, 'important');
+                            inner.style.setProperty('flex', `0 0 ${w}px`, 'important');
+                        }
+                    } catch(_) {}
+                } else {
+                    sidebar.style.width = w + 'px';
+                    sidebar.style.minWidth = w + 'px';
+                    sidebar.style.maxWidth = w + 'px';
+                    sidebar.style.flex = `0 0 ${w}px`;
+                    sidebar.style.flexBasis = `${w}px`;
+                    const inner = sidebar.querySelector('[class*="ko-agent-content_layout__fields_"]');
+                    if (inner) {
+                        inner.style.width = w + 'px';
+                        inner.style.maxWidth = w + 'px';
+                        inner.style.minWidth = w + 'px';
+                        inner.style.flexBasis = `${w}px`;
+                        inner.style.flex = `0 0 ${w}px`;
+                    }
+                }
             };
-            const onMove = (e) => { lastDX = e.clientX - startX; if (!rafQueued) { rafQueued = true; requestAnimationFrame(() => { rafQueued = false; const newW = clamp(startW - lastDX, 12, 700); applyWidth(newW); try { chrome.storage.local.set({ sidebarWidth: newW, sidebarCollapsed: false }); } catch(_) {} }); } };
-            const onUp = () => { dragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
-            resizer.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; startX = e.clientX; startW = sidebar.getBoundingClientRect().width; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp); document.body.style.cursor = 'col-resize'; });
+            const onMove = (e) => { lastDX = e.clientX - startX; if (!rafQueued) { rafQueued = true; requestAnimationFrame(() => { rafQueued = false; const newW = clamp(startW - lastDX, 12, 700); applyWidth(newW); try { chrome.storage.local.set({ sidebarWidth: newW, sidebarCollapsed: false }); __kayakoSidebarPreferredWidthCache = null; } catch(_) {} }); } };
+            const onUp = () => { dragging = false; sidebar.dataset.userResizing = 'false'; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); document.body.style.cursor = ''; };
+            resizer.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; sidebar.dataset.userResizing = 'true'; sidebar.dataset.enforceUntilTs = '0'; startX = e.clientX; startW = sidebar.getBoundingClientRect().width; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp); document.body.style.cursor = 'col-resize'; });
         }
 
         if (!sidebar.querySelector('.kayako-sidebar-toggle')) {
@@ -1686,18 +1837,15 @@ function setupSidebarControls() {
                 } else {
                     sidebar.classList.remove('kayako-sidebar-collapsed');
                     // Restore width from storage or default
-                    try {
-                        chrome.storage.local.get(['sidebarDefaultWidth'], (d) => {
-                            const initial = Number(sidebar.dataset.initialWidth) || Math.round(sidebar.getBoundingClientRect().width || 360);
-                            const preferred = d && d.sidebarDefaultWidth ? Number(d.sidebarDefaultWidth) : initial || defaultSidebarWidth;
-                            const w = Math.max(200, Math.min(700, preferred));
-                            sidebar.style.width = w + 'px';
-                            sidebar.style.minWidth = w + 'px';
-                            sidebar.style.maxWidth = w + 'px';
-                            sidebar.style.flex = `0 0 ${w}px`;
-                            try { chrome.storage.local.set({ sidebarWidth: w }); } catch(_) {}
-                        });
-                    } catch(_) {}
+                    getPreferredSidebarWidth(sidebar, (w) => {
+                        // briefly enforce for reflow windows
+                        try { sidebar.dataset.enforceUntilTs = String(Date.now() + 800); } catch(_) {}
+                        applyWidth(w, true);
+                        requestAnimationFrame(() => applyWidth(w, true));
+                        setTimeout(() => applyWidth(w, true), 30);
+                        setTimeout(() => applyWidth(w, true), 120);
+                        try { chrome.storage.local.set({ sidebarWidth: w }); } catch(_) {}
+                    });
                     // Float toggle into the gutter for easy click
                     toggle.style.left = '-18px';
                 }
@@ -1724,16 +1872,14 @@ function setupSidebarControls() {
                         toggle.style.left = '0px';
                     } else if (d && d.sidebarWidth) {
                         const w = d.sidebarWidth;
-                        sidebar.style.width = w + 'px';
-                        sidebar.style.minWidth = w + 'px';
-                        sidebar.style.maxWidth = w + 'px';
-                        sidebar.style.flex = `0 0 ${w}px`;
+                        applyWidth(w, true);
                         toggle.style.left = '-18px';
                         if (!sidebar.dataset.initialWidth) { try { sidebar.dataset.initialWidth = String(w); } catch(_) {} }
                     }
                     setIcon(collapsed);
                 });
             } catch(_) {}
+            attachSidebarObserver(sidebar);
         }
     } catch (_) {}
 }
@@ -1990,7 +2136,7 @@ function setupSendShortcut(editor) {
         if (editor._sendShortcutHandler) return;
         const handler = (e) => {
             try {
-                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13)) {
                     const container = editor.closest('.ko-text-editor__container_1p5g6r');
                     let btn = null;
                     if (container) {
@@ -2002,7 +2148,20 @@ function setupSendShortcut(editor) {
                     if (btn) {
                         e.preventDefault();
                         e.stopPropagation();
+                        // mark handled so global fallback won't double-trigger
+                        try { window.__kayakoSendShortcutHandled = Date.now(); } catch(_) {}
                         btn.click();
+                        // collapse editor immediately for reading space
+                        try {
+                            const targetContainer = btn.closest('.ko-text-editor__container_1p5g6r') || container;
+                            const candidates = targetContainer ? targetContainer.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
+                            if (candidates && candidates.length > 0) {
+                                chrome.storage.local.get(["editorMinHeight"], (data) => {
+                                    const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
+                                    candidates.forEach((ed) => { try { animateEditorToHeight(ed, minHeight); } catch(_) {} });
+                                });
+                            }
+                        } catch(_) {}
                     }
                 }
             } catch (_) {}
@@ -2010,6 +2169,288 @@ function setupSendShortcut(editor) {
         editor.addEventListener('keydown', handler);
         editor._sendShortcutHandler = handler;
     } catch (_) {}
+}
+
+// Global fallback: capture Cmd/Ctrl+Enter anywhere inside the editor
+function setupGlobalSendShortcut() {
+    if (window.__kayakoGlobalSendSetup === true) return; window.__kayakoGlobalSendSetup = true;
+    document.addEventListener('keydown', (e) => {
+        try {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.shiftKey) return;
+            if (!((e.key === 'Enter') || (e.code === 'Enter') || (e.keyCode === 13))) return;
+            // avoid duplicate handling if a per-editor handler already ran
+            if (window.__kayakoSendShortcutHandled && Date.now() - window.__kayakoSendShortcutHandled < 150) return;
+
+            // identify the focused editor
+            let editor = null;
+            const ae = document.activeElement;
+            if (ae) {
+                editor = ae.classList && ae.classList.contains('fr-element') ? ae : ae.closest && ae.closest('.fr-element');
+            }
+            if (!editor) {
+                const sel = window.getSelection && window.getSelection();
+                const node = sel && sel.anchorNode;
+                if (node) {
+                    const el = (node.nodeType === 3 ? node.parentElement : node);
+                    editor = el && el.closest && el.closest('.fr-element');
+                }
+            }
+            if (!editor) return;
+
+            const container = editor.closest('.ko-text-editor__container_1p5g6r');
+            let btn = null;
+            if (container) {
+                // prefer a button with Send text
+                const candidates = container.querySelectorAll('button[class*="ko-button__primary"], button[class*="ko-button__shared"]');
+                btn = Array.from(candidates).find(b => /send/i.test((b.textContent || b.innerText || '')));
+                if (!btn && candidates.length) btn = candidates[0];
+            }
+            if (!btn) {
+                const candidates = document.querySelectorAll('button[class*="ko-button__primary"], button[class*="ko-button__shared"]');
+                btn = Array.from(candidates).find(b => /send/i.test((b.textContent || b.innerText || ''))) || candidates[0];
+            }
+            if (!btn) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            try { window.__kayakoSendShortcutHandled = Date.now(); } catch(_) {}
+            btn.click();
+            // collapse editors within this container
+            try {
+                const targetContainer = btn.closest('.ko-text-editor__container_1p5g6r') || container;
+                const eds = targetContainer ? targetContainer.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
+                if (eds && eds.length > 0) {
+                    chrome.storage.local.get(["editorMinHeight"], (data) => {
+                        const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
+                        eds.forEach((ed) => { try { animateEditorToHeight(ed, minHeight); } catch(_) {} });
+                    });
+                }
+            } catch(_) {}
+        } catch(_) {}
+    }, true);
+}
+
+// --- Auto‑paste QC template after selecting Macro → Quality Control → Send to Customer ---
+function setupQCMacroAutoPaste() {
+    // Cache current toggle state (updated via message too)
+    try {
+        chrome.storage.local.get(["autoPasteQCSendToCustomer", "autoPasteQC"], (d) => {
+            if (d && typeof d.autoPasteQCSendToCustomer !== 'undefined') {
+                window.__kayakoAutoPasteQC = !!d.autoPasteQCSendToCustomer;
+            } else if (d && typeof d.autoPasteQC !== 'undefined') {
+                window.__kayakoAutoPasteQC = !!d.autoPasteQC;
+            } else {
+                window.__kayakoAutoPasteQC = true;
+            }
+        });
+    } catch (_) { try { window.__kayakoAutoPasteQC = true; } catch(_) {} }
+
+    const handleCandidate = (target, via) => {
+        try {
+            const enabled = (typeof window.__kayakoAutoPasteQC === 'boolean') ? window.__kayakoAutoPasteQC : true;
+            if (!enabled) return;
+            const menu = target && target.closest && target.closest('.ember-basic-dropdown-content, .ember-power-select-options, [id^="ember-basic-dropdown-content-"]');
+            if (!menu) return;
+            // If Enter was pressed, find the highlighted option
+            let item = target.closest && target.closest('[role="option"], li, [class*="option"], [role="menuitem"]');
+            if (!item) {
+                item = menu.querySelector('[aria-current="true"], [aria-selected="true"]');
+            }
+            if (!item) return;
+            const label = (item.textContent || '').trim();
+            // console.log('🔎 Macro menu selection via', via, 'label=', label);
+            const matchesQC = /send\s+to\s+customer/i.test(label) || /send\s+to\s+external\s*team/i.test(label) || /close\s*ticket/i.test(label);
+            if (!matchesQC) return;
+            const editor = window.__kayakoLastMacroEditor || document.querySelector('.fr-element');
+            if (!editor) return;
+            window.__kayakoPendingQCPaste = true;
+            waitForMacroApplyThenPaste(editor);
+        } catch (_) {}
+    };
+
+    // Listen for macro option activation (click & mousedown to be safe)
+    document.addEventListener('click', (e) => handleCandidate(e.target, 'click'), true);
+    document.addEventListener('mousedown', (e) => handleCandidate(e.target, 'mousedown'), true);
+    // Support selecting with Enter in the search input/menu
+    document.addEventListener('keydown', (e) => {
+        try {
+            if (e.key !== 'Enter') return;
+            const menu = e.target && e.target.closest && e.target.closest('.ember-basic-dropdown-content, .ember-power-select-options, [id^="ember-basic-dropdown-content-"]');
+            if (!menu) return;
+            const active = menu.querySelector('[aria-current="true"], [aria-selected="true"]');
+            handleCandidate(active || e.target, 'enter');
+        } catch (_) {}
+    }, true);
+}
+
+function waitForMacroApplyThenPaste(editor) {
+    try {
+        let settledTimer = null;
+        const observer = new MutationObserver(() => {
+            try { if (settledTimer) clearTimeout(settledTimer); } catch(_) {}
+            settledTimer = setTimeout(() => {
+                try { observer.disconnect(); } catch(_) {}
+                try { pasteLatestInternalNoteAboveFooter(editor); } catch(_) {}
+            }, 260);
+        });
+        observer.observe(editor, { childList: true, subtree: true, characterData: true });
+        // Fallback in case no mutations fire
+        setTimeout(() => {
+            try { observer.disconnect(); } catch(_) {}
+            try { pasteLatestInternalNoteAboveFooter(editor); } catch(_) {}
+        }, 2200);
+    } catch (_) {}
+}
+
+function findLatestInternalNoteNode() {
+    try {
+        const nodes = document.querySelectorAll('.message-or-note[data-note-id], div[data-note-id][data-id]');
+        if (!nodes || nodes.length === 0) return null;
+        return nodes[nodes.length - 1];
+    } catch (_) { return null; }
+}
+
+function findFooterStartInEditor(editor) {
+    try {
+        const blocks = editor.querySelectorAll('p, div, li');
+        for (let i = 0; i < blocks.length; i++) {
+            const t = (blocks[i].textContent || '').trim().toLowerCase();
+            if (t.startsWith('best regards') || t.startsWith('regards,') || t.startsWith('kind regards')) {
+                return blocks[i];
+            }
+        }
+    } catch (_) {}
+    return null;
+}
+
+function pasteLatestInternalNoteAboveFooter(editor) {
+    try {
+        if (!window.__kayakoPendingQCPaste) return;
+        window.__kayakoPendingQCPaste = false;
+        if (editor.querySelector('[data-kayako-qc-snippet="1"]')) return;
+        const note = findLatestInternalNoteNode();
+        if (!note) return;
+        const content = note.querySelector('[class*="ko-timeline-2_list_item__content"], [class*="_content_" ]') || note;
+        const html = content && content.innerHTML ? String(content.innerHTML) : '';
+        if (!html || !html.trim()) return;
+        // Decide whether to strip footer based on whether macro already added one
+        const footerStart = findFooterStartInEditor(editor);
+        // Extract only the "PR to the customer" section as HTML; optionally strip footer
+        const extracted = extractQCResponseHtmlFromHtml(html, !!footerStart) || '';
+        if (!extracted || !extracted.trim()) {
+            // console.log('✂️ QC paste skipped: empty extraction');
+            return;
+        }
+        const wrapper = document.createElement('div');
+        wrapper.setAttribute('data-kayako-qc-snippet', '1');
+        // Preserve HTML formatting to match what the customer receives
+        wrapper.innerHTML = extracted;
+        if (footerStart && footerStart.parentNode) {
+            // add a blank line before our insert
+            const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
+            footerStart.parentNode.insertBefore(spacer, footerStart);
+            footerStart.parentNode.insertBefore(wrapper, footerStart);
+        } else {
+            editor.appendChild(wrapper);
+        }
+        try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
+        try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
+    } catch (_) {}
+}
+
+function extractQCResponseTextFromHtml(html, stripFooter) {
+    try {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        let text = tmp.innerText || '';
+        text = text.replace(/\r\n/g, '\n');
+        // Narrow to section after header and separator of '=' or '-' and before the next separator
+        const re = /what\s+is\s+the\s+pr[^\n]*?\?[^\n]*\n[\s=\-]{3,}\n([\s\S]*?)(?:\n[\s=\-]{3,}\n|$)/i;
+        let m = text.match(re);
+        let body = (m && m[1]) ? m[1] : '';
+        if (!body) {
+            // Fallback: take lines after the header until footer markers
+            const re2 = /what\s+is\s+the\s+pr[^\n]*?\?\s*\n([\s\S]*?)$/i;
+            const m2 = text.match(re2);
+            body = (m2 && m2[1]) ? m2[1] : '';
+        }
+        if (!body) body = text;
+        // Optionally trim trailing footer like Best regards / Regards / Kind regards
+        if (stripFooter) {
+            body = body.replace(/\n\s*(best\s*regards|regards[,\s]*|kind\s*regards)[\s\S]*$/i, '\n');
+        }
+        // Trim leading/trailing whitespace but preserve internal spacing
+        return body.replace(/^\s+|\s+$/g, '');
+    } catch (_) { return ''; }
+}
+
+// HTML-preserving extraction of the PR section
+function extractQCResponseHtmlFromHtml(html, stripFooter) {
+    try {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        const children = Array.from(tmp.childNodes || []);
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const textOf = (n) => norm(n && (n.innerText || n.textContent || ''));
+        const isSep = (t) => /^[\s=\-_*]{6,}$/.test(t);
+        const isEmptyNode = (n) => {
+            if (!n) return true;
+            if (n.nodeType === 3) return !norm(n.textContent);
+            if (String(n.nodeName).toLowerCase() === 'br') return true;
+            return !norm(n.textContent);
+        };
+        const isBlockNode = (n) => {
+            const tag = String(n && n.nodeName || '').toLowerCase();
+            return ['p','div','ul','ol','table','pre','blockquote','h1','h2','h3','h4','h5','h6'].includes(tag);
+        };
+
+        // Find the header line
+        let headerIdx = -1;
+        for (let i = 0; i < children.length; i++) {
+            const t = textOf(children[i]);
+            if (/what\s+is\s+the\s+pr/.test(t)) { headerIdx = i; break; }
+        }
+        let start = headerIdx >= 0 ? headerIdx + 1 : 0;
+        while (start < children.length && isSep(textOf(children[start]))) start++;
+
+        let end = children.length;
+        for (let j = start; j < children.length; j++) {
+            const t = textOf(children[j]);
+            if (isSep(t) || /^(additional\s+context|acknowledge)/i.test(t) || (/what\s+is\s+the\s+pr/.test(t) && j > start)) { end = j; break; }
+        }
+        let slice = children.slice(start, end);
+        // Trim leading/trailing empties
+        while (slice.length && isEmptyNode(slice[0])) slice.shift();
+        while (slice.length && isEmptyNode(slice[slice.length - 1])) slice.pop();
+
+        if (stripFooter && slice.length) {
+            let cut = -1;
+            for (let k = 0; k < slice.length; k++) {
+                const t = textOf(slice[k]);
+                if (t.startsWith('best regards') || t.startsWith('regards,') || t.startsWith('kind regards')) { cut = k; break; }
+            }
+            if (cut >= 0) {
+                slice = slice.slice(0, cut);
+                while (slice.length && isEmptyNode(slice[slice.length - 1])) slice.pop();
+            }
+        }
+
+        if (!slice.length) return '';
+        const out = document.createElement('div');
+        for (let i = 0; i < slice.length; i++) {
+            const n = slice[i].cloneNode(true);
+            out.appendChild(n);
+            // Insert explicit blank line between adjacent block nodes, unless next is empty
+            const next = slice[i + 1];
+            if (next && isBlockNode(n) && isBlockNode(next) && !isEmptyNode(next)) {
+                const spacer = document.createElement('p');
+                spacer.innerHTML = '<br>';
+                out.appendChild(spacer);
+            }
+        }
+        return out.innerHTML;
+    } catch (_) { return ''; }
 }
 
 // Clean up toolbar listeners after activation
@@ -2427,6 +2868,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ success: false, error: e?.message || String(e) });
             }
             return true;
+        } else if (request.action === 'setAutoPasteQC') {
+            try { window.__kayakoAutoPasteQC = !!request.enabled; } catch(_) {}
         }
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
@@ -2485,6 +2928,7 @@ removeTimelineMaxWidth();
 narrowInternalNotes();
 setupAutoHyperlinking();
 setupHyperlinkShortcut();
+setupGlobalSendShortcut();
 setupAutoSizing();
 setupSidebarControls();
 ensureSidePanelClosedFixStyle();
@@ -2493,6 +2937,8 @@ setupTicketHistoryTracking();
 try { if (typeof setupInlineTranslation === 'function') { setupInlineTranslation(); } } catch (_) {}
 // Search page hover preview
 try { setupSearchHoverPreview(); } catch (_) {}
+// Auto‑paste QC template if enabled
+try { setupQCMacroAutoPaste(); } catch (_) {}
 
 // Apply saved visibility states on load
 try {

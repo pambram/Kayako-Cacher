@@ -1,5 +1,8 @@
 let __lastTicketHistoryCache = [];
 let __optimisticCleared = new Set();
+let __cachedRecents = [];
+let __cachedUnified = [];
+let __bookmarkTicket = null;
 
 document.addEventListener("DOMContentLoaded", function () {
     // Main editor elements
@@ -9,6 +12,7 @@ document.addEventListener("DOMContentLoaded", function () {
     let hideEventsToggle = document.getElementById("hide-events");
     let hideInternalNotesToggle = document.getElementById("hide-internal-notes");
     let hideDatesToggle = document.getElementById("hide-dates");
+    let autoPasteQCToggle = document.getElementById("auto-paste-qc");
 
     // Side conversation editor elements
     let sideMinWidthInput = document.getElementById("side-min-width");
@@ -21,6 +25,23 @@ document.addEventListener("DOMContentLoaded", function () {
     let addCurrentTicketBtn = document.getElementById("add-current-ticket");
     let clearHistoryBtn = document.getElementById("clear-history");
     let historyContainer = document.getElementById("ticket-history-container");
+    // Tabs and other containers
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+    const refreshRecentBtn = document.getElementById('refresh-recent');
+    const refreshBookmarksBtn = document.getElementById('refresh-bookmarks');
+    const recentContainer = document.getElementById('recent-tickets-container');
+    const bookmarksContainer = document.getElementById('bookmarks-container');
+    const ignoredBotsPublicInput = document.getElementById('ignored-bots-public');
+    const ignoredBotsInternalInput = document.getElementById('ignored-bots-internal');
+    const saveIgnoredBotsBtn = document.getElementById('save-ignored-bots');
+    // Bookmark modal
+    const modal = document.getElementById('bookmark-modal');
+    const modalTitle = document.getElementById('bookmark-modal-title');
+    const modalNote = document.getElementById('bookmark-note');
+    const modalSave = document.getElementById('bookmark-save');
+    const modalCancel = document.getElementById('bookmark-cancel');
+    const modalSuggest = document.getElementById('bookmark-suggest');
 
     // Load stored values or set defaults for main editor
     chrome.storage.local.get(["editorMinHeight", "editorMaxHeight"], (data) => {
@@ -29,7 +50,7 @@ document.addEventListener("DOMContentLoaded", function () {
     });
 
     // Load stored values or set defaults for side conversation editor and toggles
-    chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight", "hideEvents", "hideInternalNotes", "hideDates"], (data) => {
+    chrome.storage.local.get(["sideMinWidth", "sideMinHeight", "sideMaxHeight", "hideEvents", "hideInternalNotes", "hideDates", "autoPasteQCSendToCustomer"], (data) => {
         sideMinWidthInput.value = data.sideMinWidth || 500;
         sideMinHeightInput.value = data.sideMinHeight || 100;
         sideMaxHeightInput.value = data.sideMaxHeight || 300;
@@ -41,6 +62,11 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         if (hideDatesToggle) {
             hideDatesToggle.checked = data.hideDates || false;
+        }
+        if (autoPasteQCToggle) {
+            const hasNew = typeof data.autoPasteQCSendToCustomer !== 'undefined';
+            const hasOld = typeof data.autoPasteQC !== 'undefined';
+            autoPasteQCToggle.checked = hasNew ? !!data.autoPasteQCSendToCustomer : (hasOld ? !!data.autoPasteQC : true);
         }
     });
 
@@ -58,6 +84,19 @@ document.addEventListener("DOMContentLoaded", function () {
                     action: "toggleEvents",
                     hide: shouldHide
                 });
+            });
+        });
+    }
+
+    // Toggle: Auto‑paste QC template after macro
+    if (autoPasteQCToggle) {
+        autoPasteQCToggle.addEventListener("change", function() {
+            const enabled = this.checked;
+            chrome.storage.local.set({ autoPasteQCSendToCustomer: enabled, autoPasteQC: enabled });
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs && tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, { action: 'setAutoPasteQC', enabled });
+                }
             });
         });
     }
@@ -145,7 +184,7 @@ document.addEventListener("DOMContentLoaded", function () {
     
     // Ticket history event listeners
     if (refreshHistoryBtn) {
-        refreshHistoryBtn.addEventListener("click", loadTicketHistory);
+        refreshHistoryBtn.addEventListener("click", loadUnifiedRecent);
     }
     
     if (addCurrentTicketBtn) {
@@ -155,9 +194,17 @@ document.addEventListener("DOMContentLoaded", function () {
     if (clearHistoryBtn) {
         clearHistoryBtn.addEventListener("click", clearTicketHistory);
     }
+    if (refreshBookmarksBtn) {
+        refreshBookmarksBtn.addEventListener('click', loadBookmarks);
+    }
     
-    // Load ticket history on popup open (non-blocking: show cached → background refresh → animate diffs)
-    loadTicketHistory();
+    // Load unified Recent list on popup open (history + recents)
+    loadUnifiedRecent();
+    // Touch current ticket and populate recents/bookmarks/bots
+    touchCurrentTicket();
+    // We still load bookmarks and bots immediately
+    loadBookmarks();
+    loadIgnoredBots();
     
     // Apply the current toggle states on popup open
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -180,6 +227,25 @@ document.addEventListener("DOMContentLoaded", function () {
                     hide: true
                 });
             }
+        });
+    });
+    // Modal handlers
+    if (modalCancel) modalCancel.addEventListener('click', closeBookmarkModal);
+    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeBookmarkModal(); });
+    if (modalSave) modalSave.addEventListener('click', () => {
+        if (!__bookmarkTicket) return closeBookmarkModal();
+        const note = modalNote.value || '';
+        chrome.runtime.sendMessage({ action: 'addBookmark', bookmark: { id: __bookmarkTicket.id, url: __bookmarkTicket.url, domain: __bookmarkTicket.domain, title: __bookmarkTicket.title, note } }, () => {
+            showNotification('Bookmarked #' + __bookmarkTicket.id, 'success');
+            closeBookmarkModal();
+            loadBookmarks();
+        });
+    });
+    if (modalSuggest) modalSuggest.addEventListener('click', () => {
+        if (!__bookmarkTicket) return;
+        chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId: __bookmarkTicket.id, domain: __bookmarkTicket.domain }, (res) => {
+            const suggestion = res && res.success && res.preview ? (res.preview.snippet || res.preview.html || '') : '';
+            modalNote.value = suggestion || modalNote.value;
         });
     });
 });
@@ -205,13 +271,36 @@ function showRefreshIndicator(show) {
     if (show) ind.classList.add('show'); else ind.classList.remove('show');
 }
 
-function loadTicketHistory() {
-    // 1) Render cached immediately
+function loadUnifiedRecent() {
+    // 1) Render cached immediately (history + recents)
+    showRefreshIndicator(true);
     chrome.storage.local.get(['ticketHistory'], (data) => {
-        const cached = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
-        __lastTicketHistoryCache = cached;
-        displayTicketHistory(cached);
-        showRefreshIndicator(true);
+        const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+        __lastTicketHistoryCache = history;
+        // Show history immediately to avoid spinner hang
+        try { displayTicketHistory(history); } catch (_) {}
+        // fetch recents in parallel
+        try {
+            chrome.runtime.sendMessage({ action: 'getRecentTickets' }, (res) => {
+                __cachedRecents = (res && res.success && Array.isArray(res.recentTickets)) ? res.recentTickets : [];
+                const unified = mergeHistoryAndRecents(history, __cachedRecents);
+                __cachedUnified = unified;
+                try { displayTicketHistory(unified); } catch (_) {}
+                showRefreshIndicator(false);
+            });
+            // Hard timeout fallback in case background doesn't respond
+            setTimeout(() => {
+                if (!__cachedUnified || !__cachedUnified.length) {
+                    try { displayTicketHistory(history); } catch (_) {}
+                    showRefreshIndicator(false);
+                }
+            }, 1200);
+        } catch (_) {
+            const unified = mergeHistoryAndRecents(history, []);
+            __cachedUnified = unified;
+            try { displayTicketHistory(unified); } catch (_) {}
+            showRefreshIndicator(false);
+        }
     });
     // 2) Trigger background refresh; when done, diff and animate
     try {
@@ -220,12 +309,194 @@ function loadTicketHistory() {
                 const fresh = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
                 applyUnreadDiff(__lastTicketHistoryCache, fresh);
                 __lastTicketHistoryCache = fresh;
+                // Rebuild unified with latest history flags
+                const unified = mergeHistoryAndRecents(fresh, __cachedRecents);
+                __cachedUnified = unified;
+                // We don't redraw whole list to preserve inline animations; dots are handled by applyUnreadDiff
                 showRefreshIndicator(false);
             });
         });
     } catch (_) {
         showRefreshIndicator(false);
     }
+}
+
+function mergeHistoryAndRecents(history, recents){
+    const map = {};
+    const key = (x)=> `${x.domain||''}:${x.id}`;
+    (recents||[]).forEach(r => { if (!r) return; map[key(r)] = { ...r, touchedAt: r.touchedAt || r.timestamp || Date.now() }; });
+    (history||[]).forEach(h => { if (!h) return; const k = key(h); map[k] = { ...(map[k]||{}), ...h }; });
+    return Object.values(map).sort((a,b) => (Number(b.touchedAt||b.timestamp||b.lastCheckedAt||0) - Number(a.touchedAt||a.timestamp||a.lastCheckedAt||0)));
+}
+
+// Tabs
+function switchTab(target){
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.target === target));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${target}`));
+}
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+    switchTab(btn.dataset.target);
+});
+
+// Ignored bots
+function loadIgnoredBots(){
+    try {
+        chrome.runtime.sendMessage({ action: 'getIgnoredBotsLists' }, (res) => {
+            if (res && res.success) {
+                if (ignoredBotsPublicInput) ignoredBotsPublicInput.value = (res.public || ['hermes']).join(', ');
+                if (ignoredBotsInternalInput) ignoredBotsInternalInput.value = (res.internal || ['centralsupport-ai-acc','lachesis']).join(', ');
+            }
+        });
+    } catch (_) {}
+    // Fallback: read storage directly with defaults shortly after
+    setTimeout(() => {
+        try {
+            chrome.storage.local.get(['ignoredBotsPublic','ignoredBotsInternal'], (data) => {
+                if (ignoredBotsPublicInput && !ignoredBotsPublicInput.value) ignoredBotsPublicInput.value = (Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic : ['hermes']).join(', ');
+                if (ignoredBotsInternalInput && !ignoredBotsInternalInput.value) ignoredBotsInternalInput.value = (Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal : ['centralsupport-ai-acc','lachesis']).join(', ');
+            });
+        } catch (_) {}
+    }, 500);
+}
+if (saveIgnoredBotsBtn) {
+    saveIgnoredBotsBtn.addEventListener('click', () => {
+        const pub = (ignoredBotsPublicInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const intl = (ignoredBotsInternalInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        try {
+            chrome.runtime.sendMessage({ action: 'setIgnoredBotsLists', public: pub, internal: intl }, () => {
+                showNotification('Ignored bots saved', 'success');
+            });
+        } catch (_) {}
+    });
+}
+
+// Recents
+function touchCurrentTicket(){
+    try {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const tab = tabs && tabs[0];
+            if (!tab || !tab.url) return;
+            const m = tab.url.match(/\/agent\/conversations?\/(\d+)/);
+            if (!m) return;
+            const id = m[1];
+            const domain = new URL(tab.url).hostname;
+            const t = { id, url: tab.url, title: tab.title || `Ticket #${id}`, domain };
+            chrome.runtime.sendMessage({ action: 'touchTicket', ticket: t }, () => {});
+        });
+    } catch (_) {}
+}
+
+// Removed separate recent renderer; unified list uses displayTicketHistory
+
+// Bookmarks
+function loadBookmarks(){
+    try {
+        chrome.runtime.sendMessage({ action: 'getBookmarks' }, (res) => {
+            const list = (res && res.success && Array.isArray(res.bookmarks)) ? res.bookmarks : [];
+            displayBookmarks(list);
+        });
+    } catch (_) {}
+    // Fallback after 800ms if nothing rendered
+    setTimeout(() => {
+        const container = document.getElementById('bookmarks-container');
+        if (!container) return;
+        if (container.innerText && container.innerText.toLowerCase().includes('loading')) {
+            chrome.storage.local.get(['ticketBookmarks'], (data) => {
+                const list = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+                displayBookmarks(list);
+            });
+        }
+    }, 800);
+}
+
+function displayBookmarks(list){
+    const container = document.getElementById('bookmarks-container');
+    if (!container) return;
+    if (!list || !list.length) {
+        container.innerHTML = '<div class="no-history">No bookmarks yet</div>';
+        return;
+    }
+    let html = '';
+    list.forEach(b => {
+        const note = b.note ? `<div class="bookmark-note">${escapeHtml(String(b.note))}</div>` : '';
+        html += `
+            <div class="ticket-item" data-ticket-id="${b.id}">
+                <div class="ticket-info">
+                    <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${b.url}" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">#${b.id}</a></div>
+                    <div class="ticket-title" title="${b.title}">${b.title}</div>
+                    <div class="ticket-meta">${b.domain || ''}</div>
+                    ${note}
+                </div>
+                <div class="ticket-actions">
+                    <button class="ticket-action-btn open" data-url="${b.url}" title="Open ticket">📂</button>
+                    <button class="bookmark-action-btn edit-note" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">✏️</button>
+                    <button class="bookmark-action-btn auto-note" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">✨</button>
+                    <button class="bookmark-action-btn delete-bookmark" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">🗑️</button>
+                </div>
+            </div>
+        `;
+    });
+    container.innerHTML = html;
+    container.querySelectorAll('.ticket-action-btn.open').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const url = e.currentTarget.dataset.url;
+            chrome.tabs.create({ url, active: false });
+        });
+    });
+    container.querySelectorAll('.bookmark-action-btn.edit-note').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const ticketId = el.dataset.ticketId;
+            const domain = el.dataset.domain;
+            const note = prompt('Edit note for #' + ticketId + ':', '');
+            if (note == null) return;
+            chrome.runtime.sendMessage({ action: 'updateBookmark', bookmark: { id: ticketId, domain, note } }, () => {
+                loadBookmarks();
+            });
+        });
+    });
+    container.querySelectorAll('.bookmark-action-btn.auto-note').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const ticketId = el.dataset.ticketId;
+            const domain = el.dataset.domain;
+            chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId, domain }, (res) => {
+                const note = res && res.success && res.preview ? (res.preview.snippet || '') : '';
+                chrome.runtime.sendMessage({ action: 'updateBookmark', bookmark: { id: ticketId, domain, note } }, () => {
+                    loadBookmarks();
+                });
+            });
+        });
+    });
+    container.querySelectorAll('.bookmark-action-btn.delete-bookmark').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const ticketId = el.dataset.ticketId;
+            const domain = el.dataset.domain;
+            if (!confirm('Remove bookmark #' + ticketId + '?')) return;
+            chrome.runtime.sendMessage({ action: 'deleteBookmark', ticket: { id: ticketId, domain } }, () => {
+                loadBookmarks();
+            });
+        });
+    });
+}
+
+function openBookmarkModal(t){
+    __bookmarkTicket = t;
+    if (modalTitle) modalTitle.textContent = `Bookmark #${t.id}`;
+    if (modalNote) modalNote.value = '';
+    if (modal) modal.classList.remove('hidden');
+}
+function closeBookmarkModal(){
+    if (modal) modal.classList.add('hidden');
+    __bookmarkTicket = null;
+}
+
+// Escape HTML for safe note rendering
+function escapeHtml(s){
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function mapById(arr) {
@@ -341,11 +612,12 @@ function displayTicketHistory(history) {
                     <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}">#${ticket.id}</a>${unreadDot}</div>
                     <div class="ticket-title" title="${ticket.title}">${ticket.title}</div>
                     <div class="ticket-meta">
-                        ${ticket.customer ? ticket.customer + ' • ' : ''}${relativeTime}${ticket.domain ? ' • ' + ticket.domain : ''}${unreadMeta}
+                        ${ticket.customer ? ticket.customer + ' • ' : ''}${getRelativeTime(ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now())}${ticket.domain ? ' • ' + ticket.domain : ''}${unreadMeta}
                     </div>
                 </div>
                 <div class="ticket-actions">
                     <button class="ticket-action-btn open" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" title="Open ticket">📂</button>
+                    <button class="ticket-action-btn bookmark" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" data-title="${ticket.title}" title="Bookmark">⭐</button>
                     <button class="ticket-action-btn delete" data-ticket-id="${ticket.id}" title="Remove from history">🗑️</button>
                 </div>
                 <div class="confirm-inline">
@@ -479,6 +751,15 @@ function displayTicketHistory(history) {
             const item = e.currentTarget.closest('.ticket-item');
             if (!item) return;
             item.classList.add('confirming');
+        });
+    });
+
+    // Bookmark from history
+    container.querySelectorAll('.ticket-action-btn.bookmark').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const ticket = { id: el.dataset.ticketId, url: el.dataset.url, domain: el.dataset.domain, title: el.dataset.title };
+            openBookmarkModal(ticket);
         });
     });
 
