@@ -269,11 +269,11 @@ class KayakoAIEnhancer {
         e.stopPropagation();
         
         if (action.id === 'help_write') {
-          this.showCustomPromptModal(editorElement);
+          this.showCustomPromptModal(editorElement, e.currentTarget);
         } else if (action.id === 'hone_in') {
-          this.showHoneInModal(editorElement);
+          this.showHoneInModal(editorElement, e.currentTarget);
         } else {
-          this.handleAIAction(action, editorElement);
+          this.handleAIAction(action, editorElement, e.currentTarget);
         }
         
         dropdownMenu.style.display = 'none';
@@ -316,7 +316,7 @@ class KayakoAIEnhancer {
     return buttonWrapper;
   }
 
-  async handleAIAction(action, editorElement) {
+  async handleAIAction(action, editorElement, anchorEl = null) {
     if (this.isProcessing) {
       this.showNotification('⏳ Already processing, please wait...', 'warning');
       return;
@@ -370,7 +370,7 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing AI action: ${action.id} on text:`, textData.extractedText.substring(0, 100) + '...');
 
     this.isProcessing = true;
-    const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info', null, this.getAnchorForEditor(editorElement));
+    const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info', null, anchorEl || this.getAnchorForEditor(editorElement));
 
     try {
       // Get ticket context if enabled (skip for Beautify to keep it fast)
@@ -573,8 +573,9 @@ class KayakoAIEnhancer {
   }
 
   setEditorText(editorElement, textData, newText) {
-    // Restore links in the enhanced text
-    const textWithRestoredLinks = this.restoreLinksInText(newText, textData.linkMap);
+    // Normalize placeholders then restore links/images in the enhanced text
+    const normalized = this.normalizePlaceholders(newText, textData.linkMap, textData.imgMap);
+    const textWithRestoredLinks = this.restoreLinksInText(normalized, textData.linkMap);
     const textWithRestoredMedia = this.restoreImagesInText(textWithRestoredLinks, textData.imgMap);
     
     // If user selected a specific range, replace only that selection
@@ -667,6 +668,67 @@ class KayakoAIEnhancer {
     });
     console.log('🖼️ Images restored:', Object.keys(imgMap).length, 'images');
     return restoredText;
+  }
+
+  // Normalize placeholder variants like LINK2 or [ LINK 2 ] back to [LINK2]
+  normalizePlaceholders(text, linkMap = {}, imgMap = {}) {
+    if (!text) return text;
+    let out = text;
+    const toNormalize = [];
+    Object.keys(linkMap || {}).forEach((ph) => toNormalize.push(ph));
+    Object.keys(imgMap || {}).forEach((ph) => toNormalize.push(ph));
+    toNormalize.forEach((placeholder) => {
+      const m = placeholder.match(/^\[(LINK|IMG)(\d+)\]$/i);
+      if (!m) return;
+      const kind = m[1];
+      const num = m[2];
+      // Match variants with optional brackets/spaces/case-insensitive
+      const variantRe = new RegExp(`\\[?\\s*${kind}\\s*${num}\\s*\\]?`, 'gi');
+      out = out.replace(variantRe, `[${kind.toUpperCase()}${num}]`);
+    });
+    return out;
+  }
+
+  // Extract [IMG#] placeholders from text and return data URLs for those images using imgMap
+  async collectContextImagesAsDataUrls(contextText, imgMap) {
+    try {
+      if (!contextText || !imgMap) return [];
+      const placeholders = Array.from(new Set((contextText.match(/\[IMG\d+\]/g) || [])));
+      if (placeholders.length === 0) return [];
+      const dataUrls = [];
+      for (const ph of placeholders) {
+        const html = imgMap[ph];
+        if (!html) continue;
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        const img = div.querySelector('img');
+        if (!img) continue;
+        const src = img.getAttribute('src');
+        if (!src) continue;
+        try {
+          if (src.startsWith('data:')) {
+            dataUrls.push(src);
+          } else {
+            const res = await fetch(src, { credentials: 'include' });
+            const blob = await res.blob();
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            if (typeof dataUrl === 'string') {
+              dataUrls.push(dataUrl);
+            }
+          }
+        } catch (e) {
+          try { console.warn('⚠️ Could not include image in context:', e?.message || e); } catch (_) {}
+        }
+      }
+      return dataUrls;
+    } catch (_) {
+      return [];
+    }
   }
 
   // Replace content between PR template markers when placeholder is empty
@@ -1208,7 +1270,7 @@ class KayakoAIEnhancer {
     return null;
   }
 
-  showCustomPromptModal(editorElement) {
+  showCustomPromptModal(editorElement, anchorEl = null) {
     // Remove any existing modal
     const existingModal = document.querySelector('.kayako-ai-custom-prompt');
     if (existingModal) {
@@ -1274,7 +1336,7 @@ class KayakoAIEnhancer {
       if (customPrompt) {
         modal.remove();
         document.removeEventListener('keydown', onKeyDown);
-        this.handleCustomPrompt(customPrompt, editorElement);
+        this.handleCustomPrompt(customPrompt, editorElement, anchorEl);
       } else {
         this.showNotification('Please enter a prompt', 'warning');
       }
@@ -1289,7 +1351,7 @@ class KayakoAIEnhancer {
     });
   }
 
-  showHoneInModal(editorElement) {
+  showHoneInModal(editorElement, anchorEl = null) {
     // Capture current selection inside the editor BEFORE showing the modal
     let capturedRange = null;
     try {
@@ -1360,7 +1422,7 @@ class KayakoAIEnhancer {
       if (instructions) {
         modal.remove();
         document.removeEventListener('keydown', onKeyDown);
-        this.handleHoneIn(instructions, editorElement, capturedRange);
+        this.handleHoneIn(instructions, editorElement, capturedRange, anchorEl);
       } else {
         this.showNotification('Please enter instructions', 'warning');
       }
@@ -1374,7 +1436,7 @@ class KayakoAIEnhancer {
     });
   }
 
-  async handleHoneIn(instructions, editorElement, preCapturedRange = null) {
+  async handleHoneIn(instructions, editorElement, preCapturedRange = null, anchorEl = null) {
     if (this.isProcessing) {
       this.showNotification('⏳ Already processing, please wait...', 'warning');
       return;
@@ -1415,7 +1477,7 @@ class KayakoAIEnhancer {
     }
 
     this.isProcessing = true;
-    const processingNotification = this.showPersistentNotification('🤖 Honing in...', 'info', null, this.getAnchorForEditor(editorElement));
+    const processingNotification = this.showPersistentNotification('🤖 Honing in...', 'info', null, anchorEl || this.getAnchorForEditor(editorElement));
     
     try {
       // Optional ticket context (like other actions; skip would be fine too)
@@ -1446,7 +1508,7 @@ class KayakoAIEnhancer {
     }
   }
 
-  async handleCustomPrompt(customPrompt, editorElement) {
+  async handleCustomPrompt(customPrompt, editorElement, anchorEl = null) {
     if (this.isProcessing) {
       this.showNotification('⏳ Already processing, please wait...', 'warning');
       return;
@@ -1460,7 +1522,7 @@ class KayakoAIEnhancer {
     console.log(`🤖 Processing custom prompt:`, customPrompt);
 
     this.isProcessing = true;
-    const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info', null, this.getAnchorForEditor(editorElement));
+    const processingNotification = this.showPersistentNotification(`🤖 Generating content...`, 'info', null, anchorEl || this.getAnchorForEditor(editorElement));
 
     try {
       // For Help Me Write, ignore selections. Always use editor content as context.
@@ -1475,6 +1537,8 @@ class KayakoAIEnhancer {
       } else {
         contextText = (textData.fullText || '').trim();
       }
+      // Collect inline images referenced in context via [IMG#] placeholders and convert to data URLs
+      const contextImages = await this.collectContextImagesAsDataUrls(contextText, textData.imgMap);
       // What the UI should show as "Current text" and what REPLACE operates on: PR placeholder (or whole text when no template)
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
@@ -1506,10 +1570,10 @@ class KayakoAIEnhancer {
         }
       }
 
-      // Append formatting guidance for limited HTML output
-      fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Return only the HTML.';
+      // Append formatting guidance for limited HTML output and placeholders
+      fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
 
-      const generatedText = await this.callAI('Generate a customer facing response (i.e. a public response, or "PR") based on the following request:', fullPrompt, ticketContext);
+      const generatedText = await this.callAI('Generate a customer facing response (i.e. a public response, or "PR") based on the following request:', fullPrompt, ticketContext, contextImages);
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -1778,8 +1842,9 @@ class KayakoAIEnhancer {
         // Use the same surgical approach as regular text replacement
         this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
+        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
         const textWithRestored = this.restoreImagesInText(
-          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          this.restoreLinksInText(normalized, originalTextData.linkMap),
           originalTextData.imgMap
         );
         editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
@@ -1796,8 +1861,9 @@ class KayakoAIEnhancer {
         this.setEditorText(editorElement, currentTextData, generatedText);
       } else {
         console.log('📝 No template detected, replacing full content');
+        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
         const textWithRestored = this.restoreImagesInText(
-          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          this.restoreLinksInText(normalized, originalTextData.linkMap),
           originalTextData.imgMap
         );
         editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
@@ -1813,8 +1879,9 @@ class KayakoAIEnhancer {
       if (range && editorElement.contains(range.commonAncestorContainer)) {
         // Insert at cursor position
         console.log('📍 Inserting at cursor position');
+        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
         const textWithRestoredLinks = this.restoreImagesInText(
-          this.restoreLinksInText(generatedText, originalTextData.linkMap),
+          this.restoreLinksInText(normalized, originalTextData.linkMap),
           originalTextData.imgMap
         );
         
@@ -1963,7 +2030,7 @@ class KayakoAIEnhancer {
     return '';
   }
 
-  async callAI(prompt, text, ticketContext = '') {
+  async callAI(prompt, text, ticketContext = '', images = []) {
     // Base system prompt
     let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions.';
     
@@ -1981,6 +2048,18 @@ class KayakoAIEnhancer {
       userContent = `${ticketContext}${userContent}`;
     }
     
+    const userMessage = {
+      role: 'user'
+    };
+    if (images && images.length > 0) {
+      userMessage.content = [
+        { type: 'text', text: userContent },
+        ...images.map((url) => ({ type: 'image_url', image_url: { url } }))
+      ];
+    } else {
+      userMessage.content = userContent;
+    }
+
     const requestBody = {
       model: model,
       messages: [
@@ -1988,10 +2067,7 @@ class KayakoAIEnhancer {
           role: 'system',
           content: systemPrompt
         },
-        {
-          role: 'user',
-          content: userContent
-        }
+        userMessage
       ],
       max_completion_tokens: ticketContext ? 3000 : 2000 // More tokens when using context
     };
@@ -2125,7 +2201,16 @@ class KayakoAIEnhancer {
   getAnchorForEditor(editorElement) {
     try {
       const container = editorElement.closest('.ko-text-editor__container_1p5g6r') || document.body;
-      const aiBtn = container.querySelector('.kayako-ai-dropdown');
+      // Prefer the visible AI button inside this editor container
+      let aiBtn = container.querySelector('.kayako-ai-dropdown');
+      if (!aiBtn) {
+        // Fallback: find the closest visible AI button in the DOM
+        const all = document.querySelectorAll('.kayako-ai-dropdown');
+        for (const btn of all) {
+          const rect = btn.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) { aiBtn = btn; break; }
+        }
+      }
       return aiBtn || container;
     } catch (_) {
       return null;
