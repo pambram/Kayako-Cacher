@@ -70,13 +70,11 @@
         <div class="tabbar">
             <button class="tab-btn active" data-target="recent">Recent</button>
             <button class="tab-btn" data-target="bookmarks">Bookmarks</button>
-            <button class="tab-btn" data-target="bots">Bots</button>
         </div>
 
         <div id="tab-recent" class="tab-panel active">
         <div class="ticket-history-controls">
             <button id="refresh-history" class="small-btn">🔄 Refresh</button>
-            <button id="add-current-ticket" class="small-btn">➕ Add Current</button>
             <button id="clear-history" class="small-btn danger">🗑️ Clear All</button>
         </div>
         
@@ -92,6 +90,7 @@
         <div id="tab-bookmarks" class="tab-panel">
             <div class="ticket-history-controls">
                 <button id="refresh-bookmarks" class="small-btn">🔄 Refresh</button>
+                <button id="add-current-ticket" class="small-btn">➕ Add Current</button>
             </div>
             <div id="bookmarks-container" class="ticket-history">
                 <div class="loading">Loading bookmarks…</div>
@@ -101,16 +100,25 @@
             </div>
         </div>
 
-        <div id="tab-bots" class="tab-panel">
-            <div class="bot-settings">
-                <label for="ignored-bots-public">Ignore these for Public replies (comma separated)</label>
-                <input id="ignored-bots-public" type="text" value="hermes" placeholder="hermes" />
-                <label for="ignored-bots-internal">Ignore these for Internal notes (comma separated)</label>
-                <input id="ignored-bots-internal" type="text" value="centralsupport-ai-acc, lachesis" placeholder="centralsupport-ai-acc, lachesis" />
-                <div class="ticket-history-controls">
-                    <button id="save-ignored-bots" class="small-btn">💾 Save</button>
+        <!-- Notifications settings with Advanced panel -->
+        <div class="section">
+            <h3>Notifications <small><a href="#" id="toggle-advanced-notifications">Advanced</a></small></h3>
+            <div id="advanced-notifications" class="hidden">
+                <div class="bot-settings">
+                    <label for="llm-api-key">OpenAI/OpenRouter API Key</label>
+                    <input id="llm-api-key" type="password" placeholder="sk-... or openrouter_..." />
+                    <div class="ticket-history-controls">
+                        <button id="save-llm-api-key" class="small-btn">💾 Save</button>
+                    </div>
+                    <label for="ignored-bots-public">Ignore these for Public replies (comma separated)</label>
+                    <input id="ignored-bots-public" type="text" value="hermes" placeholder="hermes" />
+                    <label for="ignored-bots-internal">Ignore these for Internal notes (comma separated)</label>
+                    <input id="ignored-bots-internal" type="text" value="centralsupport-ai-acc, lachesis" placeholder="centralsupport-ai-acc, lachesis" />
+                    <div class="ticket-history-controls">
+                        <button id="save-ignored-bots" class="small-btn">💾 Save</button>
+                    </div>
+                    <small>Posts from these names/emails are ignored for unread notifications.</small>
                 </div>
-                <small>Posts from these names/emails are ignored for unread notifications.</small>
             </div>
         </div>
     </div>

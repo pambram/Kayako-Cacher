@@ -35,6 +35,10 @@ document.addEventListener("DOMContentLoaded", function () {
     const ignoredBotsPublicInput = document.getElementById('ignored-bots-public');
     const ignoredBotsInternalInput = document.getElementById('ignored-bots-internal');
     const saveIgnoredBotsBtn = document.getElementById('save-ignored-bots');
+    const toggleAdvanced = document.getElementById('toggle-advanced-notifications');
+    const advancedPanel = document.getElementById('advanced-notifications');
+    const llmApiKeyInput = document.getElementById('llm-api-key');
+    const saveLlmApiKeyBtn = document.getElementById('save-llm-api-key');
     // Bookmark modal
     const modal = document.getElementById('bookmark-modal');
     const modalTitle = document.getElementById('bookmark-modal-title');
@@ -184,18 +188,26 @@ document.addEventListener("DOMContentLoaded", function () {
     
     // Ticket history event listeners
     if (refreshHistoryBtn) {
-        refreshHistoryBtn.addEventListener("click", loadUnifiedRecent);
+        refreshHistoryBtn.addEventListener("click", () => {
+            setButtonLoading(refreshHistoryBtn, true, 'Refreshing…');
+            loadUnifiedRecent();
+            setTimeout(() => setButtonLoading(refreshHistoryBtn, false), 1300);
+        });
     }
     
     if (addCurrentTicketBtn) {
-        addCurrentTicketBtn.addEventListener("click", addCurrentTicket);
+        addCurrentTicketBtn.addEventListener("click", bookmarkCurrentFromActiveTab);
     }
     
     if (clearHistoryBtn) {
         clearHistoryBtn.addEventListener("click", clearTicketHistory);
     }
     if (refreshBookmarksBtn) {
-        refreshBookmarksBtn.addEventListener('click', loadBookmarks);
+        refreshBookmarksBtn.addEventListener('click', () => {
+            setButtonLoading(refreshBookmarksBtn, true, 'Refreshing…');
+            loadBookmarks();
+            setTimeout(() => setButtonLoading(refreshBookmarksBtn, false), 1000);
+        });
     }
     
     // Load unified Recent list on popup open (history + recents)
@@ -205,6 +217,48 @@ document.addEventListener("DOMContentLoaded", function () {
     // We still load bookmarks and bots immediately
     loadBookmarks();
     loadIgnoredBots();
+    // Load API key if present
+    chrome.storage.local.get(['openrouterApiKey','openaiApiKey'], (data) => {
+        if (llmApiKeyInput) llmApiKeyInput.value = data.openrouterApiKey || data.openaiApiKey || '';
+    });
+    // Advanced toggle
+    if (toggleAdvanced && advancedPanel) {
+        toggleAdvanced.addEventListener('click', (e) => {
+            e.preventDefault();
+            advancedPanel.classList.toggle('hidden');
+        });
+    }
+    // Save API key (auto-detect provider)
+    if (saveLlmApiKeyBtn && llmApiKeyInput) {
+        saveLlmApiKeyBtn.addEventListener('click', () => {
+            const key = (llmApiKeyInput.value || '').trim();
+            setButtonLoading(saveLlmApiKeyBtn, true, 'Saving…');
+            const store = {};
+            if (key.startsWith('openrouter_')) {
+                store.openrouterApiKey = key;
+                store.llmEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
+                store.llmModel = 'gpt-5-mini';
+                store.openaiApiKey = '';
+            } else if (key.startsWith('sk-')) {
+                store.openaiApiKey = key;
+                store.llmEndpoint = 'https://api.openai.com/v1/chat/completions';
+                // Use a compatible OpenAI model when not using OpenRouter
+                store.llmModel = 'gpt-4o-mini';
+                store.openrouterApiKey = '';
+            } else {
+                // Unknown; store generically and default to OpenRouter
+                store.openrouterApiKey = key;
+                store.llmEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
+                store.llmModel = 'gpt-5-mini';
+                store.openaiApiKey = '';
+            }
+            chrome.storage.local.set(store, () => {
+                showNotification('API key saved', 'success');
+                setButtonLoading(saveLlmApiKeyBtn, false, 'Saved ✓');
+                setTimeout(() => { if (saveLlmApiKeyBtn) saveLlmApiKeyBtn.textContent = '💾 Save'; }, 1000);
+            });
+        });
+    }
     
     // Apply the current toggle states on popup open
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -243,9 +297,22 @@ document.addEventListener("DOMContentLoaded", function () {
     });
     if (modalSuggest) modalSuggest.addEventListener('click', () => {
         if (!__bookmarkTicket) return;
-        chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId: __bookmarkTicket.id, domain: __bookmarkTicket.domain }, (res) => {
-            const suggestion = res && res.success && res.preview ? (res.preview.snippet || res.preview.html || '') : '';
-            modalNote.value = suggestion || modalNote.value;
+        setButtonLoading(modalSuggest, true, 'Generating…');
+        chrome.runtime.sendMessage({ action: 'generateBookmarkNote', ticketId: __bookmarkTicket.id, domain: __bookmarkTicket.domain }, (res) => {
+            const suggestion = res && res.success ? (res.note || '') : '';
+            if (suggestion) {
+                modalNote.value = suggestion;
+                setButtonLoading(modalSuggest, false, 'Generated ✓');
+                setTimeout(() => { if (modalSuggest) modalSuggest.textContent = '✨ Suggest'; }, 1000);
+            } else {
+                // Fallback to simple preview
+                chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId: __bookmarkTicket.id, domain: __bookmarkTicket.domain }, (r) => {
+                    const s = r && r.success && r.preview ? (r.preview.snippet || r.preview.html || '') : '';
+                    modalNote.value = s || modalNote.value;
+                    setButtonLoading(modalSuggest, false, 'Generated ✓');
+                    setTimeout(() => { if (modalSuggest) modalSuggest.textContent = '✨ Suggest'; }, 1000);
+                });
+            }
         });
     });
 });
@@ -364,11 +431,14 @@ if (saveIgnoredBotsBtn) {
     saveIgnoredBotsBtn.addEventListener('click', () => {
         const pub = (ignoredBotsPublicInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
         const intl = (ignoredBotsInternalInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        setButtonLoading(saveIgnoredBotsBtn, true, 'Saving…');
         try {
             chrome.runtime.sendMessage({ action: 'setIgnoredBotsLists', public: pub, internal: intl }, () => {
                 showNotification('Ignored bots saved', 'success');
+                setButtonLoading(saveIgnoredBotsBtn, false, 'Saved ✓');
+                setTimeout(() => { if (saveIgnoredBotsBtn) saveIgnoredBotsBtn.textContent = '💾 Save'; }, 1000);
             });
-        } catch (_) {}
+        } catch (_) { setButtonLoading(saveIgnoredBotsBtn, false); }
     });
 }
 
@@ -430,19 +500,29 @@ function displayBookmarks(list){
                     ${note}
                 </div>
                 <div class="ticket-actions">
-                    <button class="ticket-action-btn open" data-url="${b.url}" title="Open ticket">📂</button>
                     <button class="bookmark-action-btn edit-note" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">✏️</button>
                     <button class="bookmark-action-btn auto-note" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">✨</button>
                     <button class="bookmark-action-btn delete-bookmark" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">🗑️</button>
+                </div>
+                <div class="confirm-inline">
+                    <span class="confirm-text">Sure?</span>
+                    <button class="btn yes" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">Yes</button>
+                    <button class="btn no">No</button>
                 </div>
             </div>
         `;
     });
     container.innerHTML = html;
-    container.querySelectorAll('.ticket-action-btn.open').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+    // Make ticket id clickable in bookmarks tab
+    container.querySelectorAll('.ticket-id-link').forEach(a => {
+        a.addEventListener('click', (e) => {
+            e.preventDefault();
             const url = e.currentTarget.dataset.url;
-            chrome.tabs.create({ url, active: false });
+            try {
+                chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {});
+            } catch (_) {
+                try { chrome.tabs.create({ url, active: false }); } catch (_) {}
+            }
         });
     });
     container.querySelectorAll('.bookmark-action-btn.edit-note').forEach(btn => {
@@ -462,10 +542,15 @@ function displayBookmarks(list){
             const el = e.currentTarget;
             const ticketId = el.dataset.ticketId;
             const domain = el.dataset.domain;
-            chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId, domain }, (res) => {
-                const note = res && res.success && res.preview ? (res.preview.snippet || '') : '';
-                chrome.runtime.sendMessage({ action: 'updateBookmark', bookmark: { id: ticketId, domain, note } }, () => {
-                    loadBookmarks();
+            setButtonLoading(el, true, 'Generating…');
+            chrome.runtime.sendMessage({ action: 'generateBookmarkNote', ticketId, domain }, (res) => {
+                const note = res && res.success ? (res.note || '') : '';
+                const save = (n)=> chrome.runtime.sendMessage({ action: 'updateBookmark', bookmark: { id: ticketId, domain, note: n } }, () => { setButtonLoading(el, false, 'Saved ✓'); setTimeout(() => { el.textContent = '✨'; }, 1000); loadBookmarks(); });
+                if (note) return save(note);
+                // Fallback
+                chrome.runtime.sendMessage({ action: 'fetchTicketPreview', ticketId, domain }, (r) => {
+                    const s = r && r.success && r.preview ? (r.preview.snippet || '') : '';
+                    save(s);
                 });
             });
         });
@@ -616,7 +701,6 @@ function displayTicketHistory(history) {
                     </div>
                 </div>
                 <div class="ticket-actions">
-                    <button class="ticket-action-btn open" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" title="Open ticket">📂</button>
                     <button class="ticket-action-btn bookmark" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}" data-title="${ticket.title}" title="Bookmark">⭐</button>
                     <button class="ticket-action-btn delete" data-ticket-id="${ticket.id}" title="Remove from history">🗑️</button>
                 </div>
@@ -638,52 +722,17 @@ function displayTicketHistory(history) {
             const url = el.dataset.url;
             const ticketId = el.dataset.ticketId;
             const domain = el.dataset.domain;
-            chrome.tabs.create({ url: url, active: false });
-            // Baseline and clear inline (no full list refresh) with fade
+            try { chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {}); } catch (_) { try { chrome.tabs.create({ url: url, active: false }); } catch (_) {} }
             try {
                 __optimisticCleared.add(String(ticketId));
                 chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
                     const item = el.closest('.ticket-item');
-                    if (item) {
-                        const dot = item.querySelector('.unread-dot');
-                        if (dot) {
-                            dot.classList.add('fade-out');
-                            setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
-                        }
-                        const meta = item.querySelector('.ticket-meta');
-                        if (meta) {
-                            const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
-                            meta.classList.add('fade-out');
-                            setTimeout(() => {
-                                meta.textContent = newText;
-                                meta.classList.remove('fade-out');
-                                meta.classList.add('fade-in');
-                                setTimeout(() => meta.classList.remove('fade-in'), 200);
-                            }, 200);
-                        }
-                    }
+                    clearUnreadForItem(item);
                 });
             } catch (_) {
                 __optimisticCleared.add(String(ticketId));
                 const item = el.closest('.ticket-item');
-                if (item) {
-                    const dot = item.querySelector('.unread-dot');
-                    if (dot) {
-                        dot.classList.add('fade-out');
-                        setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
-                    }
-                    const meta = item.querySelector('.ticket-meta');
-                    if (meta) {
-                        const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
-                        meta.classList.add('fade-out');
-                        setTimeout(() => {
-                            meta.textContent = newText;
-                            meta.classList.remove('fade-out');
-                            meta.classList.add('fade-in');
-                            setTimeout(() => meta.classList.remove('fade-in'), 200);
-                        }, 200);
-                    }
-                }
+                clearUnreadForItem(item);
             }
         });
     });
@@ -696,56 +745,22 @@ function displayTicketHistory(history) {
             const url = el.dataset.url;
             const ticketId = el.dataset.ticketId;
             const domain = el.dataset.domain;
-            chrome.tabs.create({ url: url, active: false });
+            try { chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {}); } catch (_) { try { chrome.tabs.create({ url: url, active: false }); } catch (_) {} }
             try {
                 __optimisticCleared.add(String(ticketId));
                 chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
                     const item = el.closest('.ticket-item');
-                    if (item) {
-                        const dot = item.querySelector('.unread-dot');
-                        if (dot) {
-                            dot.classList.add('fade-out');
-                            setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
-                        }
-                        const meta = item.querySelector('.ticket-meta');
-                        if (meta) {
-                            const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
-                            meta.classList.add('fade-out');
-                            setTimeout(() => {
-                                meta.textContent = newText;
-                                meta.classList.remove('fade-out');
-                                meta.classList.add('fade-in');
-                                setTimeout(() => meta.classList.remove('fade-in'), 200);
-                            }, 200);
-                        }
-                    }
+                    clearUnreadForItem(item);
                 });
             } catch (_) {
                 __optimisticCleared.add(String(ticketId));
                 const item = el.closest('.ticket-item');
-                if (item) {
-                    const dot = item.querySelector('.unread-dot');
-                    if (dot) {
-                        dot.classList.add('fade-out');
-                        setTimeout(() => { if (dot && dot.parentNode) dot.remove(); }, 200);
-                    }
-                    const meta = item.querySelector('.ticket-meta');
-                    if (meta) {
-                        const newText = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
-                        meta.classList.add('fade-out');
-                        setTimeout(() => {
-                            meta.textContent = newText;
-                            meta.classList.remove('fade-out');
-                            meta.classList.add('fade-in');
-                            setTimeout(() => meta.classList.remove('fade-in'), 200);
-                        }, 200);
-                    }
-                }
+                clearUnreadForItem(item);
             }
         });
     });
     
-    // Delete button -> inline confirm
+    // Delete button -> inline confirm (Recents)
     container.querySelectorAll('.ticket-action-btn.delete').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const item = e.currentTarget.closest('.ticket-item');
@@ -759,11 +774,18 @@ function displayTicketHistory(history) {
         btn.addEventListener('click', (e) => {
             const el = e.currentTarget;
             const ticket = { id: el.dataset.ticketId, url: el.dataset.url, domain: el.dataset.domain, title: el.dataset.title };
-            openBookmarkModal(ticket);
+            try {
+                chrome.runtime.sendMessage({ action: 'addBookmark', bookmark: ticket }, () => {
+                    showNotification('Bookmarked #' + ticket.id, 'success');
+                    try { loadBookmarks(); } catch (_) {}
+                });
+            } catch (_) {
+                openBookmarkModal(ticket);
+            }
         });
     });
 
-    // Confirm Yes -> remove only that ticket and update storage
+    // Confirm Yes -> remove only that ticket and update storage (Recents)
     container.querySelectorAll('.confirm-inline .yes').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const el = e.currentTarget;
@@ -824,6 +846,30 @@ function addCurrentTicket() {
                 showNotification('Failed to add ticket', 'error');
             }
         });
+    });
+}
+
+// Bookmark the current active ticket (open modal for optional note)
+function bookmarkCurrentFromActiveTab() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const currentTab = tabs && tabs[0];
+        if (!currentTab || !currentTab.url) {
+            showNotification('Not on a ticket page', 'error');
+            return;
+        }
+        const urlMatch = currentTab.url.match(/\/agent\/conversations?\/(\d+)/);
+        if (!urlMatch) {
+            showNotification('Not on a ticket page', 'error');
+            return;
+        }
+        const ticketId = urlMatch[1];
+        const ticket = {
+            id: ticketId,
+            url: currentTab.url,
+            domain: new URL(currentTab.url).hostname,
+            title: currentTab.title || `Ticket #${ticketId}`
+        };
+        openBookmarkModal(ticket);
     });
 }
 
@@ -895,5 +941,18 @@ function showNotification(message, type = 'info') {
             notification.remove();
         }
     }, 3000);
+}
+
+// Small helper for button loading states
+function setButtonLoading(btn, loading, text) {
+    if (!btn) return;
+    if (loading) {
+        btn.dataset._label = btn.textContent;
+        btn.textContent = typeof text === 'string' ? text : 'Working…';
+        btn.disabled = true;
+    } else {
+        btn.textContent = text || btn.dataset._label || btn.textContent || '';
+        btn.disabled = false;
+    }
 }
 

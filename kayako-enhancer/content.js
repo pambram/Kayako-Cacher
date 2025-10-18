@@ -1609,6 +1609,16 @@ function setupEditorAutoSizing() {
         // console.log('📏 Setting up auto-sizing for editor:', editor);
         editor.dataset.autoSizingSetup = 'true';
         
+        // Allow native drag-to-resize and scrolling within the editor
+        try {
+            editor.style.resize = 'vertical';
+            editor.style.overflowY = 'auto';
+        } catch (_) {}
+        const wrapEl = editor.closest('.fr-wrapper');
+        if (wrapEl) {
+            try { wrapEl.style.overflow = 'visible'; } catch (_) {}
+        }
+
         // Add animation classes
         editor.classList.add('auto-sizing');
         const wrapper = editor.closest('.fr-wrapper');
@@ -1629,6 +1639,8 @@ function setupEditorAutoSizing() {
         // Expand when content changes (e.g., macro inserts template)
         const expandOnChange = () => {
             try { activateEditor(editor); } catch(_) {}
+            // If AI is/was running and content changed, allow normal shrinking again
+            try { if (window.__kayakoAIActive) window.__kayakoAIActive = false; } catch (_) {}
         };
         editor.addEventListener('input', expandOnChange);
         editor.addEventListener('fr-change', expandOnChange);
@@ -1712,12 +1724,16 @@ function applySidebarWidthInline(sidebar, widthPx, important) {
     set('max-width', w + 'px');
     set('flex', `0 0 ${w}px`);
     set('flex-basis', w + 'px');
-    const inner = sidebar && sidebar.querySelector && sidebar.querySelector('[class*="ko-agent-content_layout__fields_"]');
-    if (inner) {
-        const setIn = important ? (p, v) => { try { inner.style.setProperty(p, v, 'important'); } catch(_) {} } : (p, v) => { inner.style[p.replace(/-([a-z])/g,(m,g1)=>g1.toUpperCase())] = v; };
-        ['width','min-width','max-width','flex-basis'].forEach(k => setIn(k, w + 'px'));
-        setIn('flex', `0 0 ${w}px`);
-    }
+}
+
+function clearSidebarInlineWidth(sidebar) {
+    try {
+        ['width','minWidth','maxWidth','flex','flexBasis'].forEach((p) => { try { sidebar.style[p] = ''; } catch(_) {} });
+        const inner = sidebar && sidebar.querySelector && sidebar.querySelector('[class*="ko-agent-content_layout__fields_"]');
+        if (inner) {
+            ['width','minWidth','maxWidth','flex','flexBasis'].forEach((p) => { try { inner.style[p] = ''; } catch(_) {} });
+        }
+    } catch (_) {}
 }
 
 function attachSidebarObserver(sidebar) {
@@ -1759,7 +1775,6 @@ function setupSidebarControls() {
                 .kayako-sidebar-toggle:hover { background:#e9ecef; }
                 .kayako-sidebar-ui { pointer-events:auto !important; visibility:visible !important; }
                 .kayako-sidebar-collapsed { width:12px !important; min-width:12px !important; max-width:12px !important; flex:0 0 12px !important; flex-basis:12px !important; overflow:hidden !important; padding:0 !important; }
-                .kayako-sidebar-collapsed > *:not(.kayako-sidebar-ui) { display:none !important; }
                 .kayako-sidebar-collapsed .kayako-sidebar-toggle { left:0 !important; width:12px !important; height:24px; border-radius:0; }
             `;
             document.head.appendChild(style);
@@ -1832,18 +1847,24 @@ function setupSidebarControls() {
             const setCollapsed = (collapsed) => {
                 if (collapsed) {
                     sidebar.classList.add('kayako-sidebar-collapsed');
+                    // Clear inline enforced sizes so CSS collapse can take effect
+                    clearSidebarInlineWidth(sidebar);
+                    try { sidebar.dataset.enforceUntilTs = '0'; } catch(_) {}
+                    try { sidebar.dataset.userResizing = 'false'; } catch(_) {}
                     // Ensure toggle visible inside the stub
                     toggle.style.left = '0px';
                 } else {
                     sidebar.classList.remove('kayako-sidebar-collapsed');
                     // Restore width from storage or default
+                    // Clear any residual inline widths from prior versions
+                    clearSidebarInlineWidth(sidebar);
                     getPreferredSidebarWidth(sidebar, (w) => {
                         // briefly enforce for reflow windows
                         try { sidebar.dataset.enforceUntilTs = String(Date.now() + 800); } catch(_) {}
-                        applyWidth(w, true);
-                        requestAnimationFrame(() => applyWidth(w, true));
-                        setTimeout(() => applyWidth(w, true), 30);
-                        setTimeout(() => applyWidth(w, true), 120);
+                        applySidebarWidthInline(sidebar, w, true);
+                        requestAnimationFrame(() => applySidebarWidthInline(sidebar, w, true));
+                        setTimeout(() => applySidebarWidthInline(sidebar, w, true), 30);
+                        setTimeout(() => applySidebarWidthInline(sidebar, w, true), 120);
                         try { chrome.storage.local.set({ sidebarWidth: w }); } catch(_) {}
                     });
                     // Float toggle into the gutter for easy click
@@ -1872,7 +1893,9 @@ function setupSidebarControls() {
                         toggle.style.left = '0px';
                     } else if (d && d.sidebarWidth) {
                         const w = d.sidebarWidth;
-                        applyWidth(w, true);
+                        // Ensure inner fields don't carry stale inline widths
+                        clearSidebarInlineWidth(sidebar);
+                        applySidebarWidthInline(sidebar, w, true);
                         toggle.style.left = '-18px';
                         if (!sidebar.dataset.initialWidth) { try { sidebar.dataset.initialWidth = String(w); } catch(_) {} }
                     }
@@ -1947,6 +1970,10 @@ function handleEditorBlur(editor) {
     // console.log('📏 Editor blurred, shrinking to min height');
     // Do not shrink when the window/tab itself loses focus (user switched apps)
     try {
+        if (window.__kayakoAIActive) {
+            // While AI modal/workflow is active, avoid shrinking
+            return;
+        }
         if (window.__kayakoMacroActive) {
             // While macro selection UI is active, avoid shrinking
             return;
@@ -2119,6 +2146,14 @@ function setupToolbarButtonListeners(editor) {
             if (isMacroTrigger) {
                 window.__kayakoMacroActive = true;
                 window.__kayakoLastMacroEditor = editor;
+            }
+            // If this is an AI trigger/modal action, keep editor expanded while AI runs
+            const isAITrigger = !!e.target.closest('.kayako-ai-dropdown, [class*="kayako-ai"]');
+            if (isAITrigger) {
+                try {
+                    window.__kayakoAIActive = true;
+                    window.__kayakoLastAIEditor = editor;
+                } catch (_) {}
             }
         }
     };
@@ -2337,34 +2372,36 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         // Decide whether to strip footer based on whether macro already added one
         const footerStart = findFooterStartInEditor(editor);
         // Extract only the "PR to the customer" section as HTML; optionally strip footer
-        let extracted = extractQCResponseHtmlFromHtml(html, !!footerStart) || '';
-        // Normalize spacing to avoid Froala reflow inserting NBSP/tabs while editing
-        extracted = sanitizeHtmlForEditor(extracted);
+        const extracted = extractQCResponseHtmlFromHtml(html, !!footerStart) || '';
         if (!extracted || !extracted.trim()) {
             // console.log('✂️ QC paste skipped: empty extraction');
             return;
         }
-        const wrapper = document.createElement('div');
-        wrapper.setAttribute('data-kayako-qc-snippet', '1');
-        // Preserve HTML formatting to match what the customer receives
-        wrapper.innerHTML = extracted;
-        // Remove any unintended leading gap: drop leading <br> and cancel first block's top margin
-        try {
-            while (wrapper.firstChild && String(wrapper.firstChild.nodeName).toLowerCase() === 'br') {
-                wrapper.removeChild(wrapper.firstChild);
-            }
-            const firstBlock = wrapper.querySelector('p, div, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
-            if (firstBlock && firstBlock.style) {
-                firstBlock.style.marginTop = '0';
-            }
-        } catch (_) {}
+        // Build a fragment from extracted HTML, without a wrapper to avoid Froala block merging
+        const tmpWrap = document.createElement('div');
+        tmpWrap.innerHTML = extracted;
+        // Trim leading trivial nodes (br/whitespace)
+        while (tmpWrap.firstChild && (
+            (tmpWrap.firstChild.nodeType === 3 && !(/[^\s\u00a0]/.test(tmpWrap.firstChild.nodeValue || '')))
+            || String(tmpWrap.firstChild.nodeName).toLowerCase() === 'br'
+            || (tmpWrap.firstChild.nodeType === 1 && String(tmpWrap.firstChild.innerHTML || '').replace(/\s|&nbsp;/g,'').toLowerCase() === '')
+        )) {
+            tmpWrap.removeChild(tmpWrap.firstChild);
+        }
+        const frag = document.createDocumentFragment();
+        let marked = false;
+        Array.from(tmpWrap.childNodes).forEach((n) => {
+            const clone = n.cloneNode(true);
+            if (!marked && clone.nodeType === 1) { try { clone.setAttribute('data-kayako-qc-snippet','1'); marked = true; } catch(_) {} }
+            frag.appendChild(clone);
+        });
         if (footerStart && footerStart.parentNode) {
             // add a blank line before our insert
             const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
             footerStart.parentNode.insertBefore(spacer, footerStart);
-            footerStart.parentNode.insertBefore(wrapper, footerStart);
+            footerStart.parentNode.insertBefore(frag, footerStart);
         } else {
-            editor.appendChild(wrapper);
+            editor.appendChild(frag);
         }
         // Normalize top spacing of the entire editor so first line starts flush
         try { normalizeEditorTopSpacing(editor); } catch(_) {}
@@ -2525,19 +2562,72 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
 
         if (!slice.length) return '';
         const out = document.createElement('div');
-        for (let i = 0; i < slice.length; i++) {
-            const n = slice[i].cloneNode(true);
-            out.appendChild(n);
-            // Insert explicit blank line between adjacent block nodes, unless next is empty
-            const next = slice[i + 1];
-            if (next && isBlockNode(n) && isBlockNode(next) && !isEmptyNode(next)) {
-                const spacer = document.createElement('p');
-                spacer.innerHTML = '<br>';
-                out.appendChild(spacer);
-            }
-        }
+        // Clone nodes exactly as in the note first
+        slice.forEach((n) => out.appendChild(n.cloneNode(true)));
+        // Normalize for Froala to avoid Enter/Backspace list corruption
+        try { postCleanForFroala(out); } catch (_) {}
         return out.innerHTML;
     } catch (_) { return ''; }
+}
+
+function postCleanForFroala(root) {
+    const isBlock = (el) => {
+        const tag = String(el && el.nodeName || '').toLowerCase();
+        return ['p','div','ul','ol','li','table','pre','blockquote','h1','h2','h3','h4','h5','h6'].includes(tag);
+    };
+    const hasBlockDesc = (el) => {
+        if (!el || !el.querySelector) return false;
+        return !!el.querySelector('div, p, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
+    };
+    const toP = (el) => {
+        if (!el || String(el.nodeName).toLowerCase() !== 'div') return;
+        if (el.className && /br-wrapper/.test(el.className)) {
+            const p = document.createElement('p'); p.innerHTML = '<br>';
+            el.parentNode.replaceChild(p, el); return;
+        }
+        // Only convert divs that contain inline content only
+        if (!hasBlockDesc(el)) {
+            const p = document.createElement('p');
+            while (el.firstChild) p.appendChild(el.firstChild);
+            el.parentNode.replaceChild(p, el);
+        }
+    };
+    const cleanLi = (li) => {
+        // Remove empty li and trim whitespace-only nodes
+        const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
+        if (!txt) { try { li.remove(); } catch(_) {} return; }
+        // Drop leading nbsp that cause indenting
+        if (li.firstChild && li.firstChild.nodeType === 3) {
+            li.firstChild.nodeValue = li.firstChild.nodeValue.replace(/^\s+/, '');
+        }
+        // Remove stray br-wrapper children
+        li.querySelectorAll('div.br-wrapper, div[class*="br-wrapper"]').forEach(el => { try { el.remove(); } catch(_) {} });
+    };
+    // Convert top-level DIVs to P where appropriate
+    Array.from(root.querySelectorAll('div')).forEach(toP);
+    // Ensure UL/OL only have LI children and no empty LIs
+    root.querySelectorAll('ul,ol').forEach(list => {
+        const kids = Array.from(list.childNodes);
+        kids.forEach(n => {
+            if (n.nodeType === 3 && !(n.nodeValue || '').trim()) { try { n.remove(); } catch(_) {} return; }
+            const tag = String(n.nodeName || '').toLowerCase();
+            if (tag === 'li') { cleanLi(n); return; }
+            // Wrap non-LI node into LI
+            const li = document.createElement('li');
+            li.appendChild(n.cloneNode(true));
+            list.replaceChild(li, n);
+            cleanLi(li);
+        });
+        // Remove any now-empty li
+        Array.from(list.querySelectorAll('li')).forEach(li => { const t = (li.textContent || '').replace(/\u00a0/g,' ').trim(); if (!t) { try { li.remove(); } catch(_) {} } });
+    });
+    // Remove &nbsp; at paragraph starts
+    root.querySelectorAll('p, div').forEach(el => {
+        if (!isBlock(el)) return;
+        if (el.firstChild && el.firstChild.nodeType === 3) {
+            el.firstChild.nodeValue = (el.firstChild.nodeValue || '').replace(/^\s*\u00a0+/g,'');
+        }
+    });
 }
 
 // Clean up toolbar listeners after activation
@@ -2625,6 +2715,7 @@ function animateEditorToHeight(editor, targetHeight) {
     
     // Set the height on the editor element
     editor.style.height = targetHeight + 'px';
+    try { editor.style.maxHeight = targetHeight + 'px'; } catch (_) {}
     
     // Also set max-height on the wrapper if it exists
     const wrapper = editor.closest('.fr-wrapper');
@@ -3057,9 +3148,8 @@ function setupSearchHoverPreview() {
     try {
         const isSearch = /\/agent\/search(\/|$)/.test(window.location.pathname) || /[?&]search/i.test(window.location.search) || /\/agent\/search\//.test(window.location.href);
         // Fallback for when search results are shown inside Kayako tabs without /search in the URL
-        // Proceed if we can find likely result rows in the DOM
+        // Do not early-return; rows might be injected later by tabs/virtualized lists.
         const probableRowsPresent = !!document.querySelector('tr[class*="ko-table_row__container_"], [role="row"][class*="ko-table_row__container_"], div[role="row"], [class*="session_agent_search__row-styles_"], tr[class*="ko-cases-list_row__container_"], li[class*="ko-cases-list_row__container_"], li[class*="ko-cases-list_list__row_"]');
-        if (!isSearch && !probableRowsPresent) return;
         if (document.body.dataset.kayakoSearchPreviewSetup === 'true') return;
         document.body.dataset.kayakoSearchPreviewSetup = 'true';
 
@@ -3073,6 +3163,8 @@ function setupSearchHoverPreview() {
         let isBubbleHovered = false;
         let hideTimerId = null;
         let keepAliveUntil = 0;
+		let fixedLeft = null; // freeze bubble position after first placement
+		let fixedTop = null;
 
         // Generalized selectors (hashed class suffix changes between builds)
         const rowSelector = [
@@ -3089,23 +3181,46 @@ function setupSearchHoverPreview() {
             'li'
         ].join(',');
 
+		// Parent containers that indicate we're inside a search results grid/list, not the conversation timeline
+		const searchContainerSelector = [
+			'table[role="grid"]',
+			'[role="grid"]',
+			'table[class*="ko-table"]',
+			'[class*="ko-table_body_"]',
+			'[class*="ko-cases-list_table"]',
+			'[class*="ko-cases-list_list"]',
+			'[class*="session_agent_search__"]'
+		].join(',');
+
+		const isSearchRow = (row) => {
+			try {
+				if (!row) return false;
+				// Exclude the timeline area entirely
+				if (row.closest('[class*="ko-timeline"], [class*="timeline"]')) return false;
+				return !!row.closest(searchContainerSelector);
+			} catch (_) { return false; }
+		};
+
         const getRowTicketId = (row) => {
             try {
-                let idEl = row.querySelector('[class*="ko-cases-list_column_conv-composite__ticket-id_"]');
-                if (idEl) {
-                    const txt = idEl.textContent || '';
+                // Strong signal: dedicated ticket-id column in search results
+                const idCol = row.querySelector('[class*="ko-cases-list_column_conv-composite__ticket-id_"]');
+                const hasIdCol = !!idCol;
+                if (hasIdCol) {
+                    const txt = idCol.textContent || '';
                     const m = txt.match(/#?(\d{4,})/);
                     if (m) return m[1];
                 }
-                // Fallback: look for link to conversation or any #12345 text
+                // Strong signal: link to conversation in the row
                 const a = row.querySelector('a[href*="/agent/conversations/"]');
                 if (a) {
-                    const m = a.getAttribute('href').match(/conversations\/(\d+)/);
+                    const m = (a.getAttribute('href') || '').match(/conversations\/(\d+)/);
                     if (m) return m[1];
+                    // If anchor exists but href didn't include numeric id, fall back to id column only
+                    return hasIdCol ? ((idCol.textContent || '').match(/#?(\d{4,})/) || [])[1] || null : null;
                 }
-                const txtAll = row.textContent || '';
-                const m2 = txtAll.match(/#(\d{4,})/);
-                return m2 ? m2[1] : null;
+                // Avoid triggering on non-search pages where random #12345 may appear in content
+                return null;
             } catch (_) { return null; }
         };
 
@@ -3129,14 +3244,15 @@ function setupSearchHoverPreview() {
         // Attach non-bubbling listeners to rows (for pages where events don't bubble reliably)
         const attachRowHover = () => {
             try {
-                const rows = document.querySelectorAll(rowSelector);
+				const rows = document.querySelectorAll(rowSelector);
                 rows.forEach((row) => {
                     if (row.dataset.kayakoPreviewHoverAttached === '1') return;
+					if (!isSearchRow(row)) return;
                     // Only attach to elements that resolve to a ticket id to avoid noise
                     const id = getRowTicketId(row);
                     if (!id) return;
                     row.addEventListener('mouseenter', () => onEnter(row));
-                    row.addEventListener('mouseleave', () => onLeave());
+                    row.addEventListener('mouseleave', (e) => onLeave(e));
                     row.dataset.kayakoPreviewHoverAttached = '1';
                 });
             } catch (_) {}
@@ -3158,62 +3274,72 @@ function setupSearchHoverPreview() {
                 // hide a bit later if also not on row
                 hideTimerId = setTimeout(() => { if (!isBubbleHovered && !currentRowHover) hideBubbleWithSuppress(); }, 140);
             });
-            document.body.appendChild(bubble);
-            positionBubbleNearRow(bubble, row);
+			document.body.appendChild(bubble);
+			fixedLeft = null; fixedTop = null;
+			positionBubbleNearRow(bubble, row);
             activeBubble = bubble;
-            keepAliveUntil = Date.now() + 350;
+            keepAliveUntil = Date.now() + 700;
             return bubble;
         };
 
         const positionBubbleNearRow = (bubble, row) => {
             try {
-                const rr = row.getBoundingClientRect();
+                // If a fixed position is already chosen, reuse it to avoid flicker/movement
+                if (fixedLeft != null && fixedTop != null) {
+                    bubble.style.left = fixedLeft + 'px';
+                    bubble.style.top = fixedTop + 'px';
+                    return;
+                }
                 const br = bubble.getBoundingClientRect();
                 const padding = 12;
+                const gapX = 28; // horizontal clearance from pointer
+                const gapY = 24; // vertical clearance from pointer
                 const vw = document.documentElement.clientWidth;
                 const vh = document.documentElement.clientHeight;
 
-                // Decide horizontal side (prefer right if space, else left)
-                const spaceRight = vw - rr.right - padding;
-                const spaceLeft = rr.left - padding;
-                const placeRight = spaceRight >= br.width || spaceRight >= spaceLeft;
-                let left;
-                if (placeRight) {
-                    left = Math.max(rr.right + padding, lastMouse.x + 18); // avoid under pointer
-                } else {
-                    left = Math.min(rr.left - br.width - padding, lastMouse.x - br.width - 18);
-                    left = Math.max(padding, left);
-                }
+                // Decide side relative to the pointer, not the row
+                const availRight = vw - (lastMouse.x + gapX) - padding;
+                const availLeft = (lastMouse.x - gapX) - padding;
+                const placeRight = (availRight >= br.width) || (availRight >= availLeft);
+                let left = placeRight
+                    ? lastMouse.x + gapX
+                    : lastMouse.x - gapX - br.width;
 
-                // Vertical placement: prefer aligning around mouse Y; place above if not enough below
-                const spaceBelow = vh - rr.bottom - padding;
-                const spaceAbove = rr.top - padding;
-                const preferBelow = spaceBelow >= br.height || spaceBelow >= spaceAbove;
-                let top;
-                if (preferBelow) {
-                    top = Math.min(Math.max(padding, lastMouse.y - 24), vh - br.height - padding);
-                    if (top < rr.top) top = rr.top; // keep around row
-                } else {
-                    top = Math.max(padding, Math.min(rr.bottom - br.height, lastMouse.y - br.height - 16));
-                }
+				// Vertical placement relative to pointer
+				const availBelow = vh - (lastMouse.y + gapY) - padding;
+				const availAbove = (lastMouse.y - gapY) - padding;
+				const fitsBelow = availBelow >= br.height;
+				const fitsAbove = availAbove >= br.height;
+				// Prefer the side that fully fits; if neither fits, prefer above to avoid bottom cutoff
+				let placeBelow;
+				if (fitsBelow && !fitsAbove) {
+					placeBelow = true;
+				} else if (!fitsBelow && fitsAbove) {
+					placeBelow = false;
+				} else if (fitsBelow && fitsAbove) {
+					placeBelow = (availBelow >= availAbove);
+				} else {
+					placeBelow = false; // neither fits fully → bias to above near bottom rows
+				}
+				let top = placeBelow
+					? lastMouse.y + gapY
+					: lastMouse.y - gapY - br.height;
 
-                // Ensure bubble does not overlap pointer exactly
-                const pointerBox = { x: lastMouse.x - 6, y: lastMouse.y - 6, w: 12, h: 12 };
-                const wouldCoverPointer = (
-                    left <= pointerBox.x + pointerBox.w && left + br.width >= pointerBox.x &&
-                    top <= pointerBox.y + pointerBox.h && top + br.height >= pointerBox.y
-                );
-                if (wouldCoverPointer) {
-                    top = Math.min(vh - br.height - padding, Math.max(padding, top + (preferBelow ? 16 : -16)));
-                }
+                // Clamp within viewport
+                const finalLeft = Math.max(padding, Math.min(left, vw - br.width - padding));
+                const finalTop = Math.max(padding, Math.min(top, vh - br.height - padding));
+                bubble.style.left = finalLeft + 'px';
+                bubble.style.top = finalTop + 'px';
 
-                bubble.style.left = Math.max(padding, Math.min(left, vw - br.width - padding)) + 'px';
-                bubble.style.top = Math.max(padding, Math.min(top, vh - br.height - padding)) + 'px';
+                // Freeze this initial placement to prevent subsequent reflows from moving it
+                fixedLeft = finalLeft;
+                fixedTop = finalTop;
+                keepAliveUntil = Date.now() + 500;
             } catch (_) {}
         };
 
-        let currentRowHover = false;
-        const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } };
+		let currentRowHover = false;
+		const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } fixedLeft = null; fixedTop = null; };
         const hideBubbleWithSuppress = () => { hideBubble(); suppressRowId = activeRowId; suppressUntil = Date.now() + 400; activeRowId = null; };
 
         const onEnter = (row) => {
@@ -3262,45 +3388,49 @@ function setupSearchHoverPreview() {
                     }
                     contentDiv.innerHTML = sanitizeHtml(cache[id].html);
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
-                    keepAliveUntil = Date.now() + 300;
+                    keepAliveUntil = Date.now() + 600;
                 });
             }, 250);
         };
 
-        const onLeave = () => {
+        const onLeave = (e) => {
             currentRowHover = false;
             if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
             // delay hiding to allow moving into bubble
+            if (hideTimerId) { try { clearTimeout(hideTimerId); } catch(_) {} hideTimerId = null; }
             if (Date.now() < keepAliveUntil) return;
             if (hideTimerId) { clearTimeout(hideTimerId); }
             hideTimerId = setTimeout(() => {
+                // If pointer moved into the bubble, keep it open
+                try { if (e && activeBubble && activeBubble.contains(e.relatedTarget)) return; } catch(_) {}
+                if (Date.now() < keepAliveUntil) return;
                 if (!currentRowHover && activeBubble && !isBubbleHovered) {
                     hideBubbleWithSuppress();
                 }
-            }, 220);
+            }, 300);
         };
 
         // Delegate events from the table body (fallback) and also attach direct row listeners
         document.addEventListener('mousemove', (e) => { lastMouse = { x: e.clientX, y: e.clientY }; }, true);
-        document.addEventListener('mouseover', (e) => {
-            const row = e.target && e.target.closest && e.target.closest(rowSelector);
-            if (row) {
-                const id = getRowTicketId(row);
-                if (id) onEnter(row);
-            }
-        }, { capture: true, passive: true });
-        document.addEventListener('mouseout', (e) => {
-            const row = e.target && e.target.closest && e.target.closest(rowSelector);
-            if (row) {
-                // If moving into the bubble, do not hide
-                try {
-                    if (activeBubble && activeBubble.contains(e.relatedTarget)) return;
-                    // Ignore mouseout transitions within the same row
-                    if (row.contains && row.contains(e.relatedTarget)) return;
-                } catch(_) {}
-                onLeave();
-            }
-        }, { capture: true, passive: true });
+		document.addEventListener('mouseover', (e) => {
+			const row = e.target && e.target.closest && e.target.closest(rowSelector);
+			if (row && row.dataset.kayakoPreviewHoverAttached !== '1' && isSearchRow(row)) {
+				const id = getRowTicketId(row);
+				if (id) onEnter(row);
+			}
+		}, { capture: true, passive: true });
+		document.addEventListener('mouseout', (e) => {
+			const row = e.target && e.target.closest && e.target.closest(rowSelector);
+			if (row && row.dataset.kayakoPreviewHoverAttached !== '1' && isSearchRow(row)) {
+				// If moving into the bubble, do not hide
+				try {
+					if (activeBubble && activeBubble.contains(e.relatedTarget)) return;
+					// Ignore mouseout transitions within the same row
+					if (row.contains && row.contains(e.relatedTarget)) return;
+				} catch(_) {}
+				onLeave(e);
+			}
+		}, { capture: true, passive: true });
         attachRowHover();
         // Observe for dynamic result lists (Kayako tabs/virtualized lists)
         try {
@@ -3311,15 +3441,14 @@ function setupSearchHoverPreview() {
             });
             observer.observe(document.body, { childList: true, subtree: true });
         } catch (_) {}
-        // Close on outside click
-        document.addEventListener('mousedown', (e) => {
-            try {
-                if (!activeBubble) return;
-                const row = e.target && e.target.closest && e.target.closest('tr.ko-table_row__container_1hsbcc');
-                if (activeBubble.contains(e.target) || row) return;
-                hideBubbleWithSuppress();
-            } catch (_) {}
-        }, true);
+		// Close on any click outside the preview bubble (including clicking rows/links)
+		document.addEventListener('mousedown', (e) => {
+			try {
+				if (!activeBubble) return;
+				if (activeBubble.contains(e.target)) return; // allow interacting inside bubble
+				hideBubbleWithSuppress();
+			} catch (_) {}
+		}, true);
     } catch (_) {}
 }
 
@@ -3372,6 +3501,12 @@ document.addEventListener('mousedown', (e) => {
         // Record last page click target to coordinate with blur logic
         window.__kayakoLastMouseDownTarget = e.target;
         if (!document.hasFocus()) return; // ignore when switching apps
+        // If user is interacting with AI modal/UI, keep AI active
+        try {
+            if (e.target.closest('[class*="kayako-ai"], .kayako-ai-dropdown')) {
+                window.__kayakoAIActive = true;
+            }
+        } catch (_) {}
         // If user is clicking within macro dropdown/search UI, keep macro active and avoid shrinking
         const inMacroMenu = !!e.target.closest('.ember-basic-dropdown-content, .ember-power-select-options, [class*="macro"][class*="dropdown"], [data-test-id*="macro"]');
         if (inMacroMenu) {
@@ -3396,7 +3531,7 @@ document.addEventListener('mousedown', (e) => {
             const edContainer = ed.closest('.ko-text-editor__container_1p5g6r');
             if (!edContainer) return;
             // If the click is outside this editor's container and the editor isn't focused, shrink it
-            if (!window.__kayakoMacroActive && clickContainer !== edContainer) {
+            if (!window.__kayakoMacroActive && !window.__kayakoAIActive && clickContainer !== edContainer) {
                 handleEditorBlur(ed);
             }
         });

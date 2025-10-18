@@ -452,6 +452,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  // Generate an auto note for bookmarks using first public, last public, last internal posts
+  if (message.action === 'generateBookmarkNote' && message.ticketId && message.domain) {
+    generateBookmarkNote(message.domain, message.ticketId).then((note) => {
+      sendResponse({ success: true, note });
+    }).catch(err => {
+      console.warn('[SW] generateBookmarkNote failed:', err?.message || err);
+      sendResponse({ success: false, error: err?.message || String(err) });
+    });
+    return true;
+  }
   // Ignored bots lists get/set (separate for public vs internal)
   if (message.action === 'getIgnoredBotsLists') {
     chrome.storage.local.get(['ignoredBotsPublic','ignoredBotsInternal'], (data) => {
@@ -720,6 +730,120 @@ async function fetchTicketPreview(domain, ticketId) {
     posts: mapped,
     fetchedAt: Date.now(),
   };
+}
+
+/** Generate a concise bookmark note using GPT with context from
+ *  - first public post
+ *  - last public post
+ *  - last internal post
+ */
+async function generateBookmarkNote(domain, ticketId) {
+  const url = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=50`;
+  const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching posts for ${ticketId}`);
+  const json = await res.json();
+  const posts = normalizePostsPayload(json);
+
+  // Helpers mirroring the unread classifier
+  const lc = (s)=> (s||'').toString().toLowerCase();
+  const isInternal = (p)=> {
+    const t = lc(p?.type || p?.post_type || p?.category || '');
+    const vis = lc(p?.visibility || '');
+    const ch = lc(p?.channel || '');
+    return p?.is_internal === true || p?.isInternal === true || vis === 'internal' || ch === 'internal' || t.includes('note') || t.includes('internal') || p?.private === true;
+  };
+  const isPublic = (p)=> !isInternal(p);
+  const createdAt = (p)=> {
+    const t = Date.parse(extractPostCreatedAt(p) || '') || 0;
+    const id = Number(p?.id || 0) || 0;
+    return { t, id };
+  };
+
+  // Sort by time
+  const sorted = posts.slice().sort((a,b) => {
+    const A = createdAt(a), B = createdAt(b);
+    if (A.t !== B.t) return A.t - B.t; // earliest first
+    return A.id - B.id;
+  });
+  const firstPublic = sorted.find(isPublic);
+  const lastPublic = [...sorted].reverse().find(isPublic);
+  const lastInternal = [...sorted].reverse().find(isInternal);
+
+  const fp = firstPublic ? htmlToText(extractPostText(firstPublic) || extractPostHtml(firstPublic) || '') : '';
+  const lp = lastPublic ? htmlToText(extractPostText(lastPublic) || extractPostHtml(lastPublic) || '') : '';
+  const li = lastInternal ? htmlToText(extractPostText(lastInternal) || extractPostHtml(lastInternal) || '') : '';
+
+  // If there is no API key configured, fall back to a simple heuristic string
+  const keyData = await storageGet(['openrouterApiKey','openaiApiKey','gptApiKey','llmModel','llmEndpoint']);
+  let provider = 'none';
+  let apiKey = '';
+  if (keyData.openrouterApiKey && String(keyData.openrouterApiKey).trim()) { provider = 'openrouter'; apiKey = String(keyData.openrouterApiKey).trim(); }
+  else if (keyData.openaiApiKey && String(keyData.openaiApiKey).trim()) { provider = 'openai'; apiKey = String(keyData.openaiApiKey).trim(); }
+  else if (keyData.gptApiKey && String(keyData.gptApiKey).trim()) {
+    const k = String(keyData.gptApiKey).trim();
+    provider = k.startsWith('openrouter_') ? 'openrouter' : (k.startsWith('sk-') ? 'openai' : 'openrouter');
+    apiKey = k;
+  }
+  let model = keyData.llmModel || (provider === 'openai' ? 'gpt-4o-mini' : 'gpt-5-mini');
+  let endpoint = keyData.llmEndpoint || (provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions');
+  if (provider === 'openai' && model === 'gpt-5-mini') model = 'gpt-4o-mini';
+
+  const prompt = [
+    'Create a short, helpful bookmark note for an agent.',
+    'Use 1-2 sentences, max ~240 characters, actionable and specific.',
+    `Ticket #${ticketId} (${domain}).`,
+    fp ? `First public post:\n${truncate(fp, 1000)}` : 'First public post: (none)',
+    lp && lp !== fp ? `Last public post:\n${truncate(lp, 1000)}` : 'Last public post: (same as first or none)',
+    li ? `Last internal note:\n${truncate(li, 1000)}` : 'Last internal note: (none)',
+    'Return only the note text without quotes.'
+  ].join('\n\n');
+
+  if (!apiKey) {
+    return composeFallbackNote(fp, lp, li);
+  }
+
+  try {
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: 'You draft concise bookmark notes for support tickets.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.2,
+      max_tokens: 160
+    };
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
+    const json = await resp.json();
+    const note = json?.choices?.[0]?.message?.content?.trim?.();
+    const plain = htmlToText((note || '').replace(/\s+/g,' ').trim());
+    return plain || composeFallbackNote(fp, lp, li);
+  } catch (e) {
+    console.warn('LLM call failed, falling back:', e?.message || e);
+    return composeFallbackNote(fp, lp, li);
+  }
+}
+
+function truncate(s, n){
+  try { s = String(s); } catch(_) { return ''; }
+  return s.length > n ? (s.slice(0, n) + '…') : s;
+}
+
+function composeFallbackNote(firstPublic, lastPublic, lastInternal){
+  const norm = (s)=> htmlToText(String(s||'')).replace(/\s+/g,' ').trim();
+  const parts = [];
+  if (firstPublic) parts.push('Initial: ' + truncate(norm(firstPublic), 140));
+  if (lastPublic && lastPublic !== firstPublic) parts.push('Latest public: ' + truncate(norm(lastPublic), 140));
+  if (lastInternal) parts.push('Internal: ' + truncate(norm(lastInternal), 140));
+  const txt = parts.join(' — ');
+  return txt.slice(0, 240);
 }
 
 /** Try to extract readable text from diverse post payloads */
