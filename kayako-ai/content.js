@@ -2161,8 +2161,26 @@ class KayakoAIEnhancer {
     document.body.appendChild(notification);
 
     // Position near anchor element when provided
-    if (anchorEl && typeof anchorEl.getBoundingClientRect === 'function') {
-      const rect = anchorEl.getBoundingClientRect();
+    const isVisible = (el) => {
+      try {
+        if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+        const rect = el.getBoundingClientRect();
+        const cs = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+      } catch (_) { return false; }
+    };
+
+    let anchor = anchorEl;
+    if (!isVisible(anchor)) {
+      // Fallback: use nearest visible AI dropdown button
+      const all = document.querySelectorAll('.kayako-ai-dropdown');
+      for (const btn of all) {
+        if (isVisible(btn)) { anchor = btn; break; }
+      }
+    }
+
+    if (isVisible(anchor)) {
+      const rect = anchor.getBoundingClientRect();
       const gap = 8;
       let top = rect.bottom + gap;
       let left = rect.left;
