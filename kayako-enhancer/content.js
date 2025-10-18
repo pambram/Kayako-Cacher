@@ -2522,11 +2522,15 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
             if (!n) return true;
             if (n.nodeType === 3) return !norm(n.textContent);
             if (String(n.nodeName).toLowerCase() === 'br') return true;
+            // Treat nodes containing media as non-empty even if textContent is empty
+            try {
+                if (n.querySelector && n.querySelector('img, picture, svg, video, iframe, figure')) return false;
+            } catch (_) {}
             return !norm(n.textContent);
         };
         const isBlockNode = (n) => {
             const tag = String(n && n.nodeName || '').toLowerCase();
-            return ['p','div','ul','ol','table','pre','blockquote','h1','h2','h3','h4','h5','h6'].includes(tag);
+            return ['p','div','ul','ol','table','pre','blockquote','h1','h2','h3','h4','h5','h6','figure'].includes(tag);
         };
 
         // Find the header line
@@ -2573,11 +2577,11 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
 function postCleanForFroala(root) {
     const isBlock = (el) => {
         const tag = String(el && el.nodeName || '').toLowerCase();
-        return ['p','div','ul','ol','li','table','pre','blockquote','h1','h2','h3','h4','h5','h6'].includes(tag);
+        return ['p','div','ul','ol','li','table','pre','blockquote','h1','h2','h3','h4','h5','h6','figure'].includes(tag);
     };
     const hasBlockDesc = (el) => {
         if (!el || !el.querySelector) return false;
-        return !!el.querySelector('div, p, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
+        return !!el.querySelector('div, p, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6, figure');
     };
     const toP = (el) => {
         if (!el || String(el.nodeName).toLowerCase() !== 'div') return;
@@ -2595,7 +2599,8 @@ function postCleanForFroala(root) {
     const cleanLi = (li) => {
         // Remove empty li and trim whitespace-only nodes
         const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
-        if (!txt) { try { li.remove(); } catch(_) {} return; }
+        const hasMedia = !!(li.querySelector && li.querySelector('img, picture, svg, video, iframe, figure'));
+        if (!txt && !hasMedia) { try { li.remove(); } catch(_) {} return; }
         // Drop leading nbsp that cause indenting
         if (li.firstChild && li.firstChild.nodeType === 3) {
             li.firstChild.nodeValue = li.firstChild.nodeValue.replace(/^\s+/, '');
@@ -3321,6 +3326,13 @@ function setupSearchHoverPreview() {
 				} else {
 					placeBelow = false; // neither fits fully → bias to above near bottom rows
 				}
+				// If pointer is near the bottom of the viewport, force placing above to avoid cutoffs
+				try {
+					const bottomBiasThreshold = Math.floor(vh * 0.66); // bottom ~34% of viewport
+					if (lastMouse.y >= bottomBiasThreshold) {
+						placeBelow = false;
+					}
+				} catch(_) {}
 				let top = placeBelow
 					? lastMouse.y + gapY
 					: lastMouse.y - gapY - br.height;
