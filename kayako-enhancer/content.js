@@ -3287,10 +3287,10 @@ function setupSearchHoverPreview() {
             return bubble;
         };
 
-        const positionBubbleNearRow = (bubble, row) => {
+		const positionBubbleNearRow = (bubble, row, force) => {
             try {
                 // If a fixed position is already chosen, reuse it to avoid flicker/movement
-                if (fixedLeft != null && fixedTop != null) {
+				if (fixedLeft != null && fixedTop != null && !force) {
                     bubble.style.left = fixedLeft + 'px';
                     bubble.style.top = fixedTop + 'px';
                     return;
@@ -3343,7 +3343,7 @@ function setupSearchHoverPreview() {
                 bubble.style.left = finalLeft + 'px';
                 bubble.style.top = finalTop + 'px';
 
-                // Freeze this initial placement to prevent subsequent reflows from moving it
+				// Freeze this placement to prevent subsequent reflows from moving it
                 fixedLeft = finalLeft;
                 fixedTop = finalTop;
                 keepAliveUntil = Date.now() + 500;
@@ -3382,7 +3382,7 @@ function setupSearchHoverPreview() {
                 // If cached, render immediately then refresh in background
                 if (cache[id] && cache[id].html && Date.now() - cache[id].ts < 10 * 60 * 1000) {
                     contentDiv.innerHTML = sanitizeHtml(cache[id].html);
-                    setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
+                    setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                 }
 
                 if (!isRuntimeAvailable()) return;
@@ -3399,7 +3399,7 @@ function setupSearchHoverPreview() {
                         cache[id] = { html: html || `<div>${escapeHtml(snip)}</div>`, snippet: snip, ts: Date.now() };
                     }
                     contentDiv.innerHTML = sanitizeHtml(cache[id].html);
-                    setTimeout(() => { try { positionBubbleNearRow(bubble, row); } catch(_) {} }, 0);
+                    setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                     keepAliveUntil = Date.now() + 600;
                 });
             }, 250);

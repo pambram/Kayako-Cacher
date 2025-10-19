@@ -691,23 +691,75 @@ async function fetchLatestPostId(domain, ticketId) {
   return latest;
 }
 
-/** Fetch latest few posts and return a small preview object */
+/** Fetch posts for a ticket and combine with remaining older posts (single extra call).
+ *  - First request uses limit=30 (Kayako default) to get newest page
+ *  - Inspect pagination (limit, total_count, next_url)
+ *  - If there are remaining posts, call next_url once with limit=remaining to fetch all older posts
+ *  - Combine and return mapped posts; content script will render earliest→latest
+ */
 async function fetchTicketPreview(domain, ticketId) {
-  const url = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=5`;
-  const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+  const firstUrl = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=30`;
+  const headers = { 'Accept': 'application/json' };
+  const res = await fetch(firstUrl, { credentials: 'include', headers });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching preview for ${ticketId}`);
   const json = await res.json();
-  const posts = normalizePostsPayload(json);
+  const pagePosts = normalizePostsPayload(json);
+  try {
+    const dbgCount = Array.isArray(pagePosts) ? pagePosts.length : 0;
+    console.log('[SW] preview page1 posts:', dbgCount);
+  } catch(_) {}
+
+  // Extract pagination in a resilient way
+  const get = (o, pathArr) => {
+    try { return pathArr.reduce((v,k)=> (v && (k in v)) ? v[k] : undefined, o); } catch(_) { return undefined; }
+  };
+  const asNum = (x) => { const n = Number(x); return isNaN(n) ? 0 : n; };
+  const limit = asNum(json?.limit || get(json, ['meta','limit']) || get(json, ['pagination','limit']) || get(json, ['page','limit']) || get(json, ['data','limit']));
+  const total = asNum(json?.total || json?.total_count || get(json, ['meta','total_count']) || get(json, ['pagination','total_count']) || get(json, ['page','total']));
+  let nextUrl = json?.next_url || get(json, ['meta','next_url']) || get(json, ['pagination','next_url']) || get(json, ['links','next']) || get(json, ['links','next','href']);
+
+  // If nextUrl is relative, make absolute to the current domain
+  if (nextUrl && typeof nextUrl === 'string' && !/^https?:\/\//i.test(nextUrl)) {
+    if (nextUrl.startsWith('/')) nextUrl = `https://${domain}${nextUrl}`; else nextUrl = `https://${domain}/${nextUrl}`;
+  }
+
+  let combined = Array.isArray(pagePosts) ? pagePosts.slice() : [];
+
+  // If there are remaining posts and a next URL, fetch all remaining in one go
+  if (nextUrl && total && limit && total > limit) {
+    const remaining = Math.max(0, total - limit);
+    try {
+      const u = new URL(nextUrl);
+      // Replace limit with the remaining count
+      u.searchParams.set('limit', String(remaining));
+      console.log('[SW] preview next_url:', u.href, 'remaining=', remaining);
+      const res2 = await fetch(u.href, { credentials: 'include', headers });
+      if (res2.ok) {
+        const json2 = await res2.json();
+        const rest = normalizePostsPayload(json2);
+        if (Array.isArray(rest) && rest.length) combined = combined.concat(rest);
+        try { console.log('[SW] preview page2 posts:', Array.isArray(rest)? rest.length : 0); } catch(_) {}
+      } else {
+        console.warn(`[SW] next_url fetch failed ${res2.status} for ticket ${ticketId}`);
+      }
+    } catch (e) {
+      console.warn('[SW] next_url handling failed:', e?.message || e);
+    }
+  }
+
+  // Pick latest post for snippet
   let latest = null;
   let latestId = 0;
-  for (const p of posts) {
+  for (const p of combined) {
     const pid = Number(p?.id) || 0;
     if (pid > latestId) { latestId = pid; latest = p; }
   }
-  const selected = latest || posts?.[0] || {};
+  const selected = latest || combined?.[0] || {};
   const snippet = extractPostText(selected) || '';
   const html = extractPostHtml(selected) || '';
-  const mapped = posts.map(p => ({
+
+  // Map and sort earliest→latest
+  const mapped = (combined || []).map(p => ({
     id: String(p?.id || ''),
     createdAt: extractPostCreatedAt(p),
     html: extractPostHtml(p) || '',
@@ -722,11 +774,12 @@ async function fetchTicketPreview(domain, ticketId) {
       return ia - ib;
     });
   } catch (_) {}
+  try { console.log('[SW] preview total mapped posts:', mapped.length); } catch(_) {}
   return {
     ticketId: String(ticketId),
     lastPostId: latestId || 0,
     snippet: snippet.slice(0, 1000),
-    html: html, // send raw-ish html; content script sanitizes
+    html: html,
     posts: mapped,
     fetchedAt: Date.now(),
   };
