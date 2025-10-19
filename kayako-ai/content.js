@@ -2087,6 +2087,7 @@ class KayakoAIEnhancer {
       }
     });
     if (!result?.success) {
+      try { console.error('AI request failed', { model, error: result?.error }); } catch (_) {}
       throw new Error(result?.error || 'AI request failed');
     }
     const data = result.data || {};
