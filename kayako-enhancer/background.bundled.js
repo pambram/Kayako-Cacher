@@ -840,15 +840,25 @@ async function generateBookmarkNote(domain, ticketId) {
   let model = keyData.llmModel || (provider === 'openai' ? 'gpt-4o-mini' : 'gpt-5-mini');
   let endpoint = keyData.llmEndpoint || (provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions');
   if (provider === 'openai' && model === 'gpt-5-mini') model = 'gpt-4o-mini';
+  if (provider === 'openrouter') {
+    // Ensure model id format is OpenRouter-compatible
+    if (!String(model).includes('/')) {
+      if (String(model).includes('gpt-5-mini')) model = 'openrouter/gpt-5-mini';
+      else if (String(model).includes('gpt-4o-mini')) model = 'openai/gpt-4o-mini';
+    }
+  }
 
   const prompt = [
-    'Create a short, helpful bookmark note for an agent.',
-    'Use 1-2 sentences, max ~240 characters, actionable and specific.',
-    `Ticket #${ticketId} (${domain}).`,
-    fp ? `First public post:\n${truncate(fp, 1000)}` : 'First public post: (none)',
-    lp && lp !== fp ? `Last public post:\n${truncate(lp, 1000)}` : 'Last public post: (same as first or none)',
-    li ? `Last internal note:\n${truncate(li, 1000)}` : 'Last internal note: (none)',
-    'Return only the note text without quotes.'
+    'Write a concise MEMORY-JOG note for a support ticket. Not a plan.',
+    'Goal: help me recall what this ticket is about at a glance.',
+    'Style: 2-3 short lines separated by newlines; avoid imperative or recommendations; no scheduling or task lists; neutral tone.',
+    'Content to include (brief): what the issue is, impacted area/customer/product if obvious, latest state/outcome. Skip step-by-step actions.',
+    'Hard limits: <= 220 chars per line, <= 3 lines total. No quotes.',
+    `Context for Ticket #${ticketId} (${domain}):`,
+    fp ? `First public post (context):\n${truncate(fp, 1000)}` : 'First public post: (none)',
+    lp && lp !== fp ? `Last public post (latest):\n${truncate(lp, 1000)}` : 'Last public post: (same as first or none)',
+    li ? `Last internal note (internal state):\n${truncate(li, 1000)}` : 'Last internal note: (none)',
+    'Return only the 1-3 lines of the memory-jog note.'
   ].join('\n\n');
 
   if (!apiKey) {
@@ -859,18 +869,24 @@ async function generateBookmarkNote(domain, ticketId) {
     const body = {
       model,
       messages: [
-        { role: 'system', content: 'You draft concise bookmark notes for support tickets.' },
+        { role: 'system', content: 'You produce short memory-jog summaries for support tickets. Never give instructions; no imperative verbs; 1-3 short lines only.' },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.2,
-      max_tokens: 160
+      temperature: 0.35,
+      max_tokens: 180
     };
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    };
+    if (provider === 'openrouter') {
+      // Helpful metadata for OpenRouter routing and attribution
+      headers['HTTP-Referer'] = 'https://kayako-qol-enhancer.local';
+      headers['X-Title'] = 'Kayako QoL Enhancer';
+    }
     const resp = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
+      headers,
       body: JSON.stringify(body)
     });
     if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
@@ -879,7 +895,35 @@ async function generateBookmarkNote(domain, ticketId) {
     const plain = htmlToText((note || '').replace(/\s+/g,' ').trim());
     return plain || composeFallbackNote(fp, lp, li);
   } catch (e) {
-    console.warn('LLM call failed, falling back:', e?.message || e);
+    console.warn('LLM call failed, attempting alternate model:', e?.message || e);
+    // One alternate attempt: OpenRouter auto if available
+    try {
+      if (provider === 'openrouter') {
+        const altBody = {
+          model: 'openrouter/auto',
+          messages: [
+            { role: 'system', content: 'You produce short memory-jog summaries for support tickets. Never give instructions; no imperative verbs; 1-3 short lines only.' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.35,
+          max_tokens: 180
+        };
+        const altHeaders = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://kayako-qol-enhancer.local',
+          'X-Title': 'Kayako QoL Enhancer'
+        };
+        const r2 = await fetch('https://openrouter.ai/api/v1/chat/completions', { method: 'POST', headers: altHeaders, body: JSON.stringify(altBody) });
+        if (r2.ok) {
+          const j2 = await r2.json();
+          const n2 = j2?.choices?.[0]?.message?.content?.trim?.();
+          const p2 = htmlToText((n2 || '').replace(/\s+/g,' ').trim());
+          if (p2) return p2;
+        }
+      }
+    } catch (_) {}
+    console.warn('LLM alternate failed; using fallback.');
     return composeFallbackNote(fp, lp, li);
   }
 }

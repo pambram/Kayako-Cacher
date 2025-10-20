@@ -196,7 +196,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     
     if (addCurrentTicketBtn) {
-        addCurrentTicketBtn.addEventListener("click", bookmarkCurrentFromActiveTab);
+        addCurrentTicketBtn.addEventListener("click", quickBookmarkCurrent);
     }
     
     if (clearHistoryBtn) {
@@ -870,6 +870,34 @@ function bookmarkCurrentFromActiveTab() {
             title: currentTab.title || `Ticket #${ticketId}`
         };
         openBookmarkModal(ticket);
+    });
+}
+
+// Quick add current active ticket to bookmarks (no modal)
+function quickBookmarkCurrent() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const currentTab = tabs && tabs[0];
+        if (!currentTab || !currentTab.url) {
+            showNotification('Not on a ticket page', 'error');
+            return;
+        }
+        const urlMatch = currentTab.url.match(/\/agent\/conversations?\/(\d+)/);
+        if (!urlMatch) {
+            showNotification('Not on a ticket page', 'error');
+            return;
+        }
+        const ticketId = urlMatch[1];
+        const bookmark = {
+            id: ticketId,
+            url: currentTab.url,
+            domain: new URL(currentTab.url).hostname,
+            title: currentTab.title || `Ticket #${ticketId}`,
+            note: ''
+        };
+        chrome.runtime.sendMessage({ action: 'addBookmark', bookmark }, () => {
+            showNotification(`Bookmarked #${ticketId}`, 'success');
+            loadBookmarks();
+        });
     });
 }
 
