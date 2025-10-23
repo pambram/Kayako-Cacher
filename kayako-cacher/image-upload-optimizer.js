@@ -421,9 +421,16 @@ class KayakoImageOptimizer {
               const imgs = activeEditor.querySelectorAll('img');
               const lastImg = imgs[imgs.length - 1];
               if (lastImg && lastImg.src === url) {
-                // Use Froala's selection API to position cursor after image
+                // Position cursor after image and keep it there with delayed stabilization
                 $editor.froalaEditor('selection.setAfter', lastImg);
-                $editor.froalaEditor('selection.restore');
+                const restabilize = () => {
+                  try {
+                    $editor.froalaEditor('events.focus');
+                    $editor.froalaEditor('selection.setAfter', lastImg);
+                  } catch (_) {}
+                };
+                setTimeout(restabilize, 250);
+                setTimeout(restabilize, 1500);
               }
               
               console.log('✅ Froala cursor positioned after image');
@@ -432,7 +439,23 @@ class KayakoImageOptimizer {
             }
           } else {
             $editor.froalaEditor('image.insert', url, true, null, null, null);
-            // Froala's insert already positions cursor correctly
+            // Stabilize cursor after inserted image as some async flows can reset selection
+            try {
+              const attempt = () => {
+                try {
+                  const imgs = activeEditor.querySelectorAll('img');
+                  const bySrc = Array.from(imgs).reverse().find(img => img.src === url);
+                  const target = bySrc || imgs[imgs.length - 1];
+                  if (target) {
+                    $editor.froalaEditor('events.focus');
+                    $editor.froalaEditor('selection.setAfter', target);
+                  }
+                } catch (_) {}
+              };
+              setTimeout(attempt, 0);
+              setTimeout(attempt, 250);
+              setTimeout(attempt, 1500);
+            } catch (_) {}
           }
           $editor.froalaEditor('events.trigger', 'contentChanged');
           return; // Avoid fallback duplicating insertion
@@ -629,6 +652,12 @@ class KayakoImageOptimizer {
   }
 
   showUploadProgress(totalFiles) {
+    // Ensure we never have multiple toasts lingering
+    try {
+      const existingToasts = document.querySelectorAll('#kayako-upload-toast');
+      existingToasts.forEach(el => { try { el.remove(); } catch (_) {} });
+    } catch (_) {}
+
     const toast = document.createElement('div');
     toast.id = 'kayako-upload-toast';
     toast.style.cssText = `
@@ -669,12 +698,20 @@ class KayakoImageOptimizer {
   }
 
   hideUploadProgress() {
-    const toast = document.getElementById('kayako-upload-toast');
-    if (toast && toast.dataset.hiding !== '1') {
-      toast.dataset.hiding = '1';
-      toast.style.opacity = '0';
-      setTimeout(() => { try { toast.remove(); } catch(_) {} }, 300);
-    }
+    // Remove all toasts in case duplicates were created by multiple code paths
+    try {
+      const toasts = document.querySelectorAll('#kayako-upload-toast');
+      toasts.forEach(toast => {
+        if (toast && toast.dataset.hiding !== '1') {
+          toast.dataset.hiding = '1';
+          toast.style.opacity = '0';
+          setTimeout(() => { try { toast.remove(); } catch(_) {} }, 300);
+        } else if (toast) {
+          // Already hiding → ensure removal anyway
+          setTimeout(() => { try { toast.remove(); } catch(_) {} }, 350);
+        }
+      });
+    } catch (_) {}
   }
 
   showUploadError(filename, error) {
