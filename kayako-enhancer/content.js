@@ -74,6 +74,30 @@ function markRuntimeInvalidated(reason) {
     }
 }
 
+// Ensure a stable per-editor id for de-duping suggestion prompts
+function ensureEditorUid(editor) {
+    try {
+        if (!editor || !editor.dataset) return 'ed0';
+        if (!editor.dataset.kayakoEditorUid) {
+            editor.dataset.kayakoEditorUid = 'ed' + Date.now() + '_' + Math.random().toString(36).slice(2);
+        }
+        return editor.dataset.kayakoEditorUid;
+    } catch (_) { return 'ed0'; }
+}
+
+// Quick presence check: is the URL currently present as anchor or raw text inside editor?
+function isUrlPresentInEditor(editor, url) {
+    try {
+        if (!editor || !url) return false;
+        if (findAnchorForURL(editor, url)) return true;
+        const u = String(url);
+        const uHttps = u.replace(/^http:\/\//i, 'https://');
+        const uHttp = u.replace(/^https:\/\//i, 'http://');
+        const txt = (editor.innerText || editor.textContent || '');
+        return txt.includes(u) || txt.includes(uHttps) || txt.includes(uHttp);
+    } catch (_) { return false; }
+}
+
 // Function to apply saved or default sizes
 function applyAllEditorSizes() {
     try {
@@ -664,6 +688,20 @@ function suggestReplaceURLWithTitle(editor, url) {
             console.log('⚠️ runtime permanently invalidated; aborting title fetch until page reload');
             return;
         }
+        // Skip if URL is no longer present (user deleted quickly)
+        if (!isUrlPresentInEditor(editor, url)) {
+            return;
+        }
+        // De-dupe: avoid parallel/rapid duplicate requests for same editor+URL
+        const edKey = ensureEditorUid(editor);
+        window.__kayakoSuggestInflight = window.__kayakoSuggestInflight || Object.create(null);
+        const inflightKey = edKey + '|' + url;
+        const nowTs = Date.now();
+        const prevTs = window.__kayakoSuggestInflight[inflightKey] || 0;
+        if (nowTs - prevTs < 2500) {
+            return;
+        }
+        window.__kayakoSuggestInflight[inflightKey] = nowTs;
         // Avoid duplicate prompts for same URL if one is already showing
         const existing = document.querySelector('.kayako-link-title-suggestion');
         if (existing && existing.dataset.url === url) {
@@ -675,6 +713,9 @@ function suggestReplaceURLWithTitle(editor, url) {
         try { if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) { ver = chrome.runtime.getManifest().version; } } catch (_) { ver = 'unknown'; }
         console.log('📡 Requesting page title from background for URL:', url, 'enhancer v', ver);
         let responded = false;
+        let cancelled = false;
+        const cancelIfInput = () => { cancelled = true; };
+        try { editor.addEventListener('input', cancelIfInput, { once: true }); } catch(_) {}
         const timeoutId = setTimeout(() => {
             if (!responded) {
                 console.log('⏳ No response from service worker for title within 2s. Pinging…');
@@ -718,6 +759,11 @@ function suggestReplaceURLWithTitle(editor, url) {
                 console.log('⚠️ sendMessage error:', err.message);
                 if (/invalidated/i.test(err.message || '')) { markRuntimeInvalidated('sendMessage'); return; }
             }
+            // If user edited or URL disappeared meanwhile, abort quietly
+            try { editor.removeEventListener('input', cancelIfInput); } catch(_) {}
+            if (cancelled || !isUrlPresentInEditor(editor, url)) {
+                return;
+            }
             if (!response || !response.success || !response.title) {
                 console.log('⚠️ No title available for', url);
                 return;
@@ -735,7 +781,12 @@ function suggestReplaceURLWithTitle(editor, url) {
             
             // Build and show suggestion UI
             console.log('🏷️ Title fetched:', title);
-            createOrUpdateLinkSuggestion(editor, url, title);
+            try {
+                createOrUpdateLinkSuggestion(editor, url, title);
+            } finally {
+                // allow a new prompt for this URL after a short cooldown
+                setTimeout(() => { try { if (window.__kayakoSuggestInflight) delete window.__kayakoSuggestInflight[inflightKey]; } catch(_) {} }, 800);
+            }
         });
     } catch (error) {
         const msg = error?.message || String(error || '');
@@ -882,8 +933,22 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
     });
     
     // Auto-dismiss on further typing in editor
-	const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); document.removeEventListener('keydown', keydownHandler, true); };
+    const inputHandler = () => { try { ui.remove(); } catch (_) {} editor.removeEventListener('input', inputHandler); document.removeEventListener('keydown', keydownHandler, true); };
     editor.addEventListener('input', inputHandler);
+
+    // Auto-dismiss if the URL disappears due to user deletion/edits
+    let verifyTimer = null;
+    try {
+        verifyTimer = setInterval(() => {
+            if (!isUrlPresentInEditor(editor, url)) {
+                try { ui.remove(); } catch(_) {}
+                try { document.removeEventListener('keydown', keydownHandler, true); } catch(_) {}
+                try { clearInterval(verifyTimer); } catch(_) {}
+            }
+        }, 300);
+    } catch (_) {}
+    const cleanupVerify = () => { try { clearInterval(verifyTimer); } catch(_) {} };
+    ui.addEventListener('click', cleanupVerify, { once: true });
 
 	// Mark the corresponding anchor as checked to avoid duplicate suggestions from auto-link scan
 	try {
@@ -2185,6 +2250,10 @@ function setupSendShortcut(editor) {
                         e.stopPropagation();
                         // mark handled so global fallback won't double-trigger
                         try { window.__kayakoSendShortcutHandled = Date.now(); } catch(_) {}
+                        // Prevent QC snippet persistence reinserts on send
+                        try { disableQCSnippetPersistenceNearButton(btn); } catch(_) {}
+                        // Normalize the active editor HTML right before sending
+                        try { normalizeEditorContentForSend(getActiveEditorNearButton(btn)); } catch(_) {}
                         btn.click();
                         // collapse editor immediately for reading space
                         try {
@@ -2250,6 +2319,8 @@ function setupGlobalSendShortcut() {
             e.preventDefault();
             e.stopPropagation();
             try { window.__kayakoSendShortcutHandled = Date.now(); } catch(_) {}
+            // Prevent QC snippet persistence reinserts on send
+            try { disableQCSnippetPersistenceNearButton(btn); } catch(_) {}
             btn.click();
             // collapse editors within this container
             try {
@@ -2380,6 +2451,8 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         // Build a fragment from extracted HTML, without a wrapper to avoid Froala block merging
         const tmpWrap = document.createElement('div');
         tmpWrap.innerHTML = extracted;
+        // Finalize snippet formatting before user sees it (not at send-time)
+        try { collapseBlankBlocks(tmpWrap); } catch(_) {}
         // Trim leading trivial nodes (br/whitespace)
         while (tmpWrap.firstChild && (
             (tmpWrap.firstChild.nodeType === 3 && !(/[^\s\u00a0]/.test(tmpWrap.firstChild.nodeValue || '')))
@@ -2407,6 +2480,62 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         try { normalizeEditorTopSpacing(editor); } catch(_) {}
         try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
         try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
+
+        // Keep snippet alive briefly across Note/Public toggle re-renders
+        try {
+            ensureQCSnippetPersistence(editor, tmpWrap.innerHTML);
+        } catch (_) {}
+    } catch (_) {}
+}
+
+// Reinsert the just-pasted QC snippet if the editor re-renders (e.g., Note→Public switch)
+function ensureQCSnippetPersistence(editor, insertedHtml) {
+    try {
+        const container = editor.closest('.froala-editor-container') || editor.parentNode;
+        if (!container) return;
+        // If persistence disabled (e.g., just sent), skip entirely
+        if ((container.dataset && container.dataset.qcPersistDisabled === '1') ||
+            (window.__kayakoQCPasteBlockReinsert && Date.now() - window.__kayakoQCPasteBlockReinsert < 5000)) {
+            return;
+        }
+        const endAt = Date.now() + 8000; // watch for up to 8s after paste
+        let reinserts = 0;
+        const observer = new MutationObserver(() => {
+            // Abort if disabled while observing
+            if ((container.dataset && container.dataset.qcPersistDisabled === '1') ||
+                (window.__kayakoQCPasteBlockReinsert && Date.now() - window.__kayakoQCPasteBlockReinsert < 5000)) {
+                try { observer.disconnect(); } catch(_) {}
+                return;
+            }
+            const now = Date.now();
+            if (now > endAt) { try { observer.disconnect(); } catch(_) {} return; }
+            const currentEditor = container.querySelector('.fr-element');
+            if (!currentEditor) return;
+            if (currentEditor.querySelector('[data-kayako-qc-snippet="1"]')) return;
+            if (!insertedHtml) return;
+            // Reinsert above footer if present, else append at end
+            const wrap = document.createElement('div');
+            wrap.innerHTML = insertedHtml;
+            const frag = document.createDocumentFragment();
+            Array.from(wrap.childNodes).forEach(n => frag.appendChild(n.cloneNode(true)));
+            const footerStart = findFooterStartInEditor(currentEditor);
+            if (footerStart && footerStart.parentNode) {
+                const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
+                footerStart.parentNode.insertBefore(spacer, footerStart);
+                footerStart.parentNode.insertBefore(frag, footerStart);
+            } else {
+                currentEditor.appendChild(frag);
+            }
+            try { normalizeEditorTopSpacing(currentEditor); } catch(_) {}
+            try { currentEditor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
+            try { currentEditor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
+            reinserts++;
+            if (reinserts >= 2) { try { observer.disconnect(); } catch(_) {} }
+        });
+        observer.observe(container, { childList: true, subtree: true });
+        try { container.__kayakoQCPersistObserver = observer; } catch(_) {}
+        // Safety stop
+        setTimeout(() => { try { observer.disconnect(); } catch(_) {} }, 10000);
     } catch (_) {}
 }
 
@@ -2635,6 +2764,82 @@ function postCleanForFroala(root) {
     });
 }
 
+// Prepare editor HTML just before sending to minimize server-side reformatting
+function normalizeEditorContentForSend(editor) {
+    try {
+        if (!editor) return;
+        // Safety-first: temporarily disable pre-send normalization to avoid any data loss
+        return;
+    } catch (_) {}
+}
+
+function getActiveEditorNearButton(btn) {
+    try {
+        const container = btn && btn.closest && btn.closest('.ko-text-editor__container_1p5g6r');
+        // Prefer the currently focused/selection editor inside this container
+        let editor = null;
+        const sel = window.getSelection && window.getSelection();
+        if (sel && sel.anchorNode) {
+            const node = (sel.anchorNode.nodeType === 3) ? sel.anchorNode.parentElement : sel.anchorNode;
+            const ed = node && node.closest && node.closest('.fr-element');
+            if (ed && (!container || (container.contains && container.contains(ed)))) editor = ed;
+        }
+        if (!editor && container) editor = container.querySelector('.fr-element');
+        if (!editor) editor = document.querySelector('.fr-element');
+        return editor;
+    } catch (_) { return document.querySelector('.fr-element'); }
+}
+
+function disableQCSnippetPersistenceNearButton(btn) {
+    try {
+        const container = btn && btn.closest && btn.closest('.ko-text-editor__container_1p5g6r');
+        if (container) {
+            try { container.dataset.qcPersistDisabled = '1'; } catch(_) {}
+            try {
+                const froalaContainer = container.querySelector('.froala-editor-container') || container;
+                const obs = froalaContainer.__kayakoQCPersistObserver;
+                if (obs && obs.disconnect) { try { obs.disconnect(); } catch(_) {} }
+            } catch(_) {}
+        }
+        try { window.__kayakoQCPasteBlockReinsert = Date.now(); } catch(_) {}
+    } catch(_) {}
+}
+
+function collapseBlankBlocks(root) {
+    const isTrivial = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        const tag = String(el.nodeName).toLowerCase();
+        if (!['p','div'].includes(tag)) return false;
+        const html = String(el.innerHTML || '').replace(/\s|&nbsp;/g, '').toLowerCase();
+        return html === '' || html === '<br>';
+    };
+    const blocks = Array.from(root.children || []);
+    let lastWasBlank = false;
+    for (let i = 0; i < blocks.length; i++) {
+        const el = blocks[i];
+        if (isTrivial(el)) {
+            if (lastWasBlank) { try { el.remove(); } catch(_) {} } else { lastWasBlank = true; }
+        } else {
+            lastWasBlank = false;
+        }
+    }
+    // Trim leading/trailing blank blocks
+    while (root.firstElementChild && isTrivial(root.firstElementChild)) {
+        try { root.removeChild(root.firstElementChild); } catch(_) {}
+    }
+    while (root.lastElementChild && isTrivial(root.lastElementChild)) {
+        try { root.removeChild(root.lastElementChild); } catch(_) {}
+    }
+    // Remove trailing <br> inside non-empty p/div/li to avoid extra newline rendering
+    root.querySelectorAll('p, div, li').forEach(el => {
+        const html = String(el.innerHTML || '').trim().toLowerCase();
+        if (html === '<br>' || html === '') return; // keep empty line placeholders
+        while (el.lastChild && String(el.lastChild.nodeName).toLowerCase() === 'br') {
+            try { el.removeChild(el.lastChild); } catch(_) { break; }
+        }
+    });
+}
+
 // Clean up toolbar listeners after activation
 function cleanupToolbarListeners(toolbar, buttons, handler) {
     console.log('📏 Cleaning up toolbar listeners');
@@ -2736,7 +2941,24 @@ function animateEditorToHeight(editor, targetHeight) {
 function setupTicketHistoryTracking() {
     // console.log('📚 Setting up ticket history tracking');
     
-    // Listen for clicks on Send buttons
+    // Pre-normalize HTML on mousedown (capture) before Kayako handles Send
+    document.addEventListener('mousedown', (e) => {
+        const target = e.target;
+        const isSend = (
+            (target.matches && target.matches('button[class*="ko-button__primary"], button[class*="ko-button__shared"]')) ||
+            (target.closest && target.closest('button[class*="ko-button__primary"], button[class*="ko-button__shared"]'))
+        ) && /send/i.test((target.textContent || target.innerText || target.closest('button')?.textContent || ''));
+        if (!isSend) return;
+        try {
+            const btn = target.closest ? (target.closest('button') || target) : target;
+            // Prevent QC snippet persistence reinserts on send
+            try { disableQCSnippetPersistenceNearButton(btn); } catch(_) {}
+            const editor = getActiveEditorNearButton(btn);
+            if (editor) normalizeEditorContentForSend(editor);
+        } catch (_) {}
+    }, true);
+
+    // Listen for clicks on Send buttons (bubbling) to track ticket and shrink
     document.addEventListener('click', (e) => {
         const target = e.target;
         
