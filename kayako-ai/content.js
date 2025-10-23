@@ -434,6 +434,20 @@ class KayakoAIEnhancer {
     return templateData;
   }
 
+  // Remove leading/trailing separator lines (e.g., ======) and empty lines
+  cleanTemplateEdges(text) {
+    try {
+      const lines = (text || '').split(/\r?\n/);
+      while (lines.length && (/^\s*$/.test(lines[0]) || /^[-=]{3,}\s*$/.test(lines[0].trim()))) {
+        lines.shift();
+      }
+      while (lines.length && (/^\s*$/.test(lines[lines.length - 1]) || /^[-=]{3,}\s*$/.test(lines[lines.length - 1].trim()))) {
+        lines.pop();
+      }
+      return lines.join('\n').trim();
+    } catch (_) { return (text || '').trim(); }
+  }
+
   extractTextWithLinkPlaceholders(editorElement) {
     // Clone the element to avoid modifying the original
     const clonedElement = editorElement.cloneNode(true);
@@ -520,7 +534,9 @@ class KayakoAIEnhancer {
     const patterns = [
       /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i,
       /What is the PR to the customer\?\s*([\s\S]*?)\s*Best regards,/i,
-      /PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i
+      /PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i,
+      // Variants ending at Additional Context?
+      /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Additional\s*Context\?/i
     ];
     
     for (let i = 0; i < patterns.length; i++) {
@@ -529,7 +545,7 @@ class KayakoAIEnhancer {
       
       if (match) {
         // Extract the content between the markers (can be empty/whitespace)
-        const extractedText = match[1] ? match[1].trim() : '';
+        const extractedText = match[1] ? this.cleanTemplateEdges(match[1]) : '';
         console.log('🎯 Extracted text from PR template (can be empty):', JSON.stringify(extractedText));
         console.log('🎯 Template detected with', extractedText.length, 'characters of content');
         
@@ -543,6 +559,34 @@ class KayakoAIEnhancer {
       }
     }
     
+    // Fallback: manual boundary search to be resilient to minor formatting changes
+    try {
+      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\b/i;
+      const endRe1 = /Best\s+regards,/i;
+      const endRe2 = /Additional\s*Context\?/i;
+      const startM = startRe.exec(text);
+      if (startM) {
+        const startIdx = startM.index + startM[0].length;
+        // Find first end marker after start
+        const rest = text.slice(startIdx);
+        const m1 = endRe1.exec(rest);
+        const m2 = endRe2.exec(rest);
+        let endIdx = rest.length;
+        if (m1 && m2) endIdx = Math.min(m1.index, m2.index);
+        else if (m1) endIdx = m1.index;
+        else if (m2) endIdx = m2.index;
+        const between = this.cleanTemplateEdges(rest.slice(0, endIdx));
+        console.log('🎯 Fallback template extraction used. Length:', between.length);
+        return {
+          hasTemplate: true,
+          extractedText: between,
+          fullText: text,
+          editorElement: editorElement,
+          originalHTML: editorElement.innerHTML
+        };
+      }
+    } catch (_) {}
+
     console.log('📝 No PR template found with any pattern, using full text');
     return {
       hasTemplate: false,
@@ -612,16 +656,25 @@ class KayakoAIEnhancer {
       const inserted = this.replaceTemplatePlaceholder(editorElement, textWithRestoredMedia);
       if (!inserted) {
         console.warn('⚠️ Could not locate template markers reliably; falling back to regex replace');
-        // Use innerHTML replacement with regex to preserve HTML structure
-        console.log('🔧 Performing HTML-based surgical replacement (fallback)');
-        console.log('🔍 Looking for text to replace:', JSON.stringify(textData.extractedText));
-        console.log('🔍 New text with links restored:', JSON.stringify(textWithRestoredLinks));
-        const escapedOriginalText = textData.extractedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const newHTML = textData.originalHTML.replace(
-          new RegExp(escapedOriginalText, 'g'),
-          this.normalizeHTMLForInsert(textWithRestoredMedia)
-        );
-        editorElement.innerHTML = newHTML;
+        const cleanedOriginal = (textData.extractedText || '').trim();
+        if (cleanedOriginal.length > 0) {
+          // Use innerHTML replacement with regex to preserve HTML structure
+          console.log('🔧 Performing HTML-based surgical replacement (fallback with non-empty original)');
+          const escapedOriginalText = cleanedOriginal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const newHTML = textData.originalHTML.replace(
+            new RegExp(escapedOriginalText, 'g'),
+            this.normalizeHTMLForInsert(textWithRestoredMedia)
+          );
+          editorElement.innerHTML = newHTML;
+        } else {
+          // Empty placeholder: insert immediately after the start marker
+          console.log('🔧 Empty placeholder; inserting after start marker');
+          const insertedAtStart = this.insertAfterTemplateStart(editorElement, this.normalizeHTMLForInsert(textWithRestoredMedia));
+          if (!insertedAtStart) {
+            console.warn('⚠️ Could not insert after start marker; falling back to end append');
+            editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestoredMedia);
+          }
+        }
       }
       
     } else {
@@ -735,7 +788,10 @@ class KayakoAIEnhancer {
   replaceTemplatePlaceholder(editorElement, newTextHTML) {
     try {
       const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i;
-      const endRe = /Best\s+regards,/i;
+      const endReList = [
+        /Best\s+regards,/i,
+        /Additional\s*Context\?/i
+      ];
       
       const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
       let startNode = null, startOffset = 0, endNode = null, endOffset = 0;
@@ -750,25 +806,39 @@ class KayakoAIEnhancer {
             startOffset = m.index + m[0].length;
           }
         } else {
-          const m2 = val.match(endRe);
-          if (m2) {
-            endNode = node;
-            endOffset = m2.index;
-            break;
+          for (const endRe of endReList) {
+            const m2 = val.match(endRe);
+            if (m2) {
+              endNode = node;
+              endOffset = m2.index;
+              break;
+            }
           }
+          if (endNode) break;
         }
       }
       
-      if (!startNode || !endNode) {
-        console.warn('⚠️ Could not find both template markers for insertion');
+      if (!startNode && !endNode) {
+        console.warn('⚠️ Could not find template markers for insertion');
         return false;
+      }
+
+      // If no end marker, place at end of editor
+      if (startNode && !endNode) {
+        endNode = editorElement.lastChild;
+        endOffset = endNode && endNode.nodeType === Node.TEXT_NODE ? endNode.nodeValue.length : 0;
+      }
+      // If no start marker, place before the end marker (rare)
+      if (!startNode && endNode) {
+        startNode = editorElement.firstChild;
+        startOffset = 0;
       }
       
       const range = document.createRange();
       range.setStart(startNode, startOffset);
       range.setEnd(endNode, endOffset);
       
-      // Delete existing (empty/whitespace) content between markers
+      // Delete existing content between markers (could be empty)
       range.deleteContents();
       
       // Prepare fragment from new HTML (convert if needed)
@@ -785,6 +855,38 @@ class KayakoAIEnhancer {
       return true;
     } catch (e) {
       console.error('Template placeholder replacement failed:', e);
+      return false;
+    }
+  }
+
+  // Insert content right after the PR start marker when placeholder is empty
+  insertAfterTemplateStart(editorElement, newTextHTML) {
+    try {
+      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i;
+      const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
+      let startNode = null, startOffset = 0;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const val = node.nodeValue;
+        const m = val.match(startRe);
+        if (m) {
+          startNode = node;
+          startOffset = m.index + m[0].length;
+          break;
+        }
+      }
+      if (!startNode) return false;
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.collapse(true);
+      const fragment = document.createDocumentFragment();
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = newTextHTML;
+      while (wrapper.firstChild) fragment.appendChild(wrapper.firstChild);
+      range.insertNode(fragment);
+      return true;
+    } catch (e) {
+      console.warn('Failed to insert after template start:', e);
       return false;
     }
   }
@@ -1622,7 +1724,7 @@ class KayakoAIEnhancer {
         ${hasExistingText ? `
         <div class="ai-preview-section">
           <div class="ai-preview-label">Current text:</div>
-          <div class="ai-preview-text ai-preview-original">${existingText}</div>
+          <div class="ai-preview-text ai-preview-original">${this.escapeHTML(this.cleanTemplateEdges(existingText))}</div>
         </div>` : ''}
         <div class="ai-preview-section">
           <div class="ai-preview-label">Generated content:</div>
