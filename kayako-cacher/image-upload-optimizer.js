@@ -13,6 +13,7 @@ class KayakoImageOptimizer {
     };
     this.disabled = false;
     this.caretMarkerId = null;
+    this._stabilizeTimers = [];
     
     this.init();
   }
@@ -423,14 +424,19 @@ class KayakoImageOptimizer {
               if (lastImg && lastImg.src === url) {
                 // Position cursor after image and keep it there with delayed stabilization
                 $editor.froalaEditor('selection.setAfter', lastImg);
-                const restabilize = () => {
+                this.attachUserActionCancelers();
+                this.scheduleStabilize(() => {
                   try {
                     $editor.froalaEditor('events.focus');
                     $editor.froalaEditor('selection.setAfter', lastImg);
                   } catch (_) {}
-                };
-                setTimeout(restabilize, 250);
-                setTimeout(restabilize, 1500);
+                }, 250);
+                this.scheduleStabilize(() => {
+                  try {
+                    $editor.froalaEditor('events.focus');
+                    $editor.froalaEditor('selection.setAfter', lastImg);
+                  } catch (_) {}
+                }, 1500);
               }
               
               console.log('✅ Froala cursor positioned after image');
@@ -452,9 +458,10 @@ class KayakoImageOptimizer {
                   }
                 } catch (_) {}
               };
-              setTimeout(attempt, 0);
-              setTimeout(attempt, 250);
-              setTimeout(attempt, 1500);
+              this.attachUserActionCancelers();
+              this.scheduleStabilize(attempt, 0);
+              this.scheduleStabilize(attempt, 250);
+              this.scheduleStabilize(attempt, 1500);
             } catch (_) {}
           }
           $editor.froalaEditor('events.trigger', 'contentChanged');
@@ -580,6 +587,40 @@ class KayakoImageOptimizer {
       console.warn('Cursor positioning failed:', e);
       return false;
     }
+  }
+
+  // Selection stabilization helpers
+  scheduleStabilize(callback, delayMs) {
+    try {
+      const id = setTimeout(() => {
+        // Remove from list when fired
+        this._stabilizeTimers = this._stabilizeTimers.filter(t => t !== id);
+        try { callback && callback(); } catch (_) {}
+      }, Math.max(0, delayMs || 0));
+      this._stabilizeTimers.push(id);
+      return id;
+    } catch (_) { return null; }
+  }
+
+  cancelStabilize() {
+    try {
+      this._stabilizeTimers.forEach(id => { try { clearTimeout(id); } catch (_) {} });
+      this._stabilizeTimers = [];
+    } catch (_) {}
+  }
+
+  attachUserActionCancelers() {
+    try {
+      const cancel = () => {
+        try { this.cancelStabilize(); } catch (_) {}
+        try { document.removeEventListener('mousedown', cancel, true); } catch (_) {}
+        try { document.removeEventListener('keydown', cancel, true); } catch (_) {}
+        try { document.removeEventListener('selectionchange', cancel, true); } catch (_) {}
+      };
+      document.addEventListener('mousedown', cancel, true);
+      document.addEventListener('keydown', cancel, true);
+      document.addEventListener('selectionchange', cancel, true);
+    } catch (_) {}
   }
 
   findEditableContainer(node) {
