@@ -792,9 +792,11 @@ class KayakoAIEnhancer {
         /Best\s+regards,/i,
         /Additional\s*Context\?/i
       ];
+      const delimRe = /^\s*=+\s*$/; // delimiter lines made of '=' only
       
       const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
       let startNode = null, startOffset = 0, endNode = null, endOffset = 0;
+      let candidateEndNode = null, candidateEndOffset = 0; // end just before bottom delimiter
       
       while (walker.nextNode()) {
         const node = walker.currentNode;
@@ -806,11 +808,22 @@ class KayakoAIEnhancer {
             startOffset = m.index + m[0].length;
           }
         } else {
+          // Track bottom delimiter lines to preserve them
+          if (val && delimRe.test(val.trim())) {
+            candidateEndNode = node;
+            candidateEndOffset = 0; // end before delimiter
+          }
           for (const endRe of endReList) {
             const m2 = val.match(endRe);
             if (m2) {
-              endNode = node;
-              endOffset = m2.index;
+              // Prefer ending before the last seen delimiter if available
+              if (candidateEndNode) {
+                endNode = candidateEndNode;
+                endOffset = candidateEndOffset;
+              } else {
+                endNode = node;
+                endOffset = m2.index;
+              }
               break;
             }
           }
@@ -2134,7 +2147,7 @@ class KayakoAIEnhancer {
 
   async callAI(prompt, text, ticketContext = '', images = []) {
     // Base system prompt
-    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions.';
+    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions, and generally avoid suggesting jumping into a remote session to fix issues.';
     
     // Append custom instructions if provided (don't override)
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
