@@ -663,6 +663,18 @@ function storageSet(obj) {
   return new Promise(resolve => chrome.storage.local.set(obj, resolve));
 }
 
+/** Concurrency helper */
+async function runWithConcurrency(items, limit, task) {
+  let index = 0;
+  const workers = new Array(Math.max(1, limit)).fill(0).map(async () => {
+    while (index < items.length) {
+      const i = index++;
+      try { await task(items[i], i); } catch (_) {}
+    }
+  });
+  await Promise.all(workers);
+}
+
 /** Normalize various Kayako posts payload shapes to an array */
 function normalizePostsPayload(json) {
   try {
@@ -689,6 +701,49 @@ async function fetchLatestPostId(domain, ticketId) {
     if (pid > latest) latest = pid;
   }
   return latest;
+}
+
+/** Fetch latest post meta: id and createdAt (ms) */
+async function fetchLatestPostMeta(domain, ticketId) {
+  const url = `https://${domain}/api/v1/cases/${ticketId}/posts?limit=5`;
+  const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${domain} ticket ${ticketId}`);
+  const json = await res.json();
+  const posts = normalizePostsPayload(json);
+  let latest = { id: 0, createdAt: 0 };
+  for (const p of posts) {
+    const pid = Number(p?.id) || 0;
+    const ts = Date.parse(extractPostCreatedAt(p) || '') || 0;
+    if (pid > latest.id) latest = { id: pid, createdAt: ts };
+  }
+  return latest;
+}
+
+/** Fetch case meta (status, product, updatedAt) */
+async function fetchCaseMeta(domain, ticketId) {
+  try {
+    const url = `https://${domain}/api/v1/cases/${ticketId}`;
+    const res = await fetch(url, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const data = json?.data || json?.result || json || {};
+    const lc = (s)=> (s||'').toString().toLowerCase();
+    let status = data?.status || data?.state || data?.status_name || data?.case_status || (data?.status && data?.status?.name) || (data?.state && data?.state?.name) || '';
+    if (typeof status === 'object') status = status?.name || status?.label || '';
+    let updatedAt = Date.parse(data?.updated_at || data?.updatedAt || data?.modified_at || '') || 0;
+    let product = '';
+    try {
+      const cf = data?.custom_fields || data?.customFields || {};
+      product = cf?.Product?.value || cf?.product?.value || cf?.product || '';
+      if (!product && Array.isArray(cf)) {
+        const p = cf.find(x => lc(x?.name||'') === 'product');
+        product = p?.value || '';
+      }
+    } catch(_) {}
+    return { status: String(status||'').trim(), product: String(product||'').trim(), updatedAt };
+  } catch (_) {
+    return { status: '', product: '', updatedAt: 0 };
+  }
 }
 
 /** Fetch posts for a ticket and combine with remaining older posts (single extra call).
@@ -1017,28 +1072,71 @@ async function baselineTicketActivity(domain, ticketId) {
       return t;
     });
     if (changed) await storageSet({ ticketHistory: history });
+
+    // Also baseline bookmarks if present
+    const dataB = await storageGet(['ticketBookmarks']);
+    let bookmarks = Array.isArray(dataB.ticketBookmarks) ? dataB.ticketBookmarks : [];
+    let bChanged = false;
+    bookmarks = bookmarks.map(b => {
+      if (String(b.id) === String(ticketId) && b.domain === domain) {
+        const updated = {
+          ...b,
+          lastKnownPostId: latest || b.lastKnownPostId || 0,
+          hasUnseenActivity: false,
+          unreadCount: 0,
+          lastCheckedAt: Date.now()
+        };
+        bChanged = true;
+        return updated;
+      }
+      return b;
+    });
+    if (bChanged) await storageSet({ ticketBookmarks: bookmarks });
   } catch (e) {
     console.warn('BaselineTicketActivity failed:', e?.message || e);
   }
 }
 
 /** Check all tracked tickets and flag unseen activity */
+let _checkInFlight = false;
 async function checkAllTrackedTickets() {
+  if (_checkInFlight) return; // collapse overlapping runs
+  _checkInFlight = true;
   const data = await storageGet(['ticketHistory']);
   const history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
   if (!history.length) return;
   let mutated = false;
-  for (let i = 0; i < history.length; i++) {
-    const t = history[i];
-    if (!t || !t.id || !t.domain) continue;
+  // Per-run caches to avoid duplicate network calls
+  const caseMetaCache = new Map();
+  const latestMetaCache = new Map();
+  const keyOf = (d,id)=> `${d}:${id}`;
+  const getCaseMeta = async (d,id)=> {
+    const k = keyOf(d,id);
+    if (caseMetaCache.has(k)) return caseMetaCache.get(k);
+    const m = await fetchCaseMeta(d,id);
+    caseMetaCache.set(k,m);
+    return m;
+  };
+  const getLatestMeta = async (d,id)=> {
+    const k = keyOf(d,id);
+    if (latestMetaCache.has(k)) return latestMetaCache.get(k);
+    const m = await fetchLatestPostMeta(d,id);
+    latestMetaCache.set(k,m);
+    return m;
+  };
+  await runWithConcurrency(history, 6, async (_t, i) => {
+    const t = _t;
+    if (!t || !t.id || !t.domain) return;
     try {
-      const latest = await fetchLatestPostId(t.domain, t.id);
+      const latestMeta = await getLatestMeta(t.domain, t.id);
+      const latest = latestMeta.id;
       const baseline = Number(t.lastKnownPostId || 0);
       if (!baseline) {
         // First time baseline
-        history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        const meta = await getCaseMeta(t.domain, t.id);
+        history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: latestMeta.createdAt || meta.updatedAt || Date.now(), status: meta.status || t.status || '', product: meta.product || t.product || '' };
         mutated = true;
-        continue;
+        return;
       }
       if (latest > baseline) {
         // Fetch recent posts and apply classification using editable bot list
@@ -1099,28 +1197,185 @@ async function checkAllTrackedTickets() {
             return false;
           });
         const unreadCount = relevant.length;
+        // Enrich meta for display
+        const meta = await getCaseMeta(t.domain, t.id);
+        // Latest relevant ts (ignoring bots) for display
+        let latestRelevantTs = 0;
+        try {
+          for (const p of relevant) {
+            const ts = Date.parse(extractPostCreatedAt(p) || '') || 0;
+            if (ts > latestRelevantTs) latestRelevantTs = ts;
+          }
+          if (!latestRelevantTs) {
+            // Fallback: any non-bot (agent or customer) among fetched posts
+            for (const p of posts) {
+              const nonBot = isInternal(p) ? !isBotInternal(p) : !isBotPublic(p);
+              if (nonBot) {
+                const ts = Date.parse(extractPostCreatedAt(p) || '') || 0;
+                if (ts > latestRelevantTs) latestRelevantTs = ts;
+              }
+            }
+          }
+        } catch(_) {}
+        const displayTs = latestRelevantTs || meta.updatedAt || latestMeta.createdAt || Date.now();
         if (unreadCount > 0) {
-          history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now() };
-          mutated = true;
-        } else if (t.hasUnseenActivity || t.unreadCount) {
-          history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+          history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: meta.status || t.status || '', product: meta.product || t.product || '' };
           mutated = true;
         } else {
-          history[i] = { ...t, lastCheckedAt: Date.now() };
+          // No relevant new activity; baseline to avoid re-fetching same range
+          history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: meta.status || t.status || '', product: meta.product || t.product || '' };
           mutated = true;
         }
       } else if (t.hasUnseenActivity || t.unreadCount) {
-        history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        const meta = await getCaseMeta(t.domain, t.id);
+        const la = latestMeta.createdAt || meta.updatedAt || t.lastActivityAt || Date.now();
+        history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: la, status: meta.status || t.status || '', product: meta.product || t.product || '' };
         mutated = true;
       } else {
-        history[i] = { ...t, lastCheckedAt: Date.now() };
+        const meta = await getCaseMeta(t.domain, t.id);
+        const la = latestMeta.createdAt || meta.updatedAt || t.lastActivityAt || Date.now();
+        history[i] = { ...t, lastCheckedAt: Date.now(), lastActivityAt: la, status: meta.status || t.status || '', product: meta.product || t.product || '' };
         mutated = true;
       }
     } catch (e) {
       console.warn('Ticket check failed:', t?.id, e?.message || e);
     }
-  }
+  });
   if (mutated) await storageSet({ ticketHistory: history });
+
+  // Prune closed/resolved tickets from recents (rolling list)
+  try {
+    const data2 = await storageGet(['recentTickets']);
+    let recents = Array.isArray(data2.recentTickets) ? data2.recentTickets : [];
+    if (recents && recents.length) {
+      const pruned = [];
+      for (const r of recents) {
+        try {
+          const meta = await getCaseMeta(r.domain, r.id);
+          const s = String(meta.status || '').toLowerCase();
+          const isClosed = ['closed','completed','resolved','done'].some(x => s.includes(x));
+          if (!isClosed) pruned.push(r);
+        } catch (_) {
+          pruned.push(r);
+        }
+      }
+      if (pruned.length !== recents.length) await storageSet({ recentTickets: pruned.slice(0, 15) });
+    }
+  } catch (_) {}
+
+  // Also check bookmarked tickets for unread (skip closed/resolved)
+  try { await checkAllBookmarkedTickets(); } catch (_) {}
+  _checkInFlight = false;
+}
+
+/** Check bookmarks for unseen activity; skip closed tickets entirely */
+async function checkAllBookmarkedTickets() {
+  const data = await storageGet(['ticketBookmarks', 'ignoredBotsPublic', 'ignoredBotsInternal']);
+  let bookmarks = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
+  if (!bookmarks.length) return;
+  const ignoredPublic = Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic.map(b => String(b).toLowerCase()) : ['hermes'];
+  const ignoredInternal = Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal.map(b => String(b).toLowerCase()) : ['centralsupport-ai-acc','lachesis'];
+  const lc = (s)=> (s||'').toString().toLowerCase();
+  const nameOf = (p)=> lc(p?.creator?.name || p?.author?.name || p?.actor?.name || p?.created_by?.name || p?.user?.name || p?.sender?.name || p?.from?.name || p?.from_name || '');
+  const emailOf = (p)=> lc(p?.creator?.email || p?.author?.email || p?.actor?.email || p?.created_by?.email || p?.user?.email || p?.sender?.email || p?.from?.email || p?.email || '');
+  const typeOf = (p)=> lc(p?.creator?.type || p?.actor?.type || p?.created_by?.type || p?.user?.type || p?.creator_type || p?.actor_type || p?.role || '');
+  const isInternal = (p)=> {
+    const t = lc(p?.type || p?.post_type || p?.category || '');
+    const vis = lc(p?.visibility || '');
+    const ch = lc(p?.channel || '');
+    return p?.is_internal === true || p?.isInternal === true || vis === 'internal' || ch === 'internal' || t.includes('note') || t.includes('internal') || p?.private === true;
+  };
+  const isPublic = (p)=> {
+    if (isInternal(p)) return false;
+    if (p?.is_public === true || p?.isPublic === true) return true;
+    const vis = lc(p?.visibility || '');
+    return vis ? vis === 'public' : true;
+  };
+  const isBotPublic = (p)=> {
+    const nm = nameOf(p), em = emailOf(p);
+    return ignoredPublic.some(b => nm.includes(b) || em.includes(b));
+  };
+  const isBotInternal = (p)=> {
+    const nm = nameOf(p), em = emailOf(p);
+    return ignoredInternal.some(b => nm.includes(b) || em.includes(b));
+  };
+  const isCustomer = (p)=> {
+    const t = typeOf(p);
+    if (t && ['customer','user','requester','end_user','end-user','client','contact'].some(k => t.includes(k))) return true;
+    const flags = [p?.is_customer, p?.isCustomer, p?.from_customer, p?.fromCustomer, p?.is_user, p?.isUser, p?.is_requester, p?.isRequester, p?.requester === true, p?.contact_type === 'customer'];
+    return flags.some(Boolean);
+  };
+  const pid = (p)=> Number(p?.id || p?.post_id || p?.uid || p?.postId || p?.message_id || 0) || 0;
+
+  let mutated = false;
+  await runWithConcurrency(bookmarks, 6, async (_b, i) => {
+    const b = _b;
+    if (!b || !b.id || !b.domain) return;
+    try {
+      const meta = await fetchCaseMeta(b.domain, b.id);
+      const statusLc = lc(meta.status || b.status || '');
+      const isClosed = ['closed','completed','resolved','done'].some(x => statusLc.includes(x));
+      // Always update meta fields
+      let updated = { ...b, status: meta.status || b.status || '', product: meta.product || b.product || '', lastActivityAt: meta.updatedAt || b.lastActivityAt || 0, lastCheckedAt: Date.now() };
+      if (isClosed) {
+        // Skip polling posts; clear unread
+        updated.hasUnseenActivity = false;
+        updated.unreadCount = 0;
+        bookmarks[i] = updated;
+        mutated = true;
+        return;
+      }
+      const latest = await fetchLatestPostId(b.domain, b.id);
+      const baseline = Number(b.lastKnownPostId || 0);
+      if (!baseline) {
+        bookmarks[i] = { ...updated, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0 };
+        mutated = true;
+        return;
+      }
+      if (latest > baseline) {
+        const postsUrl = `https://${b.domain}/api/v1/cases/${b.id}/posts?limit=25`;
+        let posts = [];
+        try {
+          const res = await fetch(postsUrl, { credentials: 'include', headers: { 'Accept': 'application/json' } });
+          const json = await res.json();
+          posts = normalizePostsPayload(json);
+        } catch (_) {}
+        const relevant = posts
+          .filter(p => pid(p) > baseline)
+          .filter(p => {
+            if (isInternal(p)) {
+              if (isBotInternal(p)) return false;
+              return true;
+            }
+            if (isPublic(p)) {
+              if (isBotPublic(p)) return false;
+              return isCustomer(p);
+            }
+            return false;
+          });
+        const unreadCount = relevant.length;
+        if (unreadCount > 0) {
+          bookmarks[i] = { ...updated, hasUnseenActivity: true, unreadCount };
+          mutated = true;
+        } else if (b.hasUnseenActivity || b.unreadCount) {
+          bookmarks[i] = { ...updated, hasUnseenActivity: false, unreadCount: 0 };
+          mutated = true;
+        } else {
+          bookmarks[i] = updated;
+          mutated = true;
+        }
+      } else if (b.hasUnseenActivity || b.unreadCount) {
+        bookmarks[i] = { ...updated, hasUnseenActivity: false, unreadCount: 0 };
+        mutated = true;
+      } else {
+        bookmarks[i] = updated;
+        mutated = true;
+      }
+    } catch (e) {
+      console.warn('Bookmark check failed:', b?.id, e?.message || e);
+    }
+  });
+  if (mutated) await storageSet({ ticketBookmarks: bookmarks });
 }
 
 // Schedule periodic checks

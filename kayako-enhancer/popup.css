@@ -130,6 +130,18 @@ input:checked + .toggle-slider:before {
     margin-bottom: 12px;
 }
 
+.filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #f1f5f9;
+    font-size: 11px;
+}
+.filter-toggle input { margin: 0; }
+
 .small-btn {
     width: auto !important;
     flex: 1;

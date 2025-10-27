@@ -32,6 +32,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const refreshBookmarksBtn = document.getElementById('refresh-bookmarks');
     const recentContainer = document.getElementById('recent-tickets-container');
     const bookmarksContainer = document.getElementById('bookmarks-container');
+    const filterUnread = document.getElementById('filter-unread');
     const ignoredBotsPublicInput = document.getElementById('ignored-bots-public');
     const ignoredBotsInternalInput = document.getElementById('ignored-bots-internal');
     const saveIgnoredBotsBtn = document.getElementById('save-ignored-bots');
@@ -211,7 +212,11 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     
     // Load unified Recent list on popup open (history + recents)
-    loadUnifiedRecent();
+    // Restore unread filter state
+    chrome.storage.local.get(['recentUnreadOnly'], (cfg) => {
+        if (filterUnread) filterUnread.checked = !!cfg.recentUnreadOnly;
+        loadUnifiedRecent();
+    });
     // Touch current ticket and populate recents/bookmarks/bots
     touchCurrentTicket();
     // We still load bookmarks and bots immediately
@@ -226,6 +231,15 @@ document.addEventListener("DOMContentLoaded", function () {
         toggleAdvanced.addEventListener('click', (e) => {
             e.preventDefault();
             advancedPanel.classList.toggle('hidden');
+        });
+    }
+
+    // Unread-only filter
+    if (filterUnread) {
+        filterUnread.addEventListener('change', () => {
+            chrome.storage.local.set({ recentUnreadOnly: filterUnread.checked });
+            // Re-render using cached unified list if present
+            try { displayTicketHistory(__cachedUnified && __cachedUnified.length ? __cachedUnified : __lastTicketHistoryCache); } catch (_) {}
         });
     }
     // Save API key (auto-detect provider)
@@ -393,7 +407,7 @@ function mergeHistoryAndRecents(history, recents){
     const key = (x)=> `${x.domain||''}:${x.id}`;
     (recents||[]).forEach(r => { if (!r) return; map[key(r)] = { ...r, touchedAt: r.touchedAt || r.timestamp || Date.now() }; });
     (history||[]).forEach(h => { if (!h) return; const k = key(h); map[k] = { ...(map[k]||{}), ...h }; });
-    return Object.values(map).sort((a,b) => (Number(b.touchedAt||b.timestamp||b.lastCheckedAt||0) - Number(a.touchedAt||a.timestamp||a.lastCheckedAt||0)));
+    return Object.values(map).sort((a,b) => (Number(b.lastActivityAt||b.touchedAt||b.timestamp||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.touchedAt||a.timestamp||a.lastCheckedAt||0)));
 }
 
 // Tabs
@@ -490,13 +504,17 @@ function displayBookmarks(list){
     }
     let html = '';
     list.forEach(b => {
+        const unread = Number(b.unreadCount || 0);
+        const hasUnseen = !!b.hasUnseenActivity || unread > 0;
+        const unreadDot = hasUnseen ? '<span class="unread-dot" title="' + (unread ? unread + ' new' : 'New activity') + '"></span>' : '';
+        const when = Number(b.lastActivityAt || b.createdAt || b.lastCheckedAt || Date.now());
         const note = b.note ? `<div class="bookmark-note">${escapeHtml(String(b.note))}</div>` : '';
         html += `
             <div class="ticket-item" data-ticket-id="${b.id}">
                 <div class="ticket-info">
-                    <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${b.url}" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">#${b.id}</a></div>
+                    <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${b.url}" data-ticket-id="${b.id}" data-domain="${b.domain || ''}">#${b.id}</a>${unreadDot}</div>
                     <div class="ticket-title" title="${b.title}">${b.title}</div>
-                    <div class="ticket-meta">${b.domain || ''}</div>
+                    <div class="ticket-meta">${b.domain || ''}${b.product ? ' • ' + b.product : ''}${b.status ? ' • ' + b.status : ''}${when ? ' • ' + getRelativeTime(when) : ''}${unread ? ' • ' + unread + ' new' : (hasUnseen ? ' • new' : '')}</div>
                     ${note}
                 </div>
                 <div class="ticket-actions">
@@ -518,10 +536,23 @@ function displayBookmarks(list){
         a.addEventListener('click', (e) => {
             e.preventDefault();
             const url = e.currentTarget.dataset.url;
+            const ticketId = e.currentTarget.dataset.ticketId;
+            const domain = e.currentTarget.dataset.domain || '';
             try {
                 chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {});
             } catch (_) {
                 try { chrome.tabs.create({ url, active: false }); } catch (_) {}
+            }
+            try {
+                __optimisticCleared.add(String(ticketId));
+                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
+                    const item = e.currentTarget.closest('.ticket-item');
+                    clearUnreadForItem(item);
+                });
+            } catch (_) {
+                __optimisticCleared.add(String(ticketId));
+                const item = e.currentTarget.closest('.ticket-item');
+                clearUnreadForItem(item);
             }
         });
     });
@@ -683,13 +714,21 @@ function displayTicketHistory(history) {
         return;
     }
     
+    // Apply unread-only filter if enabled
+    let list = history.slice(0);
+    const filterEl = document.getElementById('filter-unread');
+    if (filterEl && filterEl.checked) {
+        list = list.filter(t => (t && (t.hasUnseenActivity || Number(t.unreadCount||0) > 0)));
+    }
     let historyHTML = '';
-    history.slice(0, 20).forEach(ticket => { // Show only last 20 in popup
-        const relativeTime = getRelativeTime(ticket.timestamp);
+    list.slice(0, 20).forEach(ticket => { // Show only last 20 in popup
+        const when = Number(ticket.lastActivityAt || ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now());
         const unread = Number(ticket.unreadCount || 0);
         const hasUnseen = !!ticket.hasUnseenActivity || unread > 0;
         const unreadDot = hasUnseen ? `<span class="unread-dot" title="${unread ? unread + ' new' : 'New activity'}"></span>` : '';
         const unreadMeta = unread ? ` • ${unread} new` : (hasUnseen ? ' • new' : '');
+        const prod = ticket.product ? ` • ${ticket.product}` : '';
+        const status = ticket.status ? ` • ${ticket.status}` : '';
         
         historyHTML += `
             <div class="ticket-item" data-ticket-id="${ticket.id}">
@@ -697,7 +736,7 @@ function displayTicketHistory(history) {
                     <div class="ticket-id"><a href="#" class="ticket-id-link" data-url="${ticket.url}" data-ticket-id="${ticket.id}" data-domain="${ticket.domain || ''}">#${ticket.id}</a>${unreadDot}</div>
                     <div class="ticket-title" title="${ticket.title}">${ticket.title}</div>
                     <div class="ticket-meta">
-                        ${ticket.customer ? ticket.customer + ' • ' : ''}${getRelativeTime(ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now())}${ticket.domain ? ' • ' + ticket.domain : ''}${unreadMeta}
+                        ${ticket.customer ? ticket.customer + ' • ' : ''}${getRelativeTime(when)}${ticket.domain ? ' • ' + ticket.domain : ''}${prod}${status}${unreadMeta}
                     </div>
                 </div>
                 <div class="ticket-actions">

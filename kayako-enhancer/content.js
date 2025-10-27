@@ -692,6 +692,17 @@ function suggestReplaceURLWithTitle(editor, url) {
         if (!isUrlPresentInEditor(editor, url)) {
             return;
         }
+        // If an anchor exists for this URL and its visible text is NOT a raw URL,
+        // then the link is already titled; skip fetching/suggesting entirely.
+        try {
+            const a = findAnchorForURL(editor, url);
+            if (a) {
+                const visible = (a.textContent || '').trim();
+                if (visible && !isLikelyRawUrlText(visible, url)) {
+                    return;
+                }
+            }
+        } catch (_) {}
         // De-dupe: avoid parallel/rapid duplicate requests for same editor+URL
         const edKey = ensureEditorUid(editor);
         window.__kayakoSuggestInflight = window.__kayakoSuggestInflight || Object.create(null);
@@ -778,6 +789,17 @@ function suggestReplaceURLWithTitle(editor, url) {
                 console.log('⚠️ Title looks like URL or equals URL, skipping suggestion for', url, 'title:', title);
                 return;
             }
+            // If an anchor exists and its current visible text already equals this title, skip
+            try {
+                const a = findAnchorForURL(editor, url);
+                if (a) {
+                    const norm = (s) => decodeHtmlEntities(String(s || '')).replace(/\s+/g,' ').trim().toLowerCase();
+                    const visible = (a.textContent || '').trim();
+                    if (norm(visible) === norm(title)) {
+                        return;
+                    }
+                }
+            } catch (_) {}
             
             // Build and show suggestion UI
             console.log('🏷️ Title fetched:', title);
@@ -1557,6 +1579,173 @@ function scanEditorForAutoLinks(editor) {
     } catch (_) {}
 }
 
+// Attempt to manually auto-link a raw URL immediately before the caret when
+// Space/Enter is pressed, even if there is trailing content to the right.
+function tryManualAutolinkAtCaret(editor) {
+    try {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || !sel.isCollapsed) return false;
+        const range = sel.getRangeAt(0);
+        if (!editor.contains(range.startContainer)) return false;
+        let node = range.startContainer;
+        let offset = range.startOffset;
+        // Normalize to a text node at/before caret
+        if (node.nodeType !== 3) {
+            // Find deepest text node before current offset
+            let cursor = node;
+            if (cursor.childNodes && cursor.childNodes.length) {
+                let i = Math.min(offset, cursor.childNodes.length) - 1;
+                for (; i >= 0; i--) {
+                    let n = cursor.childNodes[i];
+                    while (n && n.nodeType === 1 && n.lastChild) n = n.lastChild;
+                    if (n && n.nodeType === 3) { node = n; offset = n.nodeValue.length; break; }
+                }
+            }
+            if (node.nodeType !== 3) return false;
+        }
+        const left = String(node.nodeValue || '').slice(0, offset);
+        if (!left) return false;
+        // Allow trailing whitespace after URL (user just pressed space/enter)
+        const trimmedEnd = left.replace(/\s+$/,'');
+        const m = trimmedEnd.match(/(https?:\/\/[^\s)<>]+)$/i);
+        if (!m) return false;
+        const urlText = m[1];
+        if (!isValidURL(urlText)) return false;
+        // Avoid if already an anchor exists for the same URL
+        try { if (findAnchorForURL(editor, urlText)) return false; } catch (_) {}
+        const trailingWsLen = left.length - trimmedEnd.length;
+        const startOffset = left.length - trailingWsLen - urlText.length;
+        if (startOffset < 0) return false;
+        const urlRange = document.createRange();
+        urlRange.setStart(node, startOffset);
+        urlRange.setEnd(node, startOffset + urlText.length);
+        const link = document.createElement('a');
+        link.href = urlText;
+        link.textContent = urlText;
+        link.target = '_blank';
+        urlRange.deleteContents();
+        urlRange.insertNode(link);
+        // Restore caret after the typed whitespace if it exists
+        const after = link.nextSibling;
+        const newSel = window.getSelection();
+        if (after && after.nodeType === 3) {
+            const wsPrefix = (after.nodeValue.match(/^\s+/) || [''])[0].length;
+            const caretPos = Math.min(wsPrefix, after.nodeValue.length);
+            const caretRange = document.createRange();
+            caretRange.setStart(after, caretPos);
+            caretRange.setEnd(after, caretPos);
+            newSel.removeAllRanges();
+            newSel.addRange(caretRange);
+        } else {
+            const caretRange = document.createRange();
+            caretRange.setStartAfter(link);
+            caretRange.setEndAfter(link);
+            newSel.removeAllRanges();
+            newSel.addRange(caretRange);
+        }
+        try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
+        // Kick off title suggestion for this new anchor
+        setTimeout(() => { try { trySuggestTitleReplace(editor, urlText, 1); } catch (_) {} }, 60);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function setupManualAutolink(editor) {
+    try {
+        if (editor.dataset.manualAutolinkSetup === 'true') return;
+        editor.dataset.manualAutolinkSetup = 'true';
+        const onKey = (e) => {
+            if (e && (e.key === ' ' || e.key === 'Enter')) {
+                // Allow the keystroke to update DOM, then attempt autolink
+                setTimeout(() => { try { tryManualAutolinkAtCaret(editor); } catch (_) {} }, 0);
+            }
+        };
+        editor.addEventListener('keyup', onKey, true);
+    } catch (_) {}
+}
+
+// Normalize a single <li> after word-deletion to prevent stray <br> or wrappers
+function normalizeListItemAfterEdit(li) {
+    try {
+        if (!li || li.nodeName.toLowerCase() !== 'li') return;
+        // Remove Froala br-wrapper artifacts within li
+        try { li.querySelectorAll('div.br-wrapper, div[class*="br-wrapper"]').forEach(n => { try { n.remove(); } catch(_) {} }); } catch(_) {}
+        // Convert inline-only divs to p
+        try {
+            li.querySelectorAll('div').forEach(div => {
+                const hasBlockDesc = !!div.querySelector('div, p, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
+                if (!hasBlockDesc) {
+                    const p = document.createElement('p');
+                    while (div.firstChild) p.appendChild(div.firstChild);
+                    div.parentNode.replaceChild(p, div);
+                }
+            });
+        } catch(_) {}
+        // Collapse consecutive <br> siblings
+        const collapseConsecutiveBr = (el) => {
+            let i = 0;
+            while (i < el.childNodes.length - 1) {
+                const a = el.childNodes[i];
+                const b = el.childNodes[i + 1];
+                if (a.nodeType === 1 && a.nodeName === 'BR' && b && b.nodeType === 1 && b.nodeName === 'BR') {
+                    try { el.removeChild(b); } catch(_) {}
+                    continue;
+                }
+                i++;
+            }
+        };
+        collapseConsecutiveBr(li);
+        // Remove trailing <br> if there is other content before it
+        try {
+            const html = String(li.innerHTML || '').trim().toLowerCase();
+            if (html && html !== '<br>') {
+                while (li.lastChild && li.lastChild.nodeType === 1 && li.lastChild.nodeName === 'BR') {
+                    try { li.removeChild(li.lastChild); } catch(_) { break; }
+                }
+            }
+        } catch(_) {}
+        // Trim leading nbsp/text run at start of list item
+        if (li.firstChild && li.firstChild.nodeType === 3) {
+            li.firstChild.nodeValue = (li.firstChild.nodeValue || '').replace(/^\s+/, '');
+        }
+    } catch(_) {}
+}
+
+// Set up a lightweight stabilizer: after Option+Backspace inside a list item, normalize that item
+function setupListEditStabilizer(editor) {
+    try {
+        if (editor._listStabilizerSetup) return; editor._listStabilizerSetup = true;
+        let lastAltBackspaceAt = 0;
+        editor.addEventListener('keydown', (e) => {
+            try {
+                if (e && e.altKey && (e.key === 'Backspace' || e.key === 'Delete' || e.code === 'Backspace' || e.code === 'Delete' || e.keyCode === 8 || e.keyCode === 46)) {
+                    lastAltBackspaceAt = Date.now();
+                }
+            } catch(_) {}
+        });
+        editor.addEventListener('input', () => {
+            try {
+                if (Date.now() - lastAltBackspaceAt > 400) return;
+                // Allow DOM to settle first
+                setTimeout(() => {
+                    try {
+                        const sel = window.getSelection && window.getSelection();
+                        if (!sel || !sel.rangeCount) return;
+                        const node = sel.anchorNode ? (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) : null;
+                        const li = node && node.closest && node.closest('li');
+                        if (li) {
+                            normalizeListItemAfterEdit(li);
+                            try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
+                        }
+                    } catch(_) {}
+                }, 0);
+            } catch(_) {}
+        });
+    } catch(_) {}
+}
+
 function isLikelyRawUrlText(text, href) {
     if (!text) return false;
     const t = String(text).trim();
@@ -1715,6 +1904,12 @@ function setupEditorAutoSizing() {
 
 		// Watch for Kayako auto-linking (URL text becomes anchor after typing space/enter)
 		setupAutoLinkSuggestionOnAutoAnchor(editor);
+
+		// Fallback manual auto-linking when caret is at end of a raw URL
+		setupManualAutolink(editor);
+
+		// Stabilize list editing on Option+Backspace to avoid stray line breaks
+		setupListEditStabilizer(editor);
 
         // Ctrl/Cmd+Enter shortcut to click Send
         setupSendShortcut(editor);
@@ -2370,6 +2565,10 @@ function setupQCMacroAutoPaste() {
             if (!matchesQC) return;
             const editor = window.__kayakoLastMacroEditor || document.querySelector('.fr-element');
             if (!editor) return;
+            // Open a new paste session; allow persistence until explicit Send
+            try { window.__kayakoQCPasteAllowed = true; } catch(_) {}
+            try { window.__kayakoQCPasteSessionId = (window.__kayakoQCPasteSessionId || 0) + 1; } catch(_) {}
+            try { editor.dataset.qcPasteSessionId = String(window.__kayakoQCPasteSessionId); } catch(_) {}
             window.__kayakoPendingQCPaste = true;
             waitForMacroApplyThenPaste(editor);
         } catch (_) {}
@@ -2392,6 +2591,7 @@ function setupQCMacroAutoPaste() {
 
 function waitForMacroApplyThenPaste(editor) {
     try {
+        if (window.__kayakoQCPasteAllowed === false) return;
         let settledTimer = null;
         const observer = new MutationObserver(() => {
             try { if (settledTimer) clearTimeout(settledTimer); } catch(_) {}
@@ -2404,7 +2604,13 @@ function waitForMacroApplyThenPaste(editor) {
         // Fallback in case no mutations fire
         setTimeout(() => {
             try { observer.disconnect(); } catch(_) {}
-            try { pasteLatestInternalNoteAboveFooter(editor); } catch(_) {}
+            try {
+                if (window.__kayakoQCPasteAllowed === false) return;
+                const already = editor.querySelector && editor.querySelector('[data-kayako-qc-snippet="1"]');
+                const sess = (editor && editor.dataset && editor.dataset.qcPasteSessionId) || (window.__kayakoQCPasteSessionId || '');
+                const done = !!(sess && window.__kayakoQCPasteDone && window.__kayakoQCPasteDone[sess]);
+                if (!already && !done) pasteLatestInternalNoteAboveFooter(editor);
+            } catch(_) {}
         }, 2200);
     } catch (_) {}
 }
@@ -2432,7 +2638,13 @@ function findFooterStartInEditor(editor) {
 
 function pasteLatestInternalNoteAboveFooter(editor) {
     try {
+        if (window.__kayakoQCPasteAllowed === false) return;
         if (!window.__kayakoPendingQCPaste) return;
+        const sessionId = (editor && editor.dataset && editor.dataset.qcPasteSessionId) || (window.__kayakoQCPasteSessionId || '');
+        window.__kayakoQCPasteDone = window.__kayakoQCPasteDone || Object.create(null);
+        if (sessionId && window.__kayakoQCPasteDone[sessionId]) { window.__kayakoPendingQCPaste = false; return; }
+        if (sessionId && window.__kayakoQCPasteInFlight === sessionId) { window.__kayakoPendingQCPaste = false; return; }
+        try { window.__kayakoQCPasteInFlight = sessionId || 'default'; } catch(_) {}
         window.__kayakoPendingQCPaste = false;
         if (editor.querySelector('[data-kayako-qc-snippet="1"]')) return;
         const note = findLatestInternalNoteNode();
@@ -2451,8 +2663,6 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         // Build a fragment from extracted HTML, without a wrapper to avoid Froala block merging
         const tmpWrap = document.createElement('div');
         tmpWrap.innerHTML = extracted;
-        // Finalize snippet formatting before user sees it (not at send-time)
-        try { collapseBlankBlocks(tmpWrap); } catch(_) {}
         // Trim leading trivial nodes (br/whitespace)
         while (tmpWrap.firstChild && (
             (tmpWrap.firstChild.nodeType === 3 && !(/[^\s\u00a0]/.test(tmpWrap.firstChild.nodeValue || '')))
@@ -2480,6 +2690,8 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         try { normalizeEditorTopSpacing(editor); } catch(_) {}
         try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
         try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
+        try { if (sessionId) window.__kayakoQCPasteDone[sessionId] = true; } catch(_) {}
+        try { if (window.__kayakoQCPasteInFlight === (sessionId || 'default')) window.__kayakoQCPasteInFlight = null; } catch(_) {}
 
         // Keep snippet alive briefly across Note/Public toggle re-renders
         try {
@@ -2495,6 +2707,7 @@ function ensureQCSnippetPersistence(editor, insertedHtml) {
         if (!container) return;
         // If persistence disabled (e.g., just sent), skip entirely
         if ((container.dataset && container.dataset.qcPersistDisabled === '1') ||
+            (window.__kayakoQCPasteAllowed === false) ||
             (window.__kayakoQCPasteBlockReinsert && Date.now() - window.__kayakoQCPasteBlockReinsert < 5000)) {
             return;
         }
@@ -2503,6 +2716,7 @@ function ensureQCSnippetPersistence(editor, insertedHtml) {
         const observer = new MutationObserver(() => {
             // Abort if disabled while observing
             if ((container.dataset && container.dataset.qcPersistDisabled === '1') ||
+                (window.__kayakoQCPasteAllowed === false) ||
                 (window.__kayakoQCPasteBlockReinsert && Date.now() - window.__kayakoQCPasteBlockReinsert < 5000)) {
                 try { observer.disconnect(); } catch(_) {}
                 return;
@@ -2512,6 +2726,10 @@ function ensureQCSnippetPersistence(editor, insertedHtml) {
             const currentEditor = container.querySelector('.fr-element');
             if (!currentEditor) return;
             if (currentEditor.querySelector('[data-kayako-qc-snippet="1"]')) return;
+            // Skip if the current session already pasted successfully
+            const sess = (currentEditor && currentEditor.dataset && currentEditor.dataset.qcPasteSessionId) || (window.__kayakoQCPasteSessionId || '');
+            const done = !!(sess && window.__kayakoQCPasteDone && window.__kayakoQCPasteDone[sess]);
+            if (done) { try { observer.disconnect(); } catch(_) {} return; }
             if (!insertedHtml) return;
             // Reinsert above footer if present, else append at end
             const wrap = document.createElement('div');
@@ -2697,8 +2915,7 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
         const out = document.createElement('div');
         // Clone nodes exactly as in the note first
         slice.forEach((n) => out.appendChild(n.cloneNode(true)));
-        // Normalize for Froala to avoid Enter/Backspace list corruption
-        try { postCleanForFroala(out); } catch (_) {}
+        // Preserve original structure from the template; avoid aggressive cleanups here
         return out.innerHTML;
     } catch (_) { return ''; }
 }
@@ -2801,6 +3018,13 @@ function disableQCSnippetPersistenceNearButton(btn) {
                 if (obs && obs.disconnect) { try { obs.disconnect(); } catch(_) {} }
             } catch(_) {}
         }
+        // Globally disable further QC reinserts and invalidate any paste session
+        try { window.__kayakoQCPasteAllowed = false; } catch(_) {}
+        try { window.__kayakoQCPasteSessionId = (window.__kayakoQCPasteSessionId || 0) + 1; } catch(_) {}
+        try {
+            const ed = getActiveEditorNearButton(btn);
+            if (ed && ed.dataset) ed.dataset.qcPasteSessionId = '';
+        } catch(_) {}
         try { window.__kayakoQCPasteBlockReinsert = Date.now(); } catch(_) {}
     } catch(_) {}
 }
