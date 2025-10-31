@@ -82,6 +82,14 @@ class KayakoImageOptimizer {
       if (!nonGifImages.length) {
         return; // allow native flow for GIFs
       }
+      // If we cannot find a CSRF token, let native flow handle upload to avoid 403s
+      try {
+        const quickToken = this.peekCsrfToken();
+        if (!quickToken) {
+          console.log('⚠️ CSRF token not found quickly – falling back to native drop upload');
+          return; // do not intercept
+        }
+      } catch (_) {}
       // Remember caret and block native only when we will handle
       try { this.saveCaretPosition(); } catch (_) {}
       try { e.preventDefault(); } catch (_) {}
@@ -100,6 +108,14 @@ class KayakoImageOptimizer {
       // Filter out GIFs; if nothing left, let native handler run
       const nonGifItems = imageItems.filter(item => item.type !== 'image/gif');
       if (nonGifItems.length === 0) { return; }
+      // If token cannot be found immediately, allow native paste path (prevents 403)
+      try {
+        const quickToken = this.peekCsrfToken();
+        if (!quickToken) {
+          console.log('⚠️ CSRF token not found quickly – falling back to native paste upload');
+          return; // do not intercept, let Kayako handle
+        }
+      } catch (_) {}
       
       console.log('📋 Optimizing pasted images...');
       // Save caret so we can insert at exact cursor position after upload
@@ -160,18 +176,14 @@ class KayakoImageOptimizer {
         let { width, height } = img;
         const { maxWidth, maxHeight, quality } = this.compressionSettings;
         
-        // If quality is 1.0, skip resizing entirely (preserve original dimensions)
-        const skipResize = (quality >= 1.0);
-        
-        if (!skipResize && (width > maxWidth || height > maxHeight)) {
+        // Resize only if over the configured max bounds; quality only affects JPEG compression
+        if (width > maxWidth || height > maxHeight) {
           const ratio = Math.min(maxWidth / width, maxHeight / height);
           width *= ratio;
           height *= ratio;
-          try { console.log(`🧩 Image resize → ${Math.round(width)}x${Math.round(height)} (max ${maxWidth}x${maxHeight})`); } catch (_) {}
-        } else if (skipResize) {
-          try { console.log(`🧩 Quality=1.0: preserving original size ${width}x${height} (no resize)`); } catch (_) {}
+          try { console.log(`🧩 Downscale → ${Math.round(width)}x${Math.round(height)} (max ${maxWidth}x${maxHeight})`); } catch (_) {}
         } else {
-          try { console.log(`🧩 Image within limits: ${width}x${height} (no resize needed)`); } catch (_) {}
+          try { console.log(`🧩 Within limits: ${width}x${height} (no resize)`); } catch (_) {}
         }
         
         // Ensure highest quality resampling
@@ -184,7 +196,7 @@ class KayakoImageOptimizer {
         const targetH = Math.max(1, Math.round(height));
         
         // If no resize needed (original size preserved), draw directly
-        if (skipResize || (targetW === img.width && targetH === img.height)) {
+        if ((targetW === img.width && targetH === img.height)) {
           canvas.width = img.width;
           canvas.height = img.height;
           ctx.drawImage(img, 0, 0);
@@ -263,8 +275,9 @@ class KayakoImageOptimizer {
     
     // Get CSRF token - try captured token first (from XHR headers), then DOM extraction
     let csrfToken = window.kayako_csrf_token ||
-                     document.querySelector('meta[name="csrf-token"]')?.content ||
-                     window.csrfToken || 
+                     document.querySelector('meta[name="csrf-token" i]')?.content ||
+                     document.querySelector('meta[name="x-csrf-token" i]')?.content ||
+                     window.csrfToken || window._token || 
                      this.extractCSRFFromDOM();
     
     console.log('🔑 CSRF token status:', csrfToken ? 'Found (' + csrfToken.substring(0, 10) + '...)' : 'NOT FOUND');
@@ -275,6 +288,7 @@ class KayakoImageOptimizer {
         headers['X-CSRF-Token'] = csrfToken;
         headers['X-Csrf-Token'] = csrfToken;
         headers['x-csrf-token'] = csrfToken;
+        headers['X-XSRF-TOKEN'] = csrfToken; // some stacks expect this cookie-mirrored header
       } else {
         console.warn('⚠️ No CSRF header set (token not found) – relying on same-origin cookies');
       }
@@ -294,6 +308,8 @@ class KayakoImageOptimizer {
               // Ensure header casing one more time
               if (csrfToken) {
                 try { xhr.setRequestHeader('X-Csrf-Token', csrfToken); } catch (_) {}
+                try { xhr.setRequestHeader('X-CSRF-Token', csrfToken); } catch (_) {}
+                try { xhr.setRequestHeader('X-XSRF-TOKEN', csrfToken); } catch (_) {}
               }
             },
             success: function(data) { resolve({ ok: true, json: () => data }); },
@@ -316,6 +332,30 @@ class KayakoImageOptimizer {
         return;
       }
 
+      // Use XMLHttpRequest fallback when fetch+jQuery both fail or token missing
+      const xhrUpload = () => new Promise((resolve, reject) => {
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/v1/media?include=*', true);
+          xhr.withCredentials = true;
+          try { xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest'); } catch (_) {}
+          if (csrfToken) {
+            try { xhr.setRequestHeader('X-Csrf-Token', csrfToken); } catch (_) {}
+            try { xhr.setRequestHeader('X-CSRF-Token', csrfToken); } catch (_) {}
+            try { xhr.setRequestHeader('X-XSRF-TOKEN', csrfToken); } catch (_) {}
+          }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try { resolve(JSON.parse(xhr.responseText)); } catch (_) { resolve({}); }
+            } else {
+              reject(new Error('HTTP ' + xhr.status));
+            }
+          };
+          xhr.onerror = () => reject(new Error('XHR network error'));
+          xhr.send(formData);
+        } catch (e) { reject(e); }
+      });
+
       const response = await fetch('/api/v1/media?include=*', {
         method: 'POST',
         headers: headers,
@@ -337,7 +377,13 @@ class KayakoImageOptimizer {
         this.updateUploadProgress(current, total);
         this.hideUploadProgress();
       } else {
-        throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+        // Try XHR fallback (sometimes fetch doesn’t carry needed prefilters)
+        const result = await xhrUpload();
+        console.log(`✅ Upload ${current}/${total} successful (XHR fallback)`);
+        const urlResolved = await this.resolveImageUrl(result);
+        await this.insertImageIntoEditor(urlResolved || (result.data && result.data[0] ? result.data[0] : result));
+        this.updateUploadProgress(current, total);
+        this.hideUploadProgress();
       }
     } catch (error) {
       console.error(`❌ Upload ${current}/${total} failed:`, error);
@@ -657,13 +703,15 @@ class KayakoImageOptimizer {
       },
       () => {
         // Look in cookies (XSRF-TOKEN, X-CSRF-Token, x-csrf-token)
-        const map = Object.fromEntries(document.cookie.split(';').map(s => {
-          const i = s.indexOf('=');
-          const k = s.slice(0, i).trim();
-          const v = s.slice(i + 1).trim();
-          return [k, decodeURIComponent(v)];
-        }));
-        return map['XSRF-TOKEN'] || map['x-csrf-token'] || map['X-CSRF-Token'] || null;
+        try {
+          const map = Object.fromEntries(document.cookie.split(';').map(s => {
+            const i = s.indexOf('=');
+            const k = s.slice(0, i).trim();
+            const v = s.slice(i + 1).trim();
+            return [k, decodeURIComponent(v)];
+          }));
+          return map['XSRF-TOKEN'] || map['x-csrf-token'] || map['X-CSRF-Token'] || null;
+        } catch (_) { return null; }
       },
       () => {
         // Try to extract from any recent XHR request headers in the network tab
@@ -690,6 +738,16 @@ class KayakoImageOptimizer {
     
     console.warn('⚠️ Could not find CSRF token');
     return '';
+  }
+
+  // Fast, non-invasive peek for token presence (no logs)
+  peekCsrfToken() {
+    try {
+      return window.kayako_csrf_token ||
+             document.querySelector('meta[name="csrf-token" i]')?.content ||
+             document.querySelector('meta[name="x-csrf-token" i]')?.content ||
+             window.csrfToken || window._token || '';
+    } catch (_) { return ''; }
   }
 
   showUploadProgress(totalFiles) {

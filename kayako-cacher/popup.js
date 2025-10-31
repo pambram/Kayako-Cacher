@@ -31,9 +31,6 @@ class KayakoCacherPopup {
       this.updateUI();
       console.log('UI updated with config');
       
-      // Load and display cache stats
-      await this.refreshCacheStats();
-      
       // Check if we're on a Kayako page
       await this.checkKayakoStatus();
     } catch (error) {
@@ -252,90 +249,9 @@ class KayakoCacherPopup {
     }
   }
 
-  async refreshCacheStats() {
-    // No-op in v6 (caching removed)
-  }
+  // Cache functions removed in simplified build
 
-  async clearCache() {
-    // No-op in v6 (caching removed)
-    this.showSuccess('v6 has no cache to clear - Kayako loads all posts automatically now!');
-  }
-
-  async loadAllPosts() {
-    if (this.isLoading) {
-      console.log('Already loading posts, skipping...');
-      return;
-    }
-    
-    console.log('Starting loadAllPosts...');
-    
-    try {
-      this.isLoading = true;
-      const button = document.getElementById('load-all-posts');
-      
-      if (!button) {
-        throw new Error('Load posts button not found');
-      }
-      
-      const originalText = button.textContent;
-      button.textContent = '⏳ Loading...';
-      button.classList.add('loading');
-      button.disabled = true;
-      
-      // Check if we're on a Kayako page
-      console.log('Querying for active tab...');
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const currentTab = tabs[0];
-      
-      console.log('Found tab:', currentTab?.url);
-      
-      if (!currentTab) {
-        throw new Error('No active tab found');
-      }
-      
-      if (!currentTab.url) {
-        throw new Error('Cannot access tab URL - check permissions');
-      }
-      
-      if (!currentTab.url.includes('kayako.com/agent')) {
-        throw new Error('Please navigate to a Kayako ticket page first');
-      }
-      
-      console.log('Sending message to content script...');
-      
-      // Send message to content script to load all posts
-      const response = await chrome.tabs.sendMessage(currentTab.id, { 
-        action: 'loadAllPosts' 
-      });
-      
-      console.log('Content script response:', response);
-      
-      if (response && response.success) {
-        this.showSuccess('All posts loaded and cached successfully!');
-      } else {
-        throw new Error(response?.error || 'Content script did not respond successfully');
-      }
-      
-      // Refresh stats after a delay
-      setTimeout(() => this.refreshCacheStats(), 2000);
-    } catch (error) {
-      console.error('Error loading all posts:', error);
-      
-      if (error.message.includes('Could not establish connection')) {
-        this.showError('Extension not active on this page. Try refreshing the page.');
-      } else {
-        this.showError(error.message || 'Failed to load posts');
-      }
-    } finally {
-      this.isLoading = false;
-      const button = document.getElementById('load-all-posts');
-      if (button) {
-        button.textContent = '📥 Load All Posts Now';
-        button.classList.remove('loading');
-        button.disabled = false;
-      }
-    }
-  }
+  // Posts loader removed
 
   async clearCache() {
     if (this.isLoading) return;
