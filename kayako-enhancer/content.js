@@ -712,6 +712,12 @@ function suggestReplaceURLWithTitle(editor, url) {
         if (nowTs - prevTs < 2500) {
             return;
         }
+        // Cancel if selection-based flow has been cancelled
+        try {
+            if (window.__kayakoSelCancel && window.__kayakoSelCancel[inflightKey]) {
+                return;
+            }
+        } catch(_) {}
         window.__kayakoSuggestInflight[inflightKey] = nowTs;
         // Avoid duplicate prompts for same URL if one is already showing
         const existing = document.querySelector('.kayako-link-title-suggestion');
@@ -772,7 +778,7 @@ function suggestReplaceURLWithTitle(editor, url) {
             }
             // If user edited or URL disappeared meanwhile, abort quietly
             try { editor.removeEventListener('input', cancelIfInput); } catch(_) {}
-            if (cancelled || !isUrlPresentInEditor(editor, url)) {
+            if (cancelled || (window.__kayakoSelCancel && window.__kayakoSelCancel[inflightKey]) || !isUrlPresentInEditor(editor, url)) {
                 return;
             }
             if (!response || !response.success || !response.title) {
@@ -780,7 +786,9 @@ function suggestReplaceURLWithTitle(editor, url) {
                 return;
             }
             const titleRaw = String(response.title).trim();
-            const title = decodeHtmlEntities(titleRaw).trim();
+            let title = decodeHtmlEntities(titleRaw).trim();
+            // Special-case adjustment for Kayako KB pages
+            title = adjustTitleForKayako(url, title);
             if (!title || title.length === 0) {
                 console.log('⚠️ Empty title for', url);
                 return;
@@ -804,6 +812,8 @@ function suggestReplaceURLWithTitle(editor, url) {
             // Build and show suggestion UI
             console.log('🏷️ Title fetched:', title);
             try {
+                // If selection-based flow was cancelled meanwhile, skip UI
+                if (window.__kayakoSelCancel && window.__kayakoSelCancel[inflightKey]) return;
                 createOrUpdateLinkSuggestion(editor, url, title);
             } finally {
                 // allow a new prompt for this URL after a short cooldown
@@ -853,6 +863,37 @@ function escapeHtml(str) {
         .replace(/\"/g, '&quot;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+// For knowledge/support portals, trim trailing brand suffix like
+// " - DNN Corp. Customer Support" / " - Help Center" from fetched titles.
+function adjustTitleForKayako(url, title) {
+    try {
+        if (!url || !title) return title;
+        const u = new URL(url, window.location.href);
+        const host = String(u.hostname || '').toLowerCase();
+        const parts = String(title).split(/\s[-–—]\s/);
+        if (parts.length < 2) return title;
+        const last = parts[parts.length - 1].replace(/[\s.]+$/g, '').toLowerCase();
+        // Common help/support suffixes
+        const isCommonSuffix = /(help\s*center|customer\s*support|support(?:\s*center|\s*portal)?|knowledge\s*base|knowledgebase|support\s*desk|supportdesk|customer\s*care|documentation|docs|community)\b/.test(last);
+        // Host-token match: if the suffix mostly repeats the host/brand (e.g., "GFI Archiver")
+        const hostTokens = host.split(/[.\-]/).filter(Boolean).filter(t => !/^(www|com|net|org|io|co|us|uk|de|fr|es|it|br|ca|au|in|jp|cn|dev|app|cloud|support|help|kb|docs?)$/.test(t));
+        const suffixTokens = last.replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+        let sharedCount = 0;
+        try {
+            const set = new Set(hostTokens);
+            for (const tok of suffixTokens) {
+                if (tok.length >= 3 && set.has(tok)) sharedCount++;
+            }
+        } catch (_) {}
+        if (isCommonSuffix || sharedCount >= 2) {
+            parts.pop();
+            const trimmed = parts.join(' - ').trim();
+            return trimmed || title;
+        }
+        return title;
+    } catch (_) { return title; }
 }
 
 // Create a small inline UI offering to replace URL text with the page title
@@ -990,20 +1031,28 @@ function replaceURLTextWithTitle(editor, url, title) {
     }
     // Fallback: wrap the first matching text node occurrence
     try {
+        // Selection-based override: if we initiated from a selection, use its exact text
+        let matchText = url;
+        try {
+            if (window.__kayakoSelectionOverrides && window.__kayakoSelectionOverrides[url]) {
+                matchText = window.__kayakoSelectionOverrides[url];
+            }
+        } catch (_) {}
         const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
         let node;
         while ((node = walker.nextNode())) {
-            const idx = node.nodeValue.indexOf(url);
+            const idx = node.nodeValue.indexOf(matchText);
             if (idx !== -1) {
                 const range = document.createRange();
                 range.setStart(node, idx);
-                range.setEnd(node, idx + url.length);
+                range.setEnd(node, idx + matchText.length);
                 const link = document.createElement('a');
                 link.href = url;
                 link.textContent = cleanTitle;
                 link.target = '_blank';
                 range.deleteContents();
                 range.insertNode(link);
+                try { if (window.__kayakoSelectionOverrides) delete window.__kayakoSelectionOverrides[url]; } catch(_) {}
                 return true;
             }
         }
@@ -1579,6 +1628,58 @@ function scanEditorForAutoLinks(editor) {
     } catch (_) {}
 }
 
+// When the user selects a whole raw URL inside the editor, offer to replace
+// it with the page title by fetching in the background.
+function setupSelectedUrlSuggestion(editor) {
+    try {
+        if (editor.dataset.selectedUrlSuggestSetup === 'true') return;
+        editor.dataset.selectedUrlSuggestSetup = 'true';
+        let selTimer = null;
+        let activeKey = null;
+        const cancelActive = () => {
+            try {
+                if (!activeKey) return;
+                window.__kayakoSelCancel = window.__kayakoSelCancel || Object.create(null);
+                window.__kayakoSelCancel[activeKey] = true;
+                const ui = document.querySelector('.kayako-link-title-suggestion');
+                if (ui) ui.remove();
+                activeKey = null;
+            } catch(_) {}
+        };
+        const scheduleCheck = () => {
+            try { if (selTimer) clearTimeout(selTimer); } catch(_) {}
+            selTimer = setTimeout(() => {
+                try {
+                    const sel = window.getSelection && window.getSelection();
+                    if (!sel || !sel.rangeCount || sel.isCollapsed) { cancelActive(); return; }
+                    const range = sel.getRangeAt(0);
+                    const sc = range.startContainer, ec = range.endContainer;
+                    if (!editor.contains(sc) || !editor.contains(ec)) { cancelActive(); return; }
+                    const raw = String(sel.toString() || '');
+                    const m = raw.match(/^\s*(https?:\/\/\S+|www\.\S+)\s*$/i);
+                    if (!m) { cancelActive(); return; }
+                    const displayUrl = m[1];
+                    // Build fetch URL but keep display text exact
+                    const fetchUrl = /^www\./i.test(displayUrl) ? ('http://' + displayUrl) : displayUrl;
+                    const edKey = ensureEditorUid(editor);
+                    const key = edKey + '|' + fetchUrl;
+                    window.__kayakoSelectionOverrides = window.__kayakoSelectionOverrides || Object.create(null);
+                    window.__kayakoSelectionOverrides[fetchUrl] = displayUrl;
+                    window.__kayakoSelCancel = window.__kayakoSelCancel || Object.create(null);
+                    window.__kayakoSelCancel[key] = false;
+                    activeKey = key;
+                    // Use direct call with resolved editor
+                    suggestReplaceURLWithTitle(editor, fetchUrl);
+                } catch (_) {}
+            }, 120);
+        };
+        // React to changes in selection and mouse/keyboard adjustments
+        document.addEventListener('selectionchange', scheduleCheck, true);
+        editor.addEventListener('mouseup', scheduleCheck, true);
+        editor.addEventListener('keyup', scheduleCheck, true);
+    } catch (_) {}
+}
+
 // Attempt to manually auto-link a raw URL immediately before the caret when
 // Space/Enter is pressed, even if there is trailing content to the right.
 function tryManualAutolinkAtCaret(editor) {
@@ -1713,30 +1814,90 @@ function normalizeListItemAfterEdit(li) {
     } catch(_) {}
 }
 
+function isEmptyListItem(li) {
+    try {
+        if (!li || li.nodeName.toLowerCase() !== 'li') return false;
+        const hasMedia = !!(li.querySelector && li.querySelector('img, picture, svg, video, iframe, figure'));
+        if (hasMedia) return false;
+        const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
+        if (txt) return false;
+        // allow a single <br> placeholder to count as empty
+        const html = String(li.innerHTML || '').replace(/\s/gi,'').toLowerCase();
+        return html === '' || html === '<br>';
+    } catch(_) { return false; }
+}
+
+function cleanupConsecutiveEmptyLis(li) {
+    try {
+        if (!li || li.nodeName.toLowerCase() !== 'li') return;
+        const list = li.parentElement;
+        if (!list || !/^(ul|ol)$/i.test(list.nodeName)) return;
+        // Collapse current with previous if both empty
+        const prev = li.previousElementSibling;
+        if (prev && prev.nodeName.toLowerCase() === 'li' && isEmptyListItem(prev) && isEmptyListItem(li)) {
+            try { prev.remove(); } catch(_) {}
+        }
+        // Collapse current with next if both empty
+        const next = li.nextElementSibling;
+        if (next && next.nodeName.toLowerCase() === 'li' && isEmptyListItem(next) && isEmptyListItem(li)) {
+            try { next.remove(); } catch(_) {}
+        }
+    } catch(_) {}
+}
+
 // Set up a lightweight stabilizer: after Option+Backspace inside a list item, normalize that item
 function setupListEditStabilizer(editor) {
     try {
         if (editor._listStabilizerSetup) return; editor._listStabilizerSetup = true;
         let lastAltBackspaceAt = 0;
+        let lastBackspaceAt = 0;
+        let lastEnterAt = 0;
         editor.addEventListener('keydown', (e) => {
             try {
                 if (e && e.altKey && (e.key === 'Backspace' || e.key === 'Delete' || e.code === 'Backspace' || e.code === 'Delete' || e.keyCode === 8 || e.keyCode === 46)) {
                     lastAltBackspaceAt = Date.now();
                 }
+                if (e && !e.altKey && (e.key === 'Backspace' || e.code === 'Backspace' || e.keyCode === 8 || e.key === 'Delete' || e.code === 'Delete' || e.keyCode === 46)) {
+                    lastBackspaceAt = Date.now();
+                }
+                if (e && !e.shiftKey && (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13)) {
+                    lastEnterAt = Date.now();
+                }
             } catch(_) {}
         });
         editor.addEventListener('input', () => {
             try {
-                if (Date.now() - lastAltBackspaceAt > 400) return;
+                const now = Date.now();
+                const recentAltDel = (now - lastAltBackspaceAt) <= 450;
+                const recentBackspace = (now - lastBackspaceAt) <= 450;
+                const recentEnter = (now - lastEnterAt) <= 450;
+                if (!recentAltDel && !recentBackspace && !recentEnter) return;
                 // Allow DOM to settle first
                 setTimeout(() => {
                     try {
                         const sel = window.getSelection && window.getSelection();
                         if (!sel || !sel.rangeCount) return;
                         const node = sel.anchorNode ? (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) : null;
-                        const li = node && node.closest && node.closest('li');
+                        let li = node && node.closest && node.closest('li');
                         if (li) {
                             normalizeListItemAfterEdit(li);
+                            cleanupConsecutiveEmptyLis(li);
+                            // Also normalize neighbor created by Enter split
+                            if (recentEnter) {
+                                const sib = li.nextElementSibling && li.nextElementSibling.nodeName === 'LI' ? li.nextElementSibling : (li.previousElementSibling && li.previousElementSibling.nodeName === 'LI' ? li.previousElementSibling : null);
+                                if (sib) {
+                                    normalizeListItemAfterEdit(sib);
+                                    cleanupConsecutiveEmptyLis(sib);
+                                }
+                            }
+                            // If a backspace merge happened, normalize previous sibling too
+                            if (recentBackspace) {
+                                const prev = li.previousElementSibling;
+                                if (prev && prev.nodeName === 'LI') {
+                                    normalizeListItemAfterEdit(prev);
+                                    cleanupConsecutiveEmptyLis(prev);
+                                }
+                            }
                             try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
                         }
                     } catch(_) {}
@@ -1892,6 +2053,10 @@ function setupEditorAutoSizing() {
 
         // Expand when content changes (e.g., macro inserts template)
         const expandOnChange = () => {
+            try {
+                const until = parseInt(editor.dataset.suppressExpandUntil || '0', 10);
+                if (until && Date.now() < until) return;
+            } catch (_) {}
             try { activateEditor(editor); } catch(_) {}
             // If AI is/was running and content changed, allow normal shrinking again
             try { if (window.__kayakoAIActive) window.__kayakoAIActive = false; } catch (_) {}
@@ -1907,6 +2072,9 @@ function setupEditorAutoSizing() {
 
 		// Fallback manual auto-linking when caret is at end of a raw URL
 		setupManualAutolink(editor);
+
+		// Suggest title when a whole raw URL is selected
+		setupSelectedUrlSuggestion(editor);
 
 		// Stabilize list editing on Option+Backspace to avoid stray line breaks
 		setupListEditStabilizer(editor);
@@ -2455,9 +2623,10 @@ function setupSendShortcut(editor) {
                             const targetContainer = btn.closest('.ko-text-editor__container_1p5g6r') || container;
                             const candidates = targetContainer ? targetContainer.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
                             if (candidates && candidates.length > 0) {
+                                const suppressUntil = Date.now() + 2000;
                                 chrome.storage.local.get(["editorMinHeight"], (data) => {
                                     const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
-                                    candidates.forEach((ed) => { try { animateEditorToHeight(ed, minHeight); } catch(_) {} });
+                                    candidates.forEach((ed) => { try { ed.dataset.suppressExpandUntil = String(suppressUntil); animateEditorToHeight(ed, minHeight); } catch(_) {} });
                                 });
                             }
                         } catch(_) {}
@@ -2522,9 +2691,10 @@ function setupGlobalSendShortcut() {
                 const targetContainer = btn.closest('.ko-text-editor__container_1p5g6r') || container;
                 const eds = targetContainer ? targetContainer.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
                 if (eds && eds.length > 0) {
+                    const suppressUntil = Date.now() + 2000;
                     chrome.storage.local.get(["editorMinHeight"], (data) => {
                         const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
-                        eds.forEach((ed) => { try { animateEditorToHeight(ed, minHeight); } catch(_) {} });
+                        eds.forEach((ed) => { try { ed.dataset.suppressExpandUntil = String(suppressUntil); animateEditorToHeight(ed, minHeight); } catch(_) {} });
                     });
                 }
             } catch(_) {}
@@ -3207,10 +3377,11 @@ function setupTicketHistoryTracking() {
                         const container = btn?.closest?.('.ko-text-editor__container_1p5g6r') || document.querySelector('.ko-text-editor__container_1p5g6r');
                         const candidates = container ? container.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
                         if (!candidates || candidates.length === 0) return;
+                        const suppressUntil = Date.now() + 2000;
                         chrome.storage.local.get(["editorMinHeight"], (data) => {
                             const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
                             candidates.forEach((ed) => {
-                                try { animateEditorToHeight(ed, minHeight); } catch(_) {}
+                                try { ed.dataset.suppressExpandUntil = String(suppressUntil); animateEditorToHeight(ed, minHeight); } catch(_) {}
                             });
                         });
                     } catch (_) {}
