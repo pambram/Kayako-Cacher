@@ -1475,6 +1475,13 @@ class KayakoAIEnhancer {
         const r = sel.getRangeAt(0);
         if (!r.collapsed && editorElement.contains(r.commonAncestorContainer)) {
           capturedRange = r.cloneRange();
+          try {
+            const tmp = r.cloneContents();
+            const div = document.createElement('div');
+            div.appendChild(tmp);
+            const txt = (div.textContent || '').trim();
+            console.log(`🎯 Hone-in: captured selection of ${txt.length} chars`);
+          } catch (_) {}
         }
       }
     } catch (_) {}
@@ -1580,10 +1587,13 @@ class KayakoAIEnhancer {
           selectionRange: range,
           editorElement: editorElement
         };
+        const dbgLen = (textData.extractedText || '').length;
+        console.log(`🎯 Hone-in: operating on selection (${dbgLen} chars)`);
       }
     } catch (_) {}
     if (!textData) {
       textData = this.getEditorText(editorElement);
+      console.log(`🎯 Hone-in: operating on ${textData.hasTemplate ? 'template placeholder' : 'whole editor'} (${(textData.extractedText || textData.fullText || '').length} chars)`);
     }
 
     if (!textData.extractedText || textData.extractedText.trim().length === 0) {
@@ -1605,6 +1615,10 @@ class KayakoAIEnhancer {
       const honePrompt = `Refine the following customer-facing response according to these instructions: "${instructions}". Preserve the meaning and keep the message customer-appropriate. Do not remove placeholders or content. ${formatting}`;
 
       let enhancedText = await this.callAI(honePrompt, textData.extractedText, ticketContext);
+      if (!enhancedText || enhancedText.trim().length === 0) {
+        console.warn('⚠️ Hone-in returned empty; falling back to showing original text for formatting-only path');
+        enhancedText = textData.extractedText;
+      }
 
       processingNotification.remove();
 
@@ -1686,7 +1700,18 @@ class KayakoAIEnhancer {
       }
 
       // Append formatting guidance for limited HTML output and placeholders
+      fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
+
+      // Debug visibility: log the assembled prompt and context summary
+      try {
+        const dbg = {
+          usingTicketContext: !!ticketContext,
+          contextImages: contextImages.length,
+          promptPreview: fullPrompt.slice(0, 1500) + (fullPrompt.length > 1500 ? '... [truncated]' : '')
+        };
+        console.log('🧪 Help me write: composed prompt', dbg);
+      } catch (_) {}
 
       const generatedText = await this.callAI('Generate a customer facing response (i.e. a public response, or "PR") based on the following request:', fullPrompt, ticketContext, contextImages);
       
@@ -2102,12 +2127,12 @@ class KayakoAIEnhancer {
         return '';
       }
       
-      // Format as conversation context
-      const contextLines = messages.map(msg => 
-        `${msg.author} (${msg.time}): ${msg.content}`
-      );
+      // Heuristic: Kayako usually renders newest first; emphasize the first item
+      const latest = messages[0];
+      const latestLine = latest ? `${latest.author}${latest.time ? ` (${latest.time})` : ''}: ${latest.content}` : '';
+      const contextLines = messages.map(msg => `${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`);
       
-      return `TICKET CONVERSATION HISTORY:\n${contextLines.join('\n\n')}\n\n---\n\n`;
+      return `LATEST MESSAGE:\n${latestLine}\n\nTICKET CONVERSATION HISTORY (most recent first as visible):\n${contextLines.join('\n\n')}\n\n---\n\n`;
       
     } catch (error) {
       console.error('Error extracting ticket context:', error);
@@ -2156,11 +2181,15 @@ class KayakoAIEnhancer {
     
     const model = this.config.model || 'gpt-5-mini';
     
-    let userContent = `${prompt}\n\nText to enhance:\n${text}`;
+    // Clamp overly large inputs to avoid silently empty outputs
+    const clamp = (s, max) => (s && s.length > max) ? (s.slice(0, max) + '\n…[truncated]') : (s || '');
+    const MAX_TEXT = 8000; // characters
+    const MAX_CTX = 8000;
+    let userContent = `${prompt}\n\nText to enhance:\n${clamp(text, MAX_TEXT)}`;
     
     // Add ticket context if provided
     if (ticketContext) {
-      userContent = `${ticketContext}${userContent}`;
+      userContent = `${clamp(ticketContext, MAX_CTX)}${userContent}`;
     }
     
     const userMessage = {
@@ -2192,21 +2221,43 @@ class KayakoAIEnhancer {
       requestBody.temperature = this.config.temperature || 0.7;
     }
 
-    const result = await new Promise((resolve) => {
+    const sendOnce = () => new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage({ action: 'openaiChat', requestBody }, (resp) => {
+          // Check callback error details
+          // eslint-disable-next-line no-unused-expressions
+          if (chrome?.runtime?.lastError) {
+            resolve({ success: false, error: chrome.runtime.lastError.message || 'Message failed' });
+            return;
+          }
           resolve(resp || { success: false, error: 'No response from background' });
         });
       } catch (e) {
         resolve({ success: false, error: e?.message || 'Message failed' });
       }
     });
+
+    // Try once, then one quick retry if the worker was reloaded
+    let result = await sendOnce();
+    if (!result?.success) {
+      const msg = (result?.error || '').toLowerCase();
+      const transient = msg.includes('invalidated') || msg.includes('receiving end does not exist') || msg.includes('the message port closed');
+      if (transient) {
+        try { console.warn('AI request failed, retrying shortly due to transient error:', result?.error); } catch (_) {}
+        await new Promise(r => setTimeout(r, 400));
+        result = await sendOnce();
+      }
+    }
     if (!result?.success) {
       try { console.error('AI request failed', { model, error: result?.error }); } catch (_) {}
       throw new Error(result?.error || 'AI request failed');
     }
     const data = result.data || {};
-    return data.choices?.[0]?.message?.content?.trim() || '';
+    const out = data.choices?.[0]?.message?.content?.trim() || '';
+    if (!out) {
+      console.warn('⚠️ AI responded with empty content');
+    }
+    return out;
   }
 
   setupMessageListeners() {
