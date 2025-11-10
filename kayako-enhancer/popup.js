@@ -206,8 +206,16 @@ document.addEventListener("DOMContentLoaded", function () {
     if (refreshBookmarksBtn) {
         refreshBookmarksBtn.addEventListener('click', () => {
             setButtonLoading(refreshBookmarksBtn, true, 'Refreshing…');
-            loadBookmarks();
-            setTimeout(() => setButtonLoading(refreshBookmarksBtn, false), 1000);
+            // Trigger background refresh (covers bookmarks as well)
+            try {
+                chrome.runtime.sendMessage({ action: 'forceCheckTickets' }, () => {
+                    loadBookmarks();
+                    setTimeout(() => setButtonLoading(refreshBookmarksBtn, false), 200);
+                });
+            } catch (_) {
+                loadBookmarks();
+                setTimeout(() => setButtonLoading(refreshBookmarksBtn, false), 200);
+            }
         });
     }
     
@@ -233,6 +241,17 @@ document.addEventListener("DOMContentLoaded", function () {
             advancedPanel.classList.toggle('hidden');
         });
     }
+
+    // Auto-update bookmarks list when background writes new unread flags
+    try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area !== 'local') return;
+            if (changes.ticketBookmarks) {
+                const next = Array.isArray(changes.ticketBookmarks.newValue) ? changes.ticketBookmarks.newValue : [];
+                try { displayBookmarks(next); } catch (_) {}
+            }
+        });
+    } catch (_) {}
 
     // Unread-only filter
     if (filterUnread) {
@@ -502,6 +521,8 @@ function displayBookmarks(list){
         container.innerHTML = '<div class="no-history">No bookmarks yet</div>';
         return;
     }
+    // Sort by most recent relevant activity first
+    list = list.slice().sort((a,b) => Number(b.lastActivityAt||b.createdAt||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.createdAt||a.lastCheckedAt||0));
     let html = '';
     list.forEach(b => {
         const unread = Number(b.unreadCount || 0);
@@ -537,23 +558,17 @@ function displayBookmarks(list){
             e.preventDefault();
             const url = e.currentTarget.dataset.url;
             const ticketId = e.currentTarget.dataset.ticketId;
-            const domain = e.currentTarget.dataset.domain || '';
+            let domain = e.currentTarget.dataset.domain || '';
+            if (!domain && url) { try { domain = new URL(url).hostname; } catch (_) {} }
             try {
                 chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {});
             } catch (_) {
                 try { chrome.tabs.create({ url, active: false }); } catch (_) {}
             }
-            try {
-                __optimisticCleared.add(String(ticketId));
-                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
-                    const item = e.currentTarget.closest('.ticket-item');
-                    clearUnreadForItem(item);
-                });
-            } catch (_) {
-                __optimisticCleared.add(String(ticketId));
-                const item = e.currentTarget.closest('.ticket-item');
-                clearUnreadForItem(item);
-            }
+            __optimisticCleared.add(String(ticketId));
+            const item = e.currentTarget.closest('.ticket-item');
+            clearUnreadForItem(item);
+            try { chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {}); } catch (_) {}
         });
     });
     container.querySelectorAll('.bookmark-action-btn.edit-note').forEach(btn => {
@@ -621,6 +636,36 @@ function mapById(arr) {
     return m;
 }
 
+// Build the base meta text (without unread suffix)
+function buildMetaBase(ticket) {
+    const when = Number(ticket.lastActivityAt || ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now());
+    const prod = ticket.product ? ` • ${ticket.product}` : '';
+    const status = ticket.status ? ` • ${ticket.status}` : '';
+    const dom = ticket.domain ? ` • ${ticket.domain}` : '';
+    const cust = ticket.customer ? `${ticket.customer} • ` : '';
+    return `${cust}${getRelativeTime(when)}${dom}${prod}${status}`;
+}
+
+// Update a rendered item's meta line to reflect current product/status/time
+function updateMetaForItem(item, ticket) {
+    if (!item) return;
+    const meta = item.querySelector('.ticket-meta');
+    if (!meta) return;
+    const base = buildMetaBase(ticket);
+    // Preserve any existing unread suffix
+    const suffixMatch = meta.textContent.match(/\s•\s(?:\d+\snew|new)$/i);
+    const suffix = suffixMatch ? suffixMatch[0] : '';
+    const currentBase = meta.textContent.replace(/\s•\s\d+\snew$/i, '').replace(/\s•\snew$/i, '');
+    if (currentBase === base) return;
+    meta.classList.add('fade-out');
+    setTimeout(() => {
+        meta.textContent = base + suffix;
+        meta.classList.remove('fade-out');
+        meta.classList.add('fade-in');
+        setTimeout(() => meta.classList.remove('fade-in'), 200);
+    }, 200);
+}
+
 function clearUnreadForItem(item) {
     if (!item) return;
     const dot = item.querySelector('.unread-dot');
@@ -686,6 +731,8 @@ function applyUnreadDiff(prev, next) {
         }
         const item = container.querySelector(`.ticket-item[data-ticket-id="${id}"]`);
         if (!item) return;
+        // Update meta line (product/status/lastActivity) when changed
+        try { updateMetaForItem(item, n || p); } catch (_) {}
         if (!had && has) {
             addUnreadForItem(item, Number(n.unreadCount||0));
         } else if (had && !has) {
@@ -783,19 +830,18 @@ function displayTicketHistory(history) {
             const el = e.currentTarget;
             const url = el.dataset.url;
             const ticketId = el.dataset.ticketId;
-            const domain = el.dataset.domain;
+            let domain = el.dataset.domain || '';
+            if (!domain && url) { try { domain = new URL(url).hostname; } catch (_) {} }
+            // Open in background
             try { chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {}); } catch (_) { try { chrome.tabs.create({ url: url, active: false }); } catch (_) {} }
+            // Optimistic UI clear immediately
+            __optimisticCleared.add(String(ticketId));
+            const item = el.closest('.ticket-item');
+            clearUnreadForItem(item);
+            // Baseline in background (best effort)
             try {
-                __optimisticCleared.add(String(ticketId));
-                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
-                    const item = el.closest('.ticket-item');
-                    clearUnreadForItem(item);
-                });
-            } catch (_) {
-                __optimisticCleared.add(String(ticketId));
-                const item = el.closest('.ticket-item');
-                clearUnreadForItem(item);
-            }
+                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {});
+            } catch (_) {}
         });
     });
     

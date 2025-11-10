@@ -36,6 +36,9 @@ const defaultSideMinHeight = 100;
 const defaultSideMaxHeight = 300;
 const defaultSidebarWidth = 360;
 
+// Keep list stabilizer disabled by default for simpler, predictable editing
+try { window.__kayakoListStabilizerEnabled = false; window.__kayakoDisableListStabilizer = true; } catch(_) {}
+
 // Helpers to safely use chrome APIs when the extension context may be reloading
 function isStorageAvailable() {
     try { return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local); } catch (_) { return false; }
@@ -93,8 +96,9 @@ function isUrlPresentInEditor(editor, url) {
         const u = String(url);
         const uHttps = u.replace(/^http:\/\//i, 'https://');
         const uHttp = u.replace(/^https:\/\//i, 'http://');
+        const uNoProto = u.replace(/^https?:\/\//i, '');
         const txt = (editor.innerText || editor.textContent || '');
-        return txt.includes(u) || txt.includes(uHttps) || txt.includes(uHttp);
+        return txt.includes(u) || txt.includes(uHttps) || txt.includes(uHttp) || txt.includes(uNoProto);
     } catch (_) { return false; }
 }
 
@@ -605,11 +609,12 @@ function setupAutoHyperlinking() {
         const selectedText = selection.toString();
         const range = selection.getRangeAt(0);
         
-        // Check if clipboard contains a URL
-        if (isValidURL(clipboardText)) {
-            console.log('🔗 Auto-hyperlinking detected');
+        // Only hyperlink on selection if the clipboard content is a standalone raw URL
+        const standaloneForSelection = extractStandaloneUrl(clipboardText);
+        if (standaloneForSelection) {
+            console.log('🔗 Auto-hyperlinking selection with standalone URL');
             console.log('🔗 Selected text:', `"${selectedText}"`);
-            console.log('🔗 URL from clipboard:', clipboardText);
+            console.log('🔗 URL from clipboard:', standaloneForSelection);
             
             // IMMEDIATELY prevent the paste
             e.preventDefault();
@@ -618,7 +623,7 @@ function setupAutoHyperlinking() {
             
             // Create hyperlink element with the selected text immediately
             const link = document.createElement('a');
-            link.href = clipboardText;
+            link.href = standaloneForSelection;
             link.textContent = selectedText; // Preserve the selected text
             link.target = '_blank';
             
@@ -635,7 +640,7 @@ function setupAutoHyperlinking() {
             selection.removeAllRanges();
             selection.addRange(newRange);
             
-            console.log('✅ Auto-hyperlinked:', `"${selectedText}"`, '→', clipboardText);
+            console.log('✅ Auto-hyperlinked:', `"${selectedText}"`, '→', standaloneForSelection);
             
             // Show success notification
             showQuickNotification(`🔗 "${selectedText}" linked!`, 'success');
@@ -887,7 +892,9 @@ function adjustTitleForKayako(url, title) {
                 if (tok.length >= 3 && set.has(tok)) sharedCount++;
             }
         } catch (_) {}
-        if (isCommonSuffix || sharedCount >= 2) {
+        const supportLikeHost = /\b(support|help|kb|docs?|knowledge)\b/.test(host);
+        const shortBrandish = suffixTokens.length <= 4; // keep aggressive trim bounded
+        if (isCommonSuffix || sharedCount >= 2 || (supportLikeHost && shortBrandish && sharedCount >= 1)) {
             parts.pop();
             const trimmed = parts.join(' - ').trim();
             return trimmed || title;
@@ -1771,20 +1778,21 @@ function setupManualAutolink(editor) {
 function normalizeListItemAfterEdit(li) {
     try {
         if (!li || li.nodeName.toLowerCase() !== 'li') return;
-        // Remove Froala br-wrapper artifacts within li
-        try { li.querySelectorAll('div.br-wrapper, div[class*="br-wrapper"]').forEach(n => { try { n.remove(); } catch(_) {} }); } catch(_) {}
-        // Convert inline-only divs to p
+        // Unwrap Froala br-wrapper artifacts within li (prefer converting to a plain <br>)
         try {
-            li.querySelectorAll('div').forEach(div => {
-                const hasBlockDesc = !!div.querySelector('div, p, ul, ol, table, pre, blockquote, h1, h2, h3, h4, h5, h6');
-                if (!hasBlockDesc) {
-                    const p = document.createElement('p');
-                    while (div.firstChild) p.appendChild(div.firstChild);
-                    div.parentNode.replaceChild(p, div);
-                }
+            li.querySelectorAll('div.br-wrapper, div[class*="br-wrapper"]').forEach(n => {
+                try {
+                    const hasBr = !!n.querySelector('br');
+                    if (hasBr) {
+                        const br = document.createElement('br');
+                        n.parentNode.insertBefore(br, n);
+                    }
+                    n.remove();
+                } catch(_) {}
             });
         } catch(_) {}
-        // Collapse consecutive <br> siblings
+        // Avoid aggressive div->p conversions here; Froala relies on transient wrappers
+        // Collapse only duplicate consecutive <br> siblings (keep single placeholders for caret)
         const collapseConsecutiveBr = (el) => {
             let i = 0;
             while (i < el.childNodes.length - 1) {
@@ -1798,19 +1806,38 @@ function normalizeListItemAfterEdit(li) {
             }
         };
         collapseConsecutiveBr(li);
-        // Remove trailing <br> if there is other content before it
-        try {
-            const html = String(li.innerHTML || '').trim().toLowerCase();
-            if (html && html !== '<br>') {
-                while (li.lastChild && li.lastChild.nodeType === 1 && li.lastChild.nodeName === 'BR') {
-                    try { li.removeChild(li.lastChild); } catch(_) { break; }
-                }
-            }
-        } catch(_) {}
+        try { li.querySelectorAll('p, div').forEach(collapseConsecutiveBr); } catch(_) {}
+        // Do not strip trailing single <br>; Froala uses it as a caret anchor after Enter
         // Trim leading nbsp/text run at start of list item
         if (li.firstChild && li.firstChild.nodeType === 3) {
             li.firstChild.nodeValue = (li.firstChild.nodeValue || '').replace(/^\s+/, '');
         }
+        try { li.querySelectorAll('p').forEach(p => { if (p.firstChild && p.firstChild.nodeType === 3) { p.firstChild.nodeValue = (p.firstChild.nodeValue || '').replace(/^\u00a0+/, '').replace(/^\s+/, ''); } }); } catch(_) {}
+        // If a nested list follows, remove stray BR directly before it
+        try {
+            li.querySelectorAll('ul, ol').forEach(lst => {
+                let prev = lst.previousSibling;
+                while (prev && prev.nodeType === 1 && prev.nodeName === 'BR') {
+                    const toRemove = prev; prev = prev.previousSibling; try { toRemove.remove(); } catch(_) {}
+                }
+            });
+        } catch(_) {}
+        // Ensure the list item keeps a placeholder for caret when visually empty
+        try {
+            const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
+            const hasBlocks = !!li.querySelector('p, div, span, a, strong, em, code, ul, ol, img');
+            if (!txt && !hasBlocks) {
+                li.innerHTML = '<br>';
+            }
+        } catch(_) {}
+        // Also normalize ancestor <li> (important for indented bullets)
+        try {
+            const parentLi = li.parentElement && li.parentElement.closest ? li.parentElement.closest('li') : null;
+            if (parentLi) {
+                // light-touch normalization to avoid reflow loops
+                collapseConsecutiveBr(parentLi);
+            }
+        } catch(_) {}
     } catch(_) {}
 }
 
@@ -1823,7 +1850,7 @@ function isEmptyListItem(li) {
         if (txt) return false;
         // allow a single <br> placeholder to count as empty
         const html = String(li.innerHTML || '').replace(/\s/gi,'').toLowerCase();
-        return html === '' || html === '<br>';
+        return html === '' || html === '<br>' || html === '<p><br></p>';
     } catch(_) { return false; }
 }
 
@@ -1842,6 +1869,17 @@ function cleanupConsecutiveEmptyLis(li) {
         if (next && next.nodeName.toLowerCase() === 'li' && isEmptyListItem(next) && isEmptyListItem(li)) {
             try { next.remove(); } catch(_) {}
         }
+        // Sweep the whole list to remove redundant consecutive empties
+        try {
+            let n = list.firstElementChild;
+            while (n) {
+                const nxt = n.nextElementSibling;
+                if (n.nodeName && n.nodeName.toLowerCase() === 'li' && nxt && nxt.nodeName && nxt.nodeName.toLowerCase() === 'li' && isEmptyListItem(n) && isEmptyListItem(nxt)) {
+                    try { nxt.remove(); } catch(_) {}
+                }
+                n = nxt;
+            }
+        } catch(_) {}
     } catch(_) {}
 }
 
@@ -1854,6 +1892,7 @@ function setupListEditStabilizer(editor) {
         let lastEnterAt = 0;
         editor.addEventListener('keydown', (e) => {
             try {
+                if (window.__kayakoDisableListStabilizer) return;
                 if (e && e.altKey && (e.key === 'Backspace' || e.key === 'Delete' || e.code === 'Backspace' || e.code === 'Delete' || e.keyCode === 8 || e.keyCode === 46)) {
                     lastAltBackspaceAt = Date.now();
                 }
@@ -1867,6 +1906,7 @@ function setupListEditStabilizer(editor) {
         });
         editor.addEventListener('input', () => {
             try {
+                if (window.__kayakoDisableListStabilizer) return;
                 const now = Date.now();
                 const recentAltDel = (now - lastAltBackspaceAt) <= 450;
                 const recentBackspace = (now - lastBackspaceAt) <= 450;
@@ -1898,6 +1938,8 @@ function setupListEditStabilizer(editor) {
                                     cleanupConsecutiveEmptyLis(prev);
                                 }
                             }
+                            // Run a second pass on next frame to catch late mutations from Froala
+                            setTimeout(() => { try { normalizeListItemAfterEdit(li); cleanupConsecutiveEmptyLis(li); } catch(_) {} }, 16);
                             try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
                         }
                     } catch(_) {}
@@ -2076,8 +2118,8 @@ function setupEditorAutoSizing() {
 		// Suggest title when a whole raw URL is selected
 		setupSelectedUrlSuggestion(editor);
 
-		// Stabilize list editing on Option+Backspace to avoid stray line breaks
-		setupListEditStabilizer(editor);
+		// Optional: list stabilizer (disabled by default to keep behavior simple and maintainable)
+		if (window.__kayakoListStabilizerEnabled) setupListEditStabilizer(editor);
 
         // Ctrl/Cmd+Enter shortcut to click Send
         setupSendShortcut(editor);
@@ -2398,13 +2440,14 @@ function handleEditorBlur(editor) {
     // console.log('📏 Editor blurred, shrinking to min height');
     // Do not shrink when the window/tab itself loses focus (user switched apps)
     try {
+        // Only block shrinking if the corresponding UI is actually present
         if (window.__kayakoAIActive) {
-            // While AI modal/workflow is active, avoid shrinking
-            return;
+            const aiUiPresent = !!document.querySelector('.kayako-ai-custom-prompt, .kayako-ai-preview');
+            if (!aiUiPresent) { try { window.__kayakoAIActive = false; } catch(_) {} } else { return; }
         }
         if (window.__kayakoMacroActive) {
-            // While macro selection UI is active, avoid shrinking
-            return;
+            const macroUiPresent = !!document.querySelector('.ember-basic-dropdown-content, .ember-power-select-options, [class*="macro"][class*="dropdown"], [data-test-id*="macro"]');
+            if (!macroUiPresent) { try { window.__kayakoMacroActive = false; } catch(_) {} } else { return; }
         }
         if (!document.hasFocus()) {
             // Skip shrink on window blur; we'll shrink later only on in-page interactions
@@ -2617,6 +2660,8 @@ function setupSendShortcut(editor) {
                         try { disableQCSnippetPersistenceNearButton(btn); } catch(_) {}
                         // Normalize the active editor HTML right before sending
                         try { normalizeEditorContentForSend(getActiveEditorNearButton(btn)); } catch(_) {}
+                        // Clear sticky UI flags so shrinking isn't blocked post-send
+                        try { window.__kayakoMacroActive = false; window.__kayakoAIActive = false; } catch(_) {}
                         btn.click();
                         // collapse editor immediately for reading space
                         try {
@@ -2691,6 +2736,8 @@ function setupGlobalSendShortcut() {
                 const targetContainer = btn.closest('.ko-text-editor__container_1p5g6r') || container;
                 const eds = targetContainer ? targetContainer.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
                 if (eds && eds.length > 0) {
+                    // Clear sticky UI flags so shrinking isn't blocked post-send
+                    try { window.__kayakoMacroActive = false; window.__kayakoAIActive = false; } catch(_) {}
                     const suppressUntil = Date.now() + 2000;
                     chrome.storage.local.get(["editorMinHeight"], (data) => {
                         const minHeight = (data && data.editorMinHeight) ? data.editorMinHeight : defaultMinHeight;
@@ -2736,11 +2783,13 @@ function setupQCMacroAutoPaste() {
             const editor = window.__kayakoLastMacroEditor || document.querySelector('.fr-element');
             if (!editor) return;
             // Open a new paste session; allow persistence until explicit Send
-            try { window.__kayakoQCPasteAllowed = true; } catch(_) {}
+			// Only auto‑paste if the editor is meaningfully empty prior to macro
+			const allowPaste = isEditorEmpty(editor);
+			try { window.__kayakoQCPasteAllowed = allowPaste; } catch(_) {}
             try { window.__kayakoQCPasteSessionId = (window.__kayakoQCPasteSessionId || 0) + 1; } catch(_) {}
             try { editor.dataset.qcPasteSessionId = String(window.__kayakoQCPasteSessionId); } catch(_) {}
-            window.__kayakoPendingQCPaste = true;
-            waitForMacroApplyThenPaste(editor);
+			window.__kayakoPendingQCPaste = !!allowPaste;
+			if (allowPaste) waitForMacroApplyThenPaste(editor);
         } catch (_) {}
     };
 
@@ -2841,6 +2890,8 @@ function pasteLatestInternalNoteAboveFooter(editor) {
         )) {
             tmpWrap.removeChild(tmpWrap.firstChild);
         }
+        // Normalize snippet HTML once for Froala-friendly editing (no runtime key stabilizers)
+        try { postCleanForFroala(tmpWrap); } catch(_) {}
         const frag = document.createDocumentFragment();
         let marked = false;
         Array.from(tmpWrap.childNodes).forEach((n) => {
@@ -2963,24 +3014,27 @@ function extractQCResponseTextFromHtml(html, stripFooter) {
     try {
         const tmp = document.createElement('div');
         tmp.innerHTML = html;
-        let text = tmp.innerText || '';
-        text = text.replace(/\r\n/g, '\n');
-        // Narrow to section after header and separator of '=' or '-' and before the next separator
-        const re = /what\s+is\s+the\s+pr[^\n]*?\?[^\n]*\n[\s=\-]{3,}\n([\s\S]*?)(?:\n[\s=\-]{3,}\n|$)/i;
-        let m = text.match(re);
-        let body = (m && m[1]) ? m[1] : '';
-        if (!body) {
-            // Fallback: take lines after the header until footer markers
-            const re2 = /what\s+is\s+the\s+pr[^\n]*?\?\s*\n([\s\S]*?)$/i;
-            const m2 = text.match(re2);
-            body = (m2 && m2[1]) ? m2[1] : '';
+        const text = (tmp.innerText || '').replace(/\r\n/g, '\n');
+        const lines = text.split('\n');
+        const isSep = (s) => /^[\s=\-_*]{6,}$/.test(String(s || '').trim());
+        const isHeader = (s) => /what\s+is\s+the\s+pr/i.test(s) || /all\s+actions\s+should\s+include\s+a\s+pr\s+to\s+the\s+customer/i.test(s);
+        let headerIdx = -1;
+        for (let i = 0; i < lines.length; i++) {
+            if (isHeader(lines[i])) { headerIdx = i; break; }
         }
-        if (!body) body = text;
-        // Optionally trim trailing footer like Best regards / Regards / Kind regards
+        let start = 0, end = lines.length;
+        if (headerIdx >= 0) {
+            start = headerIdx + 1;
+            // Skip blank/separator lines right after header
+            while (start < lines.length && (lines[start].trim() === '' || isSep(lines[start]))) start++;
+            end = start;
+            while (end < lines.length && !isSep(lines[end])) end++;
+        }
+        let body = lines.slice(start, end).join('\n');
+        if (!body.trim()) body = text; // final fallback
         if (stripFooter) {
             body = body.replace(/\n\s*(best\s*regards|regards[,\s]*|kind\s*regards)[\s\S]*$/i, '\n');
         }
-        // Trim leading/trailing whitespace but preserve internal spacing
         return body.replace(/^\s+|\s+$/g, '');
     } catch (_) { return ''; }
 }
@@ -3050,14 +3104,15 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
             return ['p','div','ul','ol','table','pre','blockquote','h1','h2','h3','h4','h5','h6','figure'].includes(tag);
         };
 
-        // Find the header line
+        // Find the header line (support both classic and new template wording)
         let headerIdx = -1;
         for (let i = 0; i < children.length; i++) {
             const t = textOf(children[i]);
-            if (/what\s+is\s+the\s+pr/.test(t)) { headerIdx = i; break; }
+            if (/what\s+is\s+the\s+pr/.test(t) || /all\s+actions\s+should\s+include\s+a\s+pr\s+to\s+the\s+customer/.test(t)) { headerIdx = i; break; }
         }
         let start = headerIdx >= 0 ? headerIdx + 1 : 0;
-        while (start < children.length && isSep(textOf(children[start]))) start++;
+        // Skip immediate separators or blank blocks after header
+        while (start < children.length && (isSep(textOf(children[start])) || !textOf(children[start]))) start++;
 
         let end = children.length;
         for (let j = start; j < children.length; j++) {
@@ -3373,6 +3428,8 @@ function setupTicketHistoryTracking() {
             try {
                 setTimeout(() => {
                     try {
+                        // Clear sticky UI flags so shrinking isn't blocked post-send
+                        try { window.__kayakoMacroActive = false; window.__kayakoAIActive = false; } catch(_) {}
                         const btn = target.closest('button') || target;
                         const container = btn?.closest?.('.ko-text-editor__container_1p5g6r') || document.querySelector('.ko-text-editor__container_1p5g6r');
                         const candidates = container ? container.querySelectorAll('.fr-element') : document.querySelectorAll('.fr-element');
@@ -3787,6 +3844,7 @@ function setupSearchHoverPreview() {
         let keepAliveUntil = 0;
 		let fixedLeft = null; // freeze bubble position after first placement
 		let fixedTop = null;
+			let highlightedRowEl = null;
 
         // Generalized selectors (hashed class suffix changes between builds)
         const rowSelector = [
@@ -3846,7 +3904,7 @@ function setupSearchHoverPreview() {
             } catch (_) { return null; }
         };
 
-        const ensureStyles = () => {
+			const ensureStyles = () => {
             if (document.getElementById('kayako-search-preview-style')) return;
             const st = document.createElement('style');
             st.id = 'kayako-search-preview-style';
@@ -3859,6 +3917,14 @@ function setupSearchHoverPreview() {
                 .kayako-search-preview-content :is(h1,h2,h3){font-size:15px;margin:8px 0}
                 .kayako-search-preview-content p{margin:6px 0}
                 .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
+					/* Row highlight while a preview is open for that row */
+					.kayako-preview-row-highlight,
+					.kayako-preview-row-highlight > td,
+					.kayako-preview-row-highlight [role="gridcell"]{
+						background: rgba(255,246,173,.45) !important;
+						transition: background-color .12s ease;
+					}
+					.kayako-preview-row-highlight{outline: 2px solid rgba(255,196,0,.35)}
             `;
             document.head.appendChild(st);
         };
@@ -3880,7 +3946,21 @@ function setupSearchHoverPreview() {
             } catch (_) {}
         };
 
-        const showBubble = (row) => {
+			const setRowHighlight = (row) => {
+				try {
+					if (highlightedRowEl && highlightedRowEl !== row) {
+						highlightedRowEl.classList.remove('kayako-preview-row-highlight');
+					}
+					if (row) {
+						row.classList.add('kayako-preview-row-highlight');
+						highlightedRowEl = row;
+					} else {
+						highlightedRowEl = null;
+					}
+				} catch (_) {}
+			};
+
+			const showBubble = (row) => {
             try { if (activeBubble) activeBubble.remove(); } catch(_) {}
             ensureStyles();
             const bubble = document.createElement('div');
@@ -3896,11 +3976,12 @@ function setupSearchHoverPreview() {
                 // hide a bit later if also not on row
                 hideTimerId = setTimeout(() => { if (!isBubbleHovered && !currentRowHover) hideBubbleWithSuppress(); }, 140);
             });
-			document.body.appendChild(bubble);
+				document.body.appendChild(bubble);
 			fixedLeft = null; fixedTop = null;
 			positionBubbleNearRow(bubble, row);
             activeBubble = bubble;
             keepAliveUntil = Date.now() + 700;
+				setRowHighlight(row);
             return bubble;
         };
 
@@ -3967,9 +4048,9 @@ function setupSearchHoverPreview() {
             } catch (_) {}
         };
 
-		let currentRowHover = false;
-		const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } fixedLeft = null; fixedTop = null; };
-        const hideBubbleWithSuppress = () => { hideBubble(); suppressRowId = activeRowId; suppressUntil = Date.now() + 400; activeRowId = null; };
+			let currentRowHover = false;
+			const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } fixedLeft = null; fixedTop = null; setRowHighlight(null); };
+			const hideBubbleWithSuppress = () => { hideBubble(); suppressRowId = activeRowId; suppressUntil = Date.now() + 400; activeRowId = null; };
 
         const onEnter = (row) => {
             const id = getRowTicketId(row);
@@ -4156,11 +4237,17 @@ document.addEventListener('mousedown', (e) => {
         }
         const clickContainer = e.target.closest('.ko-text-editor__container_1p5g6r');
         const editors = document.querySelectorAll('.fr-element');
+        // Compute dynamic blocking based on actual UI presence
+        const aiUiPresent = !!document.querySelector('.kayako-ai-custom-prompt, .kayako-ai-preview');
+        const macroUiPresent = !!document.querySelector('.ember-basic-dropdown-content, .ember-power-select-options, [class*="macro"][class*="dropdown"], [data-test-id*="macro"]');
+        if (window.__kayakoAIActive && !aiUiPresent) { try { window.__kayakoAIActive = false; } catch(_) {} }
+        if (window.__kayakoMacroActive && !macroUiPresent) { try { window.__kayakoMacroActive = false; } catch(_) {} }
+        const blocking = (window.__kayakoAIActive && aiUiPresent) || (window.__kayakoMacroActive && macroUiPresent);
         editors.forEach((ed) => {
             const edContainer = ed.closest('.ko-text-editor__container_1p5g6r');
             if (!edContainer) return;
             // If the click is outside this editor's container and the editor isn't focused, shrink it
-            if (!window.__kayakoMacroActive && !window.__kayakoAIActive && clickContainer !== edContainer) {
+            if (!blocking && clickContainer !== edContainer) {
                 handleEditorBlur(ed);
             }
         });

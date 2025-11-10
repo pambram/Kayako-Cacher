@@ -728,9 +728,22 @@ async function fetchCaseMeta(domain, ticketId) {
     const json = await res.json();
     const data = json?.data || json?.result || json || {};
     const lc = (s)=> (s||'').toString().toLowerCase();
-    let status = data?.status || data?.state || data?.status_name || data?.case_status || (data?.status && data?.status?.name) || (data?.state && data?.state?.name) || '';
-    if (typeof status === 'object') status = status?.name || status?.label || '';
-    let updatedAt = Date.parse(data?.updated_at || data?.updatedAt || data?.modified_at || '') || 0;
+    // Robust status extraction across payload variants
+    const pick = (v) => {
+      if (!v) return '';
+      if (typeof v === 'string') return v;
+      if (typeof v === 'number') return String(v);
+      if (typeof v === 'object') return v.name || v.label || v.title || v.value || v.state || '';
+      return '';
+    };
+    let status = pick(data?.status) || pick(data?.state) || pick(data?.status_name) || pick(data?.state_name) || pick(data?.case_status) || pick(data?.caseStatus) || pick(data?.current_status) || pick(data?.currentStatus);
+    if (!status) {
+      // Fallback from booleans commonly present
+      if (data?.is_closed || data?.closed) status = 'Closed';
+      else if (data?.completed) status = 'Completed';
+      else if (data?.resolved || data?.is_resolved) status = 'Resolved';
+    }
+    let updatedAt = Date.parse(data?.updated_at || data?.updatedAt || data?.modified_at || data?.last_activity_at || data?.lastUpdated || '') || 0;
     let product = '';
     try {
       const cf = data?.custom_fields || data?.customFields || {};
@@ -1058,9 +1071,10 @@ async function baselineTicketActivity(domain, ticketId) {
     let history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
     let changed = false;
     history = history.map(t => {
-      if (String(t.id) === String(ticketId) && t.domain === domain) {
+      if (String(t.id) === String(ticketId) && (t.domain === domain || !t.domain)) {
         const updated = {
           ...t,
+          domain: t.domain || domain,
           lastKnownPostId: latest || t.lastKnownPostId || 0,
           hasUnseenActivity: false,
           unreadCount: 0,
@@ -1078,9 +1092,10 @@ async function baselineTicketActivity(domain, ticketId) {
     let bookmarks = Array.isArray(dataB.ticketBookmarks) ? dataB.ticketBookmarks : [];
     let bChanged = false;
     bookmarks = bookmarks.map(b => {
-      if (String(b.id) === String(ticketId) && b.domain === domain) {
+      if (String(b.id) === String(ticketId) && (b.domain === domain || !b.domain)) {
         const updated = {
           ...b,
+          domain: b.domain || domain,
           lastKnownPostId: latest || b.lastKnownPostId || 0,
           hasUnseenActivity: false,
           unreadCount: 0,
@@ -1270,11 +1285,18 @@ async function checkAllTrackedTickets() {
 
 /** Check bookmarks for unseen activity; skip closed tickets entirely */
 async function checkAllBookmarkedTickets() {
-  const data = await storageGet(['ticketBookmarks', 'ignoredBotsPublic', 'ignoredBotsInternal']);
+  const data = await storageGet(['ticketBookmarks', 'ignoredBotsPublic', 'ignoredBotsInternal', 'ticketHistory']);
   let bookmarks = Array.isArray(data.ticketBookmarks) ? data.ticketBookmarks : [];
   if (!bookmarks.length) return;
   const ignoredPublic = Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic.map(b => String(b).toLowerCase()) : ['hermes'];
   const ignoredInternal = Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal.map(b => String(b).toLowerCase()) : ['centralsupport-ai-acc','lachesis'];
+  // Map history by domain:id so new bookmarks can adopt existing baselines
+  const history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+  const histMap = new Map();
+  const hk = (d,id)=> `${d}:${id}`;
+  for (const h of history) {
+    if (h && h.domain && h.id) histMap.set(hk(h.domain, h.id), h);
+  }
   const lc = (s)=> (s||'').toString().toLowerCase();
   const nameOf = (p)=> lc(p?.creator?.name || p?.author?.name || p?.actor?.name || p?.created_by?.name || p?.user?.name || p?.sender?.name || p?.from?.name || p?.from_name || '');
   const emailOf = (p)=> lc(p?.creator?.email || p?.author?.email || p?.actor?.email || p?.created_by?.email || p?.user?.email || p?.sender?.email || p?.from?.email || p?.email || '');
@@ -1326,8 +1348,13 @@ async function checkAllBookmarkedTickets() {
         return;
       }
       const latest = await fetchLatestPostId(b.domain, b.id);
-      const baseline = Number(b.lastKnownPostId || 0);
+      let baseline = Number(b.lastKnownPostId || 0);
       if (!baseline) {
+        const fromHistory = Number((histMap.get(hk(b.domain, b.id)) || {}).lastKnownPostId || 0);
+        baseline = fromHistory || 0;
+      }
+      if (!baseline) {
+        // First time ever tracking this as bookmark and no history exists → adopt latest
         bookmarks[i] = { ...updated, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0 };
         mutated = true;
         return;

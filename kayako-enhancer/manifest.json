@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako QoL Enhancer",
-  "version": "1.10.24",
+  "version": "1.11.4",
   "description": "Kayako QoL improvements: ticket history with unread activity, auto-sizing editors, resize editors, hide elements, remove timeline max-width, auto-hyperlink URLs, and Cmd+K shortcuts.",
   "permissions": ["cookies", "scripting", "activeTab", "storage", "alarms"],
   "optional_host_permissions": ["<all_urls>"],
