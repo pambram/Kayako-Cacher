@@ -213,6 +213,13 @@ class KayakoAIEnhancer {
         tooltip: 'Make concise; keep key information.'
       },
       {
+        id: 'kid_friendly',
+        icon: '🧒',
+        title: 'Make Kid Friendly',
+        prompt: 'kid_friendly',
+        tooltip: 'Rephrase so a child of a chosen age understands (ask age)'
+      },
+      {
         id: 'beautify',
         icon: '🎛️',
         title: 'Beautify',
@@ -272,11 +279,31 @@ class KayakoAIEnhancer {
           this.showCustomPromptModal(editorElement, e.currentTarget);
         } else if (action.id === 'hone_in') {
           this.showHoneInModal(editorElement, e.currentTarget);
+        } else if (action.id === 'kid_friendly') {
+          this.showKidFriendlyModal(editorElement, e.currentTarget);
         } else {
           this.handleAIAction(action, editorElement, e.currentTarget);
         }
         
         dropdownMenu.style.display = 'none';
+      });
+
+      // Capture selection on mousedown BEFORE focus changes clear it
+      button.addEventListener('mousedown', () => {
+        if (action.id === 'help_write') return; // help_write ignores selection
+        try {
+          const sel = window.getSelection();
+          if (sel && sel.rangeCount > 0) {
+            const r = sel.getRangeAt(0);
+            if (!r.collapsed && editorElement.contains(r.commonAncestorContainer)) {
+              this._preSelectionRange = r.cloneRange();
+            } else {
+              this._preSelectionRange = null;
+            }
+          }
+        } catch (_) {
+          this._preSelectionRange = null;
+        }
       });
       
       dropdownMenu.appendChild(button);
@@ -314,6 +341,179 @@ class KayakoAIEnhancer {
     buttonWrapper.appendChild(dropdownMenu);
 
     return buttonWrapper;
+  }
+
+  showKidFriendlyModal(editorElement, anchorEl = null) {
+    // Capture current selection inside the editor BEFORE showing the modal
+    let capturedRange = this._preSelectionRange ? this._preSelectionRange.cloneRange() : null;
+    // Clear stored pre-selection after reading it
+    this._preSelectionRange = null;
+    console.log('🧪 Kid-friendly modal: pre-selection exists?', !!capturedRange);
+    try {
+      const sel = window.getSelection();
+      console.log('🧪 Current selection:', sel ? `${sel.rangeCount} ranges, collapsed: ${sel.isCollapsed}` : 'none');
+      if (sel && sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0);
+        // CAPTURE SELECTION ANYWHERE, not just inside editorElement
+        if (!r.collapsed) {
+          capturedRange = r.cloneRange();
+          console.log('🧪 Captured selection from anywhere on page');
+          try {
+            const tmp = r.cloneContents();
+            const div = document.createElement('div');
+            div.appendChild(tmp);
+            const txt = (div.textContent || '').trim();
+            console.log(`🎯 Kid-friendly: captured selection of ${txt.length} chars`);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    console.log('🧪 Final capturedRange before modal:', !!capturedRange);
+    // Remove any existing modal
+    const existingModal = document.querySelector('.kayako-ai-custom-prompt');
+    if (existingModal) existingModal.remove();
+
+    const modal = document.createElement('div');
+    modal.className = 'kayako-ai-custom-prompt';
+    modal.innerHTML = `
+      <div class="ai-custom-prompt-header">
+        <span class="ai-custom-prompt-title">🧒 Make Kid Friendly</span>
+        <button class="ai-custom-prompt-close" type="button">×</button>
+      </div>
+      <div class="ai-custom-prompt-content">
+        <div class="ai-custom-prompt-input-group">
+          <label for="kidAgeInput">Age of the child</label>
+          <input id="kidAgeInput" type="number" min="3" max="18" step="1" placeholder="e.g., 10" />
+          <small style="color: #6c757d; font-size: 11px; margin-top: 4px; display: block;">Use an age between 3 and 18. We’ll adjust clarity and tone for that age.</small>
+        </div>
+      </div>
+      <div class="ai-custom-prompt-actions">
+        <button class="ai-custom-prompt-btn ai-custom-prompt-cancel" type="button">Cancel</button>
+        <button class="ai-custom-prompt-btn ai-custom-prompt-generate" type="button">Transform</button>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    this.makeDraggable(modal);
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', onKeyDown); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+
+    modal.querySelector('.ai-custom-prompt-close').addEventListener('click', () => {
+      modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
+    });
+    modal.querySelector('.ai-custom-prompt-cancel').addEventListener('click', () => {
+      modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
+    });
+    modal.querySelector('.ai-custom-prompt-generate').addEventListener('click', () => {
+      const ageVal = parseInt(modal.querySelector('#kidAgeInput').value, 10);
+      if (!Number.isFinite(ageVal) || ageVal < 3 || ageVal > 18) {
+        this.showNotification('Please enter a valid age between 3 and 18', 'warning');
+        return;
+      }
+      modal.remove();
+      document.removeEventListener('keydown', onKeyDown);
+      this.handleKidFriendly(ageVal, editorElement, capturedRange, anchorEl);
+    });
+  }
+
+  async handleKidFriendly(age, editorElement, preCapturedRange = null, anchorEl = null) {
+    if (this.isProcessing) {
+      this.showNotification('⏳ Already processing, please wait...', 'warning');
+      return;
+    }
+    if (!this.config?.apiKey) {
+      this.showNotification('❌ Please configure your AI API key in the extension settings', 'error');
+      return;
+    }
+
+    console.log('🧪 handleKidFriendly: received preCapturedRange?', !!preCapturedRange);
+    if (preCapturedRange) {
+      console.log('🧪 preCapturedRange collapsed?', preCapturedRange.collapsed);
+    }
+
+    // Prefer selection when present; else template area; else full editor
+    let textData = null;
+    try {
+      const range = preCapturedRange;
+      const hasRange = range && !range.collapsed;
+      console.log('🧪 Using range?', hasRange);
+      if (hasRange) {
+        const cloned = range.cloneContents();
+        const holder = document.createElement('div');
+        holder.appendChild(cloned);
+        const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
+        console.log('🧪 Extracted from range:', (tmpExtraction.textWithPlaceholders || '').length, 'chars');
+        // Determine insertion target from editor (template vs whole editor)
+        const editorCtx = this.getEditorText(editorElement);
+        textData = {
+          hasTemplate: !!editorCtx?.hasTemplate,
+          extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
+          fullText: tmpExtraction.textWithPlaceholders || '',
+          linkMap: tmpExtraction.linkMap || {},
+          imgMap: tmpExtraction.imgMap || {},
+          // Do NOT set selectionRange so we insert into template/editor, not the page selection
+          editorElement: editorElement
+        };
+        const dbgLen = (textData.extractedText || '').length;
+        console.log(`🎯 Kid-friendly: operating on selection (${dbgLen} chars); target: ${textData.hasTemplate ? 'template placeholder' : 'editor body'}`);
+      }
+    } catch (e) {
+      console.error('🧪 Error processing preCapturedRange:', e);
+    }
+    if (!textData) {
+      console.log('🧪 No selection data, falling back to editor extraction');
+      textData = this.getEditorText(editorElement);
+      console.log(`🎯 Kid-friendly: operating on ${textData.hasTemplate ? 'template placeholder' : 'whole editor'} (${(textData.extractedText || textData.fullText || '').length} chars)`);
+    }
+    // If template detected but placeholder is empty, fall back to whole editor content
+    if (textData && textData.hasTemplate && (!textData.extractedText || textData.extractedText.trim().length === 0)) {
+      console.log('🎯 Kid-friendly: template detected with empty placeholder – falling back to whole editor text');
+      textData = { ...textData, hasTemplate: false, extractedText: (textData.fullText || '').trim() };
+    }
+    console.log('🧪 Final textData.extractedText length:', (textData?.extractedText || '').length);
+    if (!textData.extractedText || textData.extractedText.trim().length === 0) {
+      console.error('🧪 FAILING: No text found to transform');
+      this.showNotification('❌ No text found to transform', 'error');
+      return;
+    }
+
+    this.isProcessing = true;
+    const processingNotification = this.showPersistentNotification(`🤖 Making kid friendly (age ${age})...`, 'info', null, anchorEl || this.getAnchorForEditor(editorElement));
+
+    try {
+      let ticketContext = '';
+      if (this.config?.useTicketContext) {
+        ticketContext = this.extractTicketContext();
+      }
+      const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
+      const prompt = `Rephrase the following support response so it is clear and relatable to a child around ${age} years old, without changing the factual meaning or commitments. Use plain words, short sentences, and a warm, respectful tone. Briefly explain technical words in simple language when necessary. Avoid promises of timelines or remote sessions. ${formatting}`;
+
+      let enhancedText = await this.callAI(prompt, textData.extractedText, ticketContext);
+      if (!enhancedText || enhancedText.trim().length === 0) {
+        console.warn('⚠️ Kid-friendly returned empty; falling back to showing original text');
+        enhancedText = textData.extractedText;
+      }
+
+      processingNotification.remove();
+
+      if (enhancedText) {
+        const cleanEnhancedText = this.normalizeHTMLForInsert(enhancedText.trim().replace(/^\s+/gm, ''));
+        this.showAIPreview(editorElement, textData, cleanEnhancedText, `Make Kid Friendly (age ${age})`);
+      } else {
+        this.showNotification('❌ No enhancement was generated', 'error');
+      }
+    } catch (error) {
+      processingNotification.remove();
+      console.error('Kid-friendly error:', error);
+      this.showNotification(`❌ Kid-friendly failed: ${error.message}`, 'error');
+    } finally {
+      this.isProcessing = false;
+    }
   }
 
   async handleAIAction(action, editorElement, anchorEl = null) {
@@ -532,11 +732,16 @@ class KayakoAIEnhancer {
     
     // Try multiple patterns to catch the PR template
     const patterns = [
+      // Original template variants
       /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i,
       /What is the PR to the customer\?\s*([\s\S]*?)\s*Best regards,/i,
       /PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Best\s+regards,/i,
-      // Variants ending at Additional Context?
-      /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Additional\s*Context\?/i
+      // Original template ending at Additional Context
+      /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?\s*([\s\S]*?)\s*Additional\s*Context(?:\?|:)/i,
+      // New Alpha EDU template variants starting at the new header
+      /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?\s*([\s\S]*?)\s*Best\s+regards,/i,
+      /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?\s*([\s\S]*?)\s*^\s*=+\s*$/im,
+      /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?\s*([\s\S]*?)\s*Additional\s*Context(?:\?|:)/i
     ];
     
     for (let i = 0; i < patterns.length; i++) {
@@ -561,20 +766,24 @@ class KayakoAIEnhancer {
     
     // Fallback: manual boundary search to be resilient to minor formatting changes
     try {
-      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\b/i;
-      const endRe1 = /Best\s+regards,/i;
-      const endRe2 = /Additional\s*Context\?/i;
-      const startM = startRe.exec(text);
+      const startRes = [
+        /What\s+is\s+the\s+PR\s+to\s+the\s+customer\b/i,
+        /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?/i
+      ];
+      const endRes = [
+        /Best\s+regards,/i,
+        /Additional\s*Context(?:\?|:)/i,
+        /^\s*=+\s*$/im
+      ];
+      let startM = null; let startRe = null;
+      for (const re of startRes) { const m = re.exec(text); if (m) { startM = m; startRe = re; break; } }
       if (startM) {
         const startIdx = startM.index + startM[0].length;
         // Find first end marker after start
         const rest = text.slice(startIdx);
-        const m1 = endRe1.exec(rest);
-        const m2 = endRe2.exec(rest);
+        const matches = endRes.map(re => re.exec(rest)).filter(Boolean).map(m => m.index);
         let endIdx = rest.length;
-        if (m1 && m2) endIdx = Math.min(m1.index, m2.index);
-        else if (m1) endIdx = m1.index;
-        else if (m2) endIdx = m2.index;
+        if (matches.length) endIdx = Math.min(...matches);
         const between = this.cleanTemplateEdges(rest.slice(0, endIdx));
         console.log('🎯 Fallback template extraction used. Length:', between.length);
         return {
@@ -600,11 +809,12 @@ class KayakoAIEnhancer {
   extractAdditionalContextSection(fullText) {
     try {
       const text = fullText || '';
-      const idx = text.search(/Additional\s*Context\?/i);
+      const m = /Additional\s*Context(?:\?|:)/i.exec(text);
+      const idx = m ? m.index : -1;
       if (idx === -1) {
         return '';
       }
-      let after = text.slice(idx + 'Additional Context?'.length);
+      let after = text.slice(idx + m[0].length);
       // Drop leading separators (lines of only '=') and empty lines
       const lines = after.split(/\r?\n/);
       while (lines.length && (/^\s*$/.test(lines[0]) || /^=+$/.test(lines[0].trim()))) {
@@ -787,10 +997,14 @@ class KayakoAIEnhancer {
   // Replace content between PR template markers when placeholder is empty
   replaceTemplatePlaceholder(editorElement, newTextHTML) {
     try {
-      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i;
+      const startReList = [
+        /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i,
+        /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?/i
+      ];
       const endReList = [
         /Best\s+regards,/i,
-        /Additional\s*Context\?/i
+        /Additional\s*Context(?:\?|:)/i,
+        /Also\s+fill\s+the\s+following/i
       ];
       const delimRe = /^\s*=+\s*$/; // delimiter lines made of '=' only
       
@@ -802,10 +1016,13 @@ class KayakoAIEnhancer {
         const node = walker.currentNode;
         const val = node.nodeValue;
         if (!startNode) {
-          const m = val.match(startRe);
-          if (m) {
-            startNode = node;
-            startOffset = m.index + m[0].length;
+          for (const re of startReList) {
+            const m = val.match(re);
+            if (m) {
+              startNode = node;
+              startOffset = m.index + m[0].length;
+              break;
+            }
           }
         } else {
           // Track bottom delimiter lines to preserve them
@@ -831,6 +1048,12 @@ class KayakoAIEnhancer {
         }
       }
       
+      // If we saw a delimiter after start but no explicit end marker, end at that delimiter
+      if (startNode && !endNode && candidateEndNode) {
+        endNode = candidateEndNode;
+        endOffset = candidateEndOffset;
+      }
+
       if (!startNode && !endNode) {
         console.warn('⚠️ Could not find template markers for insertion');
         return false;
@@ -875,18 +1098,24 @@ class KayakoAIEnhancer {
   // Insert content right after the PR start marker when placeholder is empty
   insertAfterTemplateStart(editorElement, newTextHTML) {
     try {
-      const startRe = /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i;
+      const startRes = [
+        /What\s+is\s+the\s+PR\s+to\s+the\s+customer\?/i,
+        /All\s+actions\s+should\s+include\s+a\s+PR\s+to\s+the\s+customer:?/i
+      ];
       const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
       let startNode = null, startOffset = 0;
       while (walker.nextNode()) {
         const node = walker.currentNode;
         const val = node.nodeValue;
-        const m = val.match(startRe);
-        if (m) {
-          startNode = node;
-          startOffset = m.index + m[0].length;
-          break;
+        for (const re of startRes) {
+          const m = val.match(re);
+          if (m) {
+            startNode = node;
+            startOffset = m.index + m[0].length;
+            break;
+          }
         }
+        if (startNode) break;
       }
       if (!startNode) return false;
       const range = document.createRange();
@@ -1468,12 +1697,14 @@ class KayakoAIEnhancer {
 
   showHoneInModal(editorElement, anchorEl = null) {
     // Capture current selection inside the editor BEFORE showing the modal
-    let capturedRange = null;
+    let capturedRange = this._preSelectionRange ? this._preSelectionRange.cloneRange() : null;
+    this._preSelectionRange = null;
     try {
       const sel = window.getSelection();
       if (sel && sel.rangeCount > 0) {
         const r = sel.getRangeAt(0);
-        if (!r.collapsed && editorElement.contains(r.commonAncestorContainer)) {
+        // CAPTURE SELECTION ANYWHERE, not just inside editorElement
+        if (!r.collapsed) {
           capturedRange = r.cloneRange();
           try {
             const tmp = r.cloneContents();
@@ -1572,23 +1803,23 @@ class KayakoAIEnhancer {
     let textData = null;
     try {
       const range = preCapturedRange;
-      const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
-      if (isInEditor) {
+      const hasRange = range && !range.collapsed;
+      if (hasRange) {
         const cloned = range.cloneContents();
         const holder = document.createElement('div');
         holder.appendChild(cloned);
         const tmpExtraction = this.extractTextWithLinkPlaceholders(holder);
+        const editorCtx = this.getEditorText(editorElement);
         textData = {
-          hasTemplate: false,
+          hasTemplate: !!editorCtx?.hasTemplate,
           extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
           fullText: tmpExtraction.textWithPlaceholders || '',
           linkMap: tmpExtraction.linkMap || {},
           imgMap: tmpExtraction.imgMap || {},
-          selectionRange: range,
           editorElement: editorElement
         };
         const dbgLen = (textData.extractedText || '').length;
-        console.log(`🎯 Hone-in: operating on selection (${dbgLen} chars)`);
+        console.log(`🎯 Hone-in: operating on selection (${dbgLen} chars); target: ${textData.hasTemplate ? 'template placeholder' : 'editor body'}`);
       }
     } catch (_) {}
     if (!textData) {
@@ -1703,6 +1934,7 @@ class KayakoAIEnhancer {
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
 
+
       // Debug visibility: log the assembled prompt and context summary
       try {
         const dbg = {
@@ -1713,7 +1945,8 @@ class KayakoAIEnhancer {
         console.log('🧪 Help me write: composed prompt', dbg);
       } catch (_) {}
 
-      const generatedText = await this.callAI('Generate a customer facing response (i.e. a public response, or "PR") based on the following request:', fullPrompt, ticketContext, contextImages);
+      // Send the user's prompt as the primary instruction; include our assembled details separately
+      const generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, contextImages);
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -2127,12 +2360,12 @@ class KayakoAIEnhancer {
         return '';
       }
       
-      // Heuristic: Kayako usually renders newest first; emphasize the first item
-      const latest = messages[0];
+      // Robust latest message selection: pick the last collected entry
+      const latest = messages[messages.length - 1];
       const latestLine = latest ? `${latest.author}${latest.time ? ` (${latest.time})` : ''}: ${latest.content}` : '';
       const contextLines = messages.map(msg => `${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`);
-      
-      return `LATEST MESSAGE:\n${latestLine}\n\nTICKET CONVERSATION HISTORY (most recent first as visible):\n${contextLines.join('\n\n')}\n\n---\n\n`;
+
+      return `LATEST MESSAGE:\n${latestLine}\n\nTICKET CONVERSATION HISTORY (chronological as captured):\n${contextLines.join('\n\n')}\n\n---\n\n`;
       
     } catch (error) {
       console.error('Error extracting ticket context:', error);
@@ -2185,12 +2418,11 @@ class KayakoAIEnhancer {
     const clamp = (s, max) => (s && s.length > max) ? (s.slice(0, max) + '\n…[truncated]') : (s || '');
     const MAX_TEXT = 8000; // characters
     const MAX_CTX = 8000;
-    let userContent = `${prompt}\n\nText to enhance:\n${clamp(text, MAX_TEXT)}`;
-    
-    // Add ticket context if provided
-    if (ticketContext) {
-      userContent = `${clamp(ticketContext, MAX_CTX)}${userContent}`;
-    }
+    // Build user content with the user's instruction first, then details, then context
+    let userContent = '';
+    if (prompt) userContent += `${prompt}`;
+    if (text) userContent += `\n\nDetails:\n${clamp(text, MAX_TEXT)}`;
+    if (ticketContext) userContent += `\n\nTicket context:\n${clamp(ticketContext, MAX_CTX)}`;
     
     const userMessage = {
       role: 'user'
@@ -2223,9 +2455,12 @@ class KayakoAIEnhancer {
 
     const sendOnce = () => new Promise((resolve) => {
       try {
+        if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
+          resolve({ success: false, error: 'Extension context invalidated. Please reload the page.' });
+          return;
+        }
         chrome.runtime.sendMessage({ action: 'openaiChat', requestBody }, (resp) => {
           // Check callback error details
-          // eslint-disable-next-line no-unused-expressions
           if (chrome?.runtime?.lastError) {
             resolve({ success: false, error: chrome.runtime.lastError.message || 'Message failed' });
             return;
