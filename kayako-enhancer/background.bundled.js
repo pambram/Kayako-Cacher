@@ -1170,10 +1170,19 @@ async function checkAllTrackedTickets() {
         const emailOf = (p)=> lc(p?.creator?.email || p?.author?.email || p?.actor?.email || p?.created_by?.email || p?.user?.email || p?.sender?.email || p?.from?.email || p?.email || '');
         const typeOf = (p)=> lc(p?.creator?.type || p?.actor?.type || p?.created_by?.type || p?.user?.type || p?.creator_type || p?.actor_type || p?.role || '');
         const isInternal = (p)=> {
-          const t = lc(p?.type || p?.post_type || p?.category || '');
-          const vis = lc(p?.visibility || '');
-          const ch = lc(p?.channel || '');
-          return p?.is_internal === true || p?.isInternal === true || vis === 'internal' || ch === 'internal' || t.includes('note') || t.includes('internal') || p?.private === true;
+          const t = lc(p?.type || p?.post_type || p?.category || p?.postType || '');
+          const vis = lc(p?.visibility || p?.scope || p?.access || '');
+          const ch = lc(p?.channel || p?.via || '');
+          return (
+            p?.is_internal === true ||
+            p?.isInternal === true ||
+            p?.internal === true ||
+            p?.is_private === true ||
+            p?.private === true ||
+            vis === 'internal' || vis === 'private' || vis === 'staff' ||
+            ch === 'internal' || ch === 'private' || ch === 'notes' ||
+            t.includes('note') || t.includes('internal')
+          );
         };
         const isPublic = (p)=> {
           if (isInternal(p)) return false;
@@ -1301,11 +1310,20 @@ async function checkAllBookmarkedTickets() {
   const nameOf = (p)=> lc(p?.creator?.name || p?.author?.name || p?.actor?.name || p?.created_by?.name || p?.user?.name || p?.sender?.name || p?.from?.name || p?.from_name || '');
   const emailOf = (p)=> lc(p?.creator?.email || p?.author?.email || p?.actor?.email || p?.created_by?.email || p?.user?.email || p?.sender?.email || p?.from?.email || p?.email || '');
   const typeOf = (p)=> lc(p?.creator?.type || p?.actor?.type || p?.created_by?.type || p?.user?.type || p?.creator_type || p?.actor_type || p?.role || '');
-  const isInternal = (p)=> {
-    const t = lc(p?.type || p?.post_type || p?.category || '');
-    const vis = lc(p?.visibility || '');
-    const ch = lc(p?.channel || '');
-    return p?.is_internal === true || p?.isInternal === true || vis === 'internal' || ch === 'internal' || t.includes('note') || t.includes('internal') || p?.private === true;
+        const isInternal = (p)=> {
+    const t = lc(p?.type || p?.post_type || p?.category || p?.postType || '');
+    const vis = lc(p?.visibility || p?.scope || p?.access || '');
+    const ch = lc(p?.channel || p?.via || '');
+    return (
+      p?.is_internal === true ||
+      p?.isInternal === true ||
+      p?.internal === true ||
+      p?.is_private === true ||
+      p?.private === true ||
+      vis === 'internal' || vis === 'private' || vis === 'staff' ||
+      ch === 'internal' || ch === 'private' || ch === 'notes' ||
+      t.includes('note') || t.includes('internal')
+    );
   };
   const isPublic = (p)=> {
     if (isInternal(p)) return false;

@@ -841,7 +841,10 @@ function titlesEquivalentOrUrlLike(title, url) {
         if (t === url || t.toLowerCase() === url.toLowerCase() || t === u || t.toLowerCase() === u.toLowerCase()) return true;
         // Looks like a URL
         if (/^https?:\/\//i.test(t)) return true;
-        if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t) && !t.includes(' ')) return true;
+        // Domain-like without protocol: restrict to common web TLDs (avoid matching file names like *.zip)
+        const noSpace = !t.includes(' ');
+        const domainLike = /^[a-z0-9][a-z0-9.-]*\.(com|net|org|io|co|us|uk|de|fr|es|it|br|ca|au|in|jp|cn|dev|app|cloud|gov|edu|info|biz|me|ai|site|xyz|gg|tv)(\/|$)/i.test(t);
+        if (noSpace && domainLike) return true;
         return false;
     } catch (_) {
         return false;
@@ -3844,6 +3847,7 @@ function setupSearchHoverPreview() {
         let keepAliveUntil = 0;
 		let fixedLeft = null; // freeze bubble position after first placement
 		let fixedTop = null;
+			let anchorMouse = null; // mouse position when bubble initially opens
 			let highlightedRowEl = null;
 
         // Generalized selectors (hashed class suffix changes between builds)
@@ -3917,6 +3921,7 @@ function setupSearchHoverPreview() {
                 .kayako-search-preview-content :is(h1,h2,h3){font-size:15px;margin:8px 0}
                 .kayako-search-preview-content p{margin:6px 0}
                 .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
+					.kayako-search-term-highlight{background:#fff3a3;padding:0 .08em;border-radius:2px}
 					/* Row highlight while a preview is open for that row */
 					.kayako-preview-row-highlight,
 					.kayako-preview-row-highlight > td,
@@ -3978,6 +3983,8 @@ function setupSearchHoverPreview() {
             });
 				document.body.appendChild(bubble);
 			fixedLeft = null; fixedTop = null;
+					// Capture the mouse anchor right when bubble is created
+					anchorMouse = { x: lastMouse.x, y: lastMouse.y };
 			positionBubbleNearRow(bubble, row);
             activeBubble = bubble;
             keepAliveUntil = Date.now() + 700;
@@ -3993,6 +4000,9 @@ function setupSearchHoverPreview() {
                     bubble.style.top = fixedTop + 'px';
                     return;
                 }
+				// Use the initial mouse anchor for forced repositions to avoid jumps if the mouse moved
+				const pointerX = (force && anchorMouse) ? anchorMouse.x : lastMouse.x;
+				const pointerY = (force && anchorMouse) ? anchorMouse.y : lastMouse.y;
                 const br = bubble.getBoundingClientRect();
                 const padding = 12;
                 const gapX = 28; // horizontal clearance from pointer
@@ -4001,16 +4011,16 @@ function setupSearchHoverPreview() {
                 const vh = document.documentElement.clientHeight;
 
                 // Decide side relative to the pointer, not the row
-                const availRight = vw - (lastMouse.x + gapX) - padding;
-                const availLeft = (lastMouse.x - gapX) - padding;
+				const availRight = vw - (pointerX + gapX) - padding;
+				const availLeft = (pointerX - gapX) - padding;
                 const placeRight = (availRight >= br.width) || (availRight >= availLeft);
                 let left = placeRight
-                    ? lastMouse.x + gapX
-                    : lastMouse.x - gapX - br.width;
+					? pointerX + gapX
+					: pointerX - gapX - br.width;
 
 				// Vertical placement relative to pointer
-				const availBelow = vh - (lastMouse.y + gapY) - padding;
-				const availAbove = (lastMouse.y - gapY) - padding;
+				const availBelow = vh - (pointerY + gapY) - padding;
+				const availAbove = (pointerY - gapY) - padding;
 				const fitsBelow = availBelow >= br.height;
 				const fitsAbove = availAbove >= br.height;
 				// Prefer the side that fully fits; if neither fits, prefer above to avoid bottom cutoff
@@ -4027,13 +4037,13 @@ function setupSearchHoverPreview() {
 				// If pointer is near the bottom of the viewport, force placing above to avoid cutoffs
 				try {
 					const bottomBiasThreshold = Math.floor(vh * 0.66); // bottom ~34% of viewport
-					if (lastMouse.y >= bottomBiasThreshold) {
+					if (pointerY >= bottomBiasThreshold) {
 						placeBelow = false;
 					}
 				} catch(_) {}
 				let top = placeBelow
-					? lastMouse.y + gapY
-					: lastMouse.y - gapY - br.height;
+					? pointerY + gapY
+					: pointerY - gapY - br.height;
 
                 // Clamp within viewport
                 const finalLeft = Math.max(padding, Math.min(left, vw - br.width - padding));
@@ -4049,7 +4059,7 @@ function setupSearchHoverPreview() {
         };
 
 			let currentRowHover = false;
-			const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } fixedLeft = null; fixedTop = null; setRowHighlight(null); };
+			const hideBubble = () => { if (activeBubble) { try { activeBubble.remove(); } catch(_) {} activeBubble = null; } fixedLeft = null; fixedTop = null; anchorMouse = null; setRowHighlight(null); };
 			const hideBubbleWithSuppress = () => { hideBubble(); suppressRowId = activeRowId; suppressUntil = Date.now() + 400; activeRowId = null; };
 
         const onEnter = (row) => {
@@ -4079,7 +4089,8 @@ function setupSearchHoverPreview() {
 
                 // If cached, render immediately then refresh in background
                 if (cache[id] && cache[id].html && Date.now() - cache[id].ts < 10 * 60 * 1000) {
-                    contentDiv.innerHTML = sanitizeHtml(cache[id].html);
+					const html0 = sanitizeHtml(cache[id].html);
+					contentDiv.innerHTML = applySearchHighlight(html0);
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                 }
 
@@ -4096,7 +4107,8 @@ function setupSearchHoverPreview() {
                         const snip = (resp.preview && resp.preview.snippet) ? String(resp.preview.snippet) : '';
                         cache[id] = { html: html || `<div>${escapeHtml(snip)}</div>`, snippet: snip, ts: Date.now() };
                     }
-                    contentDiv.innerHTML = sanitizeHtml(cache[id].html);
+					const html1 = sanitizeHtml(cache[id].html);
+					contentDiv.innerHTML = applySearchHighlight(html1);
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                     keepAliveUntil = Date.now() + 600;
                 });
@@ -4159,6 +4171,87 @@ function setupSearchHoverPreview() {
 				hideBubbleWithSuppress();
 			} catch (_) {}
 		}, true);
+
+		// --- Helpers: search query parsing and term highlighting ---
+		function getSearchQueryFromLocation() {
+			try {
+				const u = new URL(window.location.href);
+				const q = u.searchParams.get('search') || u.searchParams.get('q') || '';
+				return String(q || '').trim();
+			} catch(_) { return ''; }
+		}
+		function getSearchQueryFromInput() {
+			try {
+				const cand = document.querySelector('input[type=\"search\"], input[aria-label*=\"search\" i], input[placeholder*=\"search\" i]');
+				return cand ? String(cand.value || '').trim() : '';
+			} catch(_) { return ''; }
+		}
+		function tokenizeKayakoQuery(q) {
+			try {
+				if (!q) return [];
+				// Pull out key:value pairs but keep the value side
+				const pairs = Array.from(q.matchAll(/\\b([a-z_]+):(\"[^\"]*\"|'[^']*'|\\S+)/gi));
+				let values = [];
+				for (const m of pairs) {
+					let v = m[2] || '';
+					if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+					values.push(v);
+				}
+				// Remove pairs from the string to get remaining free terms
+				let rest = q.replace(/\\b([a-z_]+):(\"[^\"]*\"|'[^']*'|\\S+)/gi, ' ');
+				// Extract quoted phrases then the rest
+				const quotes = Array.from(rest.matchAll(/\"([^\"]+)\"|'([^']+)'/g)).map(m => (m[1] || m[2] || ''));
+				for (const ph of quotes) rest = rest.replace(ph, ' ');
+				let raw = [ ...values, ...quotes, rest ];
+				// Split into tokens, filter out operators and very short terms (<3)
+				const ops = new Set(['and','or','not']);
+				let tokens = [];
+				for (const chunk of raw) {
+					String(chunk || '').split(/[^a-z0-9]+/i).forEach(w => {
+						const t = String(w || '').toLowerCase();
+						if (t && t.length >= 3 && !ops.has(t)) tokens.push(t);
+					});
+				}
+				// De-duplicate
+				return Array.from(new Set(tokens));
+			} catch(_) { return []; }
+		}
+		function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); }
+		function applySearchHighlight(html) {
+			try {
+				const q = getSearchQueryFromLocation() || getSearchQueryFromInput();
+				const tokens = tokenizeKayakoQuery(q);
+				if (!tokens || !tokens.length) return html;
+				const root = document.createElement('div');
+				root.innerHTML = String(html || '');
+				const re = new RegExp('\\\\b(' + tokens.map(escapeRe).join('|') + ')\\\\b', 'gi');
+				const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+				const toProcess = [];
+				while (walker.nextNode()) {
+					const n = walker.currentNode;
+					if ((n.nodeValue || '').match(re)) toProcess.push(n);
+				}
+				for (const node of toProcess) {
+					const frag = document.createDocumentFragment();
+					const parts = (node.nodeValue || '').split(re);
+					for (let i = 0; i < parts.length; i++) {
+						const part = parts[i];
+						if (!part) continue;
+						// Odd indices are matches due to capture group
+						if (i % 2 === 1) {
+							const m = document.createElement('mark');
+							m.className = 'kayako-search-term-highlight';
+							m.textContent = part;
+							frag.appendChild(m);
+						} else {
+							frag.appendChild(document.createTextNode(part));
+						}
+					}
+					node.parentNode.replaceChild(frag, node);
+				}
+				return root.innerHTML;
+			} catch(_) { return html; }
+		}
     } catch (_) {}
 }
 
@@ -4169,7 +4262,7 @@ function renderPostsHtml(posts) {
         };
         const parts = posts.map(p => {
             const date = p.createdAt ? `<div style="color:#57606a;font-size:12px;margin:6px 0 4px 0;">${escapeHtml(fmt(p.createdAt))}</div>` : '';
-            const body = p.html ? p.html : `<div>${escapeHtml(p.text || '')}</div>`;
+			const body = p.html ? p.html : `<div>${escapeHtml(p.text || '').replace(/\\n/g,'<br>')}</div>`;
             return `<div style="border-top:1px solid #eef1f3;padding-top:6px;margin-top:6px;">${date}${body}</div>`;
         });
         return parts.join('');
