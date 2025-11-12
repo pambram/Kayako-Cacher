@@ -225,9 +225,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (filterUnread) filterUnread.checked = !!cfg.recentUnreadOnly;
         loadUnifiedRecent();
     });
-    // Touch current ticket and populate recents/bookmarks/bots
-    touchCurrentTicket();
-    // We still load bookmarks and bots immediately
+    // We load bookmarks and bots immediately; Recents now only track tickets you've worked on
     loadBookmarks();
     loadIgnoredBots();
     // Load API key if present
@@ -422,11 +420,9 @@ function loadUnifiedRecent() {
 }
 
 function mergeHistoryAndRecents(history, recents){
-    const map = {};
-    const key = (x)=> `${x.domain||''}:${x.id}`;
-    (recents||[]).forEach(r => { if (!r) return; map[key(r)] = { ...r, touchedAt: r.touchedAt || r.timestamp || Date.now() }; });
-    (history||[]).forEach(h => { if (!h) return; const k = key(h); map[k] = { ...(map[k]||{}), ...h }; });
-    return Object.values(map).sort((a,b) => (Number(b.lastActivityAt||b.touchedAt||b.timestamp||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.touchedAt||a.timestamp||a.lastCheckedAt||0)));
+    // Only include tickets you've worked on (tracked in history). Ignore passive views.
+    const list = Array.isArray(history) ? history.slice() : [];
+    return list.sort((a,b) => (Number(b.lastActivityAt||b.touchedAt||b.timestamp||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.touchedAt||a.timestamp||a.lastCheckedAt||0)));
 }
 
 // Tabs

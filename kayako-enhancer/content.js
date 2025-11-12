@@ -936,7 +936,7 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
     const safeTitle = decodedTitle.length > 90 ? decodedTitle.slice(0, 87) + '…' : decodedTitle;
     const safeHTMLTitle = escapeHtml(safeTitle);
     ui.innerHTML = `
-        <span style="color:#333;">Replace pasted link with “${safeHTMLTitle}”?</span>
+        <span style="color:#333;">Replace pasted link with "${safeHTMLTitle}"?</span>
         <button class="kayako-link-suggest-apply" style="background:#007bff;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;">Replace</button>
         <button class="kayako-link-suggest-dismiss" style="background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:4px 8px;cursor:pointer;">Keep</button>
     `;
@@ -1768,13 +1768,72 @@ function setupManualAutolink(editor) {
         if (editor.dataset.manualAutolinkSetup === 'true') return;
         editor.dataset.manualAutolinkSetup = 'true';
         const onKey = (e) => {
-            if (e && (e.key === ' ' || e.key === 'Enter')) {
+            if (e && (e.key === ' ')) {
                 // Allow the keystroke to update DOM, then attempt autolink
                 setTimeout(() => { try { tryManualAutolinkAtCaret(editor); } catch (_) {} }, 0);
             }
         };
         editor.addEventListener('keyup', onKey, true);
     } catch (_) {}
+}
+
+// Normalize minor artifacts created when pressing Enter/Backspace near anchors
+function setupEnterBackspaceStabilizer(editor) {
+	try {
+		if (editor.dataset.enterFixSetup === 'true') return;
+		editor.dataset.enterFixSetup = 'true';
+		const handler = (e) => {
+			if (!e || (e.key !== 'Enter' && e.key !== 'Backspace' && e.key !== 'Delete')) return;
+			// Allow Froala to apply its mutation first
+			setTimeout(() => {
+				try {
+					const sel = window.getSelection && window.getSelection();
+					if (!sel || !sel.rangeCount) return;
+					let node = sel.anchorNode;
+					if (!node) return;
+					if (node.nodeType === 3) node = node.parentNode;
+					const block = node && node.closest && node.closest('li, p, div');
+					if (!block || !editor.contains(block)) return;
+					// Collapse duplicate <br> siblings inside current block
+					(function collapseConsecutiveBr(el) {
+						let i = 0;
+						while (i < el.childNodes.length - 1) {
+							const a = el.childNodes[i];
+							const b = el.childNodes[i + 1];
+							if (a && b && a.nodeType === 1 && b.nodeType === 1 && a.nodeName === 'BR' && b.nodeName === 'BR') {
+								try { el.removeChild(b); } catch(_) {}
+								continue;
+							}
+							i++;
+						}
+					})(block);
+					// Trim leading whitespace text at start of block
+					if (block.firstChild && block.firstChild.nodeType === 3) {
+						block.firstChild.nodeValue = (block.firstChild.nodeValue || '').replace(/^\s+/, '');
+					}
+					// If Enter produced two consecutive blank blocks, keep only one
+					if (e.key === 'Enter') {
+						const isBlank = (el) => {
+							if (!el || el.nodeType !== 1) return false;
+							const tag = String(el.nodeName).toLowerCase();
+							if (!['p','div'].includes(tag)) return false;
+							const html = String(el.innerHTML || '').replace(/\s|&nbsp;/g,'').toLowerCase();
+							return html === '' || html === '<br>';
+						};
+						const prev = block.previousElementSibling;
+						if (isBlank(prev) && isBlank(block)) {
+							try { prev.remove(); } catch(_) {}
+						}
+						// Avoid trailing space at end of previous text line before anchor
+						if (prev && prev.lastChild && prev.lastChild.nodeType === 3) {
+							prev.lastChild.nodeValue = (prev.lastChild.nodeValue || '').replace(/\s+$/,'');
+						}
+					}
+				} catch(_) {}
+			}, 0);
+		};
+		editor.addEventListener('keyup', handler, true);
+	} catch (_) {}
 }
 
 // Normalize a single <li> after word-deletion to prevent stray <br> or wrappers
@@ -3848,6 +3907,7 @@ function setupSearchHoverPreview() {
 		let fixedLeft = null; // freeze bubble position after first placement
 		let fixedTop = null;
 			let anchorMouse = null; // mouse position when bubble initially opens
+			let placementFrozen = false; // after first forced reposition, skip further forced moves
 			let highlightedRowEl = null;
 
         // Generalized selectors (hashed class suffix changes between builds)
@@ -3918,6 +3978,7 @@ function setupSearchHoverPreview() {
                 .kayako-search-preview-btn{background:#f1f3f5;color:#333;border:1px solid #d0d5d8;border-radius:6px;padding:6px 10px;cursor:pointer}
                 .kayako-search-preview-title{font-weight:600;margin:0 0 8px 0;font-size:13px}
                 .kayako-search-preview-content{flex:1 1 auto;overflow:auto;border:1px solid #eef1f3;border-radius:6px;padding:10px;background:#fafbfc;max-height:60vh;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+					.kayako-search-preview-content{white-space:normal; line-height:1.35}
                 .kayako-search-preview-content :is(h1,h2,h3){font-size:15px;margin:8px 0}
                 .kayako-search-preview-content p{margin:6px 0}
                 .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
@@ -4000,6 +4061,10 @@ function setupSearchHoverPreview() {
                     bubble.style.top = fixedTop + 'px';
                     return;
                 }
+				// If we've already stabilized after a forced reposition, do not force again
+				if (force && placementFrozen) {
+					return;
+				}
 				// Use the initial mouse anchor for forced repositions to avoid jumps if the mouse moved
 				const pointerX = (force && anchorMouse) ? anchorMouse.x : lastMouse.x;
 				const pointerY = (force && anchorMouse) ? anchorMouse.y : lastMouse.y;
@@ -4055,6 +4120,7 @@ function setupSearchHoverPreview() {
                 fixedLeft = finalLeft;
                 fixedTop = finalTop;
                 keepAliveUntil = Date.now() + 500;
+				if (force) placementFrozen = true;
             } catch (_) {}
         };
 
@@ -4109,7 +4175,7 @@ function setupSearchHoverPreview() {
                     }
 					const html1 = sanitizeHtml(cache[id].html);
 					contentDiv.innerHTML = applySearchHighlight(html1);
-                    setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
+					setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                     keepAliveUntil = Date.now() + 600;
                 });
             }, 250);
@@ -4173,6 +4239,14 @@ function setupSearchHoverPreview() {
 		}, true);
 
 		// --- Helpers: search query parsing and term highlighting ---
+		function getSearchQueryFromPath() {
+			try {
+				const m = window.location.pathname.match(/\/agent\/search\/(.+)$/);
+				if (!m) return '';
+				const raw = decodeURIComponent(m[1] || '').replace(/\\+/g, ' ');
+				return String(raw || '').trim();
+			} catch(_) { return ''; }
+		}
 		function getSearchQueryFromLocation() {
 			try {
 				const u = new URL(window.location.href);
@@ -4182,7 +4256,7 @@ function setupSearchHoverPreview() {
 		}
 		function getSearchQueryFromInput() {
 			try {
-				const cand = document.querySelector('input[type=\"search\"], input[aria-label*=\"search\" i], input[placeholder*=\"search\" i]');
+				const cand = document.querySelector('input[type=\"search\"], input[aria-label*=\"search\" i], input[placeholder*=\"search\" i], [role=\"search\"] input, [contenteditable=\"true\"][role=\"combobox\"], [contenteditable=\"true\"][aria-label*=\"search\" i]');
 				return cand ? String(cand.value || '').trim() : '';
 			} catch(_) { return ''; }
 		}
@@ -4219,7 +4293,7 @@ function setupSearchHoverPreview() {
 		function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); }
 		function applySearchHighlight(html) {
 			try {
-				const q = getSearchQueryFromLocation() || getSearchQueryFromInput();
+				const q = getSearchQueryFromLocation() || getSearchQueryFromPath() || getSearchQueryFromInput();
 				const tokens = tokenizeKayakoQuery(q);
 				if (!tokens || !tokens.length) return html;
 				const root = document.createElement('div');
@@ -4262,7 +4336,14 @@ function renderPostsHtml(posts) {
         };
         const parts = posts.map(p => {
             const date = p.createdAt ? `<div style="color:#57606a;font-size:12px;margin:6px 0 4px 0;">${escapeHtml(fmt(p.createdAt))}</div>` : '';
-			const body = p.html ? p.html : `<div>${escapeHtml(p.text || '').replace(/\\n/g,'<br>')}</div>`;
+			let body = '';
+			if (p.html) {
+				// If html looks like plain text (no tags), convert newlines to <br>
+				const hasTag = /<\\s*\\w+[^>]*>/.test(String(p.html));
+				body = hasTag ? String(p.html) : `<div>${escapeHtml(String(p.html)).replace(/\\n/g,'<br>')}</div>`;
+			} else {
+				body = `<div>${escapeHtml(p.text || '').replace(/\\n/g,'<br>')}</div>`;
+			}
             return `<div style="border-top:1px solid #eef1f3;padding-top:6px;margin-top:6px;">${date}${body}</div>`;
         });
         return parts.join('');
