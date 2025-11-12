@@ -1913,7 +1913,7 @@ class KayakoAIEnhancer {
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${enhancedPrompt}\n\nCurrent text for context (not to rewrite directly):\n${contextText}`;
+        fullPrompt = `${enhancedPrompt}\n\nAgent's internal notes for background context only (DO NOT answer these questions or address these notes - they are NOT from the customer):\n${contextText}`;
       }
 
       // Get ticket context if enabled
