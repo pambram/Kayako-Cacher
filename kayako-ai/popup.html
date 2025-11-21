@@ -19,19 +19,43 @@
         <h2>Configuration</h2>
         
         <div class="form-group">
-          <label for="apiKey">OpenAI API Key</label>
-          <input type="password" id="apiKey" placeholder="sk-..." />
+          <label for="provider">Provider</label>
+          <select id="provider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="openaiKeyGroup">
+          <label for="openaiKey">OpenAI API Key</label>
+          <input type="password" id="openaiKey" placeholder="sk-..." />
           <small class="help-text">
             Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI</a>
+          </small>
+        </div>
+
+        <div class="form-group" id="anthropicKeyGroup" style="display: none;">
+          <label for="anthropicKey">Anthropic API Key</label>
+          <input type="password" id="anthropicKey" placeholder="sk-ant-..." />
+          <small class="help-text">
+            Get your API key from <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a>
           </small>
         </div>
 
         <div class="form-group">
           <label for="model">Model</label>
           <select id="model">
-            <option value="gpt-5-nano">GPT-5 Nano (Fastest, most cost-efficient)</option>
-            <option value="gpt-5-mini">GPT-5 Mini (Fast, Cost-effective)</option>
-            <option value="gpt-5">GPT-5 (Best Quality)</option>
+            <!-- OpenAI models -->
+            <optgroup label="OpenAI" id="openaiModels">
+              <option value="gpt-5-nano">GPT-5 Nano (Fastest, most cost-efficient)</option>
+              <option value="gpt-5-mini">GPT-5 Mini (Fast, Cost-effective)</option>
+              <option value="gpt-5.1">GPT-5 (Best Quality)</option>
+            </optgroup>
+            <!-- Claude models -->
+            <optgroup label="Claude" id="claudeModels" style="display: none;">
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 (Fast, 200k context)</option>
+              <option value="claude-sonnet-4-5">Claude Sonnet 4.5 (Best, 200k context)</option>
+            </optgroup>
           </select>
         </div>
 
@@ -53,7 +77,7 @@
           </select>
           <small class="help-text">
             Lower values = more predictable, Higher values = more creative.<br>
-            <span id="gpt5Warning" style="display: none; color: #dc3545; font-weight: 500;">Note: GPT-5 models use fixed temperature (not configurable).</span>
+            <span id="gpt5Warning" style="display: none; color: #dc3545; font-weight: 500;">Note: GPT-5 models only support temperature=1 (this setting will be ignored).</span>
           </small>
         </div>
 
@@ -111,7 +135,7 @@
     </main>
 
     <footer class="footer">
-      <div class="version">v1.3.2</div>
+      <div class="version">v1.4.3</div>
       <div class="links">
         <a href="#" id="refreshPage">Refresh Current Tab</a>
       </div>

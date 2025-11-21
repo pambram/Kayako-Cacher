@@ -2,11 +2,15 @@
 
 // Default configuration
 const DEFAULT_CONFIG = {
-  apiKey: '',
   provider: 'openai',
+  openaiKey: '',
+  anthropicKey: '',
+  apiKey: '', // Kept for backward compatibility
   model: 'gpt-5-mini',
   enabled: true,
-  useTicketContext: false
+  useTicketContext: false,
+  systemPrompt: '',
+  temperature: 0.7
 };
 
 // Initialize extension on install
@@ -42,6 +46,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     case 'openaiChat':
       handleOpenAIChat(request.requestBody, sendResponse);
+      return true;
+    
+    case 'anthropicChat':
+      handleAnthropicChat(request.requestBody, sendResponse);
       return true;
       
     default:
@@ -88,17 +96,123 @@ async function handleOpenAIChat(requestBody, sendResponse) {
 
     if (!resp.ok) {
       let errText = `HTTP ${resp.status}`;
+      let errDetails = null;
       try {
         const errJson = await resp.json();
         errText = errJson.error?.message || errText;
+        errDetails = errJson.error;
       } catch (_) {}
+      console.error('❌ OpenAI API error:', { status: resp.status, message: errText, details: errDetails });
       throw new Error(errText);
     }
 
     const data = await resp.json();
+    console.log('✅ OpenAI response received:', { model: data.model, usage: data.usage });
     sendResponse({ success: true, data });
   } catch (error) {
     console.error('openaiChat failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+async function handleAnthropicChat(requestBody, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    const apiKey = config.anthropicKey || config.apiKey;
+    if (!apiKey) {
+      throw new Error('Anthropic API key is required');
+    }
+    
+    const model = requestBody?.model || 'claude-3-5-sonnet-latest';
+    
+    // Convert OpenAI-style messages to Anthropic format
+    const messages = requestBody?.messages || [];
+    let systemPrompt = '';
+    const anthropicMessages = [];
+    
+    messages.forEach(msg => {
+      if (msg.role === 'system') {
+        systemPrompt = msg.content;
+      } else {
+        // Convert image_url format to Anthropic's image format
+        let content = msg.content;
+        if (Array.isArray(content)) {
+          content = content.map(part => {
+            if (part.type === 'image_url') {
+              // Extract base64 data from data URL
+              const dataUrl = part.image_url?.url || '';
+              const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+              if (match) {
+                return {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: match[1],
+                    data: match[2]
+                  }
+                };
+              }
+            }
+            return part;
+          });
+        }
+        anthropicMessages.push({ ...msg, content });
+      }
+    });
+    
+    const body = {
+      model: model,
+      max_tokens: requestBody?.max_completion_tokens || 8192,
+      messages: anthropicMessages,
+      temperature: requestBody?.temperature || 1
+    };
+    
+    if (systemPrompt) {
+      body.system = systemPrompt;
+    }
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      let errText = `HTTP ${resp.status}`;
+      let errDetails = null;
+      try {
+        const errJson = await resp.json();
+        errText = errJson.error?.message || errText;
+        errDetails = errJson.error;
+      } catch (_) {}
+      console.error('❌ Anthropic API error:', { status: resp.status, message: errText, details: errDetails });
+      throw new Error(errText);
+    }
+
+    const data = await resp.json();
+    console.log('✅ Anthropic response received:', { model: data.model, usage: data.usage });
+    
+    // Convert Anthropic response to OpenAI format for compatibility
+    const openaiFormat = {
+      model: data.model,
+      usage: data.usage,
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: data.content?.[0]?.text || ''
+        }
+      }]
+    };
+    
+    sendResponse({ success: true, data: openaiFormat });
+  } catch (error) {
+    console.error('anthropicChat failed:', error);
     sendResponse({ success: false, error: error.message });
   }
 }

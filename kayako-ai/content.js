@@ -50,12 +50,23 @@ class KayakoAIEnhancer {
   async loadConfig() {
     try {
       const result = await chrome.storage.local.get(['kayakoAIConfig']);
-      this.config = result.kayakoAIConfig || {
-        apiKey: '',
-        provider: 'openai', // openai, anthropic, etc
-        model: 'gpt-5-mini',
-        enabled: true,
-        useTicketContext: false
+      const config = result.kayakoAIConfig || {};
+      
+      // Migrate old apiKey to openaiKey if needed
+      if (config.apiKey && !config.openaiKey) {
+        config.openaiKey = config.apiKey;
+      }
+      
+      this.config = {
+        provider: config.provider || 'openai',
+        openaiKey: config.openaiKey || '',
+        anthropicKey: config.anthropicKey || '',
+        apiKey: config.apiKey || config.openaiKey || config.anthropicKey || '',
+        model: config.model || 'gpt-5-mini',
+        enabled: config.enabled !== false,
+        useTicketContext: config.useTicketContext || false,
+        systemPrompt: config.systemPrompt || '',
+        temperature: config.temperature || 0.7
       };
     } catch (error) {
       console.error('Error loading config:', error);
@@ -491,7 +502,7 @@ class KayakoAIEnhancer {
         ticketContext = this.extractTicketContext();
       }
       const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
-      const prompt = `Rephrase the following support response so it is clear and relatable to a child around ${age} years old, without changing the factual meaning or commitments. Use plain words, short sentences, and a warm, respectful tone. Briefly explain technical words in simple language when necessary. Avoid promises of timelines or remote sessions. ${formatting}`;
+      const prompt = `Rephrase the following support response so it is clear and relatable to a child around ${age} years old, without changing the factual meaning or commitments. Use plain words, short sentences, and a warm, respectful tone. Switch to a child-friendly tone, for example, instead of "Dear" use "Hi" or "Hello". Briefly explain technical words in simple language when necessary. Avoid promises of timelines or remote sessions. ${formatting}`;
 
       let enhancedText = await this.callAI(prompt, textData.extractedText, ticketContext);
       if (!enhancedText || enhancedText.trim().length === 0) {
@@ -952,12 +963,13 @@ class KayakoAIEnhancer {
     return out;
   }
 
-  // Extract [IMG#] placeholders from text and return data URLs for those images using imgMap
+  // Extract [IMG#] placeholders from text and return compressed data URLs for those images using imgMap
   async collectContextImagesAsDataUrls(contextText, imgMap) {
     try {
       if (!contextText || !imgMap) return [];
       const placeholders = Array.from(new Set((contextText.match(/\[IMG\d+\]/g) || [])));
       if (placeholders.length === 0) return [];
+      console.log(`🖼️ Processing ${placeholders.length} images for context`);
       const dataUrls = [];
       for (const ph of placeholders) {
         const html = imgMap[ph];
@@ -969,28 +981,74 @@ class KayakoAIEnhancer {
         const src = img.getAttribute('src');
         if (!src) continue;
         try {
+          let dataUrl = '';
           if (src.startsWith('data:')) {
-            dataUrls.push(src);
+            dataUrl = src;
           } else {
             const res = await fetch(src, { credentials: 'include' });
             const blob = await res.blob();
-            const dataUrl = await new Promise((resolve, reject) => {
+            dataUrl = await new Promise((resolve, reject) => {
               const reader = new FileReader();
               reader.onloadend = () => resolve(reader.result);
               reader.onerror = reject;
               reader.readAsDataURL(blob);
             });
-            if (typeof dataUrl === 'string') {
-              dataUrls.push(dataUrl);
-            }
+          }
+          if (typeof dataUrl === 'string') {
+            // Compress image to reduce token usage
+            const compressed = await this.compressImageDataUrl(dataUrl);
+            dataUrls.push(compressed);
+            console.log(`🖼️ Image ${ph}: original ${Math.round(dataUrl.length/1024)}KB → compressed ${Math.round(compressed.length/1024)}KB`);
           }
         } catch (e) {
-          try { console.warn('⚠️ Could not include image in context:', e?.message || e); } catch (_) {}
+          try { console.warn('⚠️ Could not include image in context:', ph, e?.message || e); } catch (_) {}
         }
       }
+      console.log(`🖼️ Total images included: ${dataUrls.length}`);
       return dataUrls;
     } catch (_) {
       return [];
+    }
+  }
+
+  // Compress image data URL to reduce token usage (target max 100KB per image)
+  async compressImageDataUrl(dataUrl) {
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = dataUrl;
+      });
+      
+      const canvas = document.createElement('canvas');
+      const maxDim = 1024; // max width/height
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round(h * maxDim / w);
+          w = maxDim;
+        } else {
+          w = Math.round(w * maxDim / h);
+          h = maxDim;
+        }
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      
+      // Try JPEG at 0.7 quality first
+      let compressed = canvas.toDataURL('image/jpeg', 0.7);
+      // If still too large, reduce quality further
+      if (compressed.length > 150000) { // ~100KB base64
+        compressed = canvas.toDataURL('image/jpeg', 0.5);
+      }
+      return compressed;
+    } catch (e) {
+      console.warn('⚠️ Image compression failed, using original:', e?.message || e);
+      return dataUrl;
     }
   }
 
@@ -1902,18 +1960,13 @@ class KayakoAIEnhancer {
       // What the UI should show as "Current text" and what REPLACE operates on: PR placeholder (or whole text when no template)
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
-      // Enhanced prompt with customer context and product detection
-      let enhancedPrompt = customPrompt;
-      
-      // Add DEAR customer context
-      if (!customPrompt.toLowerCase().includes('dear')) {
-        enhancedPrompt = `Write a professional customer support response starting with "Dear [Customer Name]," for the following request: ${customPrompt}`;
-      }
+      // Enhanced prompt - let the model interpret user intent flexibly
+      let enhancedPrompt = `${customPrompt}\n\nNote: By default, write a professional customer support response starting with "Dear [Customer Name]," unless the user's request clearly asks for something else (e.g., filling an escalation template, completing internal forms, drafting notes). Use the context provided in any case.`;
       
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${enhancedPrompt}\n\nAgent's internal notes for background context only (DO NOT answer these questions or address these notes - they are NOT from the customer):\n${contextText}`;
+        fullPrompt = `${enhancedPrompt}\n\n[AGENT WORK NOTES - FOR CONTEXT ONLY]\nThese are the agent's private investigation notes and questions to themselves while researching this ticket. They are NOT messages from the customer. Do NOT address or answer these notes. Use them only as background information about what the agent has already investigated.\n\n${contextText}\n\n[END AGENT NOTES]`;
       }
 
       // Get ticket context if enabled
@@ -1946,7 +1999,14 @@ class KayakoAIEnhancer {
       } catch (_) {}
 
       // Send the user's prompt as the primary instruction; include our assembled details separately
-      const generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, contextImages);
+      let generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, contextImages);
+      
+      // If empty and we had images, retry with fewer images (token limit mitigation)
+      if ((!generatedText || generatedText.trim().length === 0) && contextImages.length > 0) {
+        console.warn(`⚠️ Empty response with ${contextImages.length} images; retrying with reduced images`);
+        const reducedImages = contextImages.slice(0, Math.max(1, Math.floor(contextImages.length / 2)));
+        generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, reducedImages);
+      }
       
       // Remove processing notification before showing modal
       processingNotification.remove();
@@ -2365,7 +2425,7 @@ class KayakoAIEnhancer {
       const latestLine = latest ? `${latest.author}${latest.time ? ` (${latest.time})` : ''}: ${latest.content}` : '';
       const contextLines = messages.map(msg => `${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`);
 
-      return `LATEST MESSAGE:\n${latestLine}\n\nTICKET CONVERSATION HISTORY (chronological as captured):\n${contextLines.join('\n\n')}\n\n---\n\n`;
+      return `[TICKET CONVERSATION HISTORY]\nThese are the ACTUAL messages exchanged between the customer and support agents in this ticket. Use this to understand what the customer asked and what has been communicated so far.\n\nLatest message:\n${latestLine}\n\nFull history:\n${contextLines.join('\n\n')}\n\n[END TICKET HISTORY]\n\n---\n\n`;
       
     } catch (error) {
       console.error('Error extracting ticket context:', error);
@@ -2453,13 +2513,18 @@ class KayakoAIEnhancer {
       requestBody.temperature = this.config.temperature || 0.7;
     }
 
+    // Route to correct provider based on model name
+    const provider = model.startsWith('claude-') ? 'anthropic' : 'openai';
+    const action = provider === 'anthropic' ? 'anthropicChat' : 'openaiChat';
+    console.log(`🔀 Routing to ${provider} for model ${model}`);
+    
     const sendOnce = () => new Promise((resolve) => {
       try {
         if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
           resolve({ success: false, error: 'Extension context invalidated. Please reload the page.' });
           return;
         }
-        chrome.runtime.sendMessage({ action: 'openaiChat', requestBody }, (resp) => {
+        chrome.runtime.sendMessage({ action, requestBody }, (resp) => {
           // Check callback error details
           if (chrome?.runtime?.lastError) {
             resolve({ success: false, error: chrome.runtime.lastError.message || 'Message failed' });

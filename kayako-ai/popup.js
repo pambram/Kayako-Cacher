@@ -68,10 +68,21 @@ class PopupManager {
       this.refreshCurrentTab();
     });
 
-    // Live validation for API key
-    document.getElementById('apiKey').addEventListener('input', (e) => {
+    // Provider selection
+    document.getElementById('provider').addEventListener('change', (e) => {
+      this.toggleProviderFields(e.target.value);
+      this.saveConfig();
+    });
+
+    // Live validation for API keys
+    document.getElementById('openaiKey').addEventListener('input', (e) => {
       const value = e.target.value;
       const isValid = value.startsWith('sk-') && value.length > 10;
+      e.target.style.borderColor = isValid ? '#28a745' : '#e9ecef';
+    });
+    document.getElementById('anthropicKey').addEventListener('input', (e) => {
+      const value = e.target.value;
+      const isValid = value.startsWith('sk-ant-') && value.length > 10;
       e.target.style.borderColor = isValid ? '#28a745' : '#e9ecef';
     });
 
@@ -94,22 +105,53 @@ class PopupManager {
   updateUI() {
     if (!this.config) return;
 
+    // Migrate old config if needed
+    if (this.config.apiKey && !this.config.openaiKey) {
+      this.config.openaiKey = this.config.apiKey;
+    }
+
     // Update form fields
-    document.getElementById('apiKey').value = this.config.apiKey || '';
+    const provider = this.config.provider || 'openai';
+    document.getElementById('provider').value = provider;
+    document.getElementById('openaiKey').value = this.config.openaiKey || '';
+    document.getElementById('anthropicKey').value = this.config.anthropicKey || '';
     document.getElementById('model').value = this.config.model || 'gpt-5-mini';
     document.getElementById('useTicketContext').checked = this.config.useTicketContext === true;
     document.getElementById('systemPrompt').value = this.config.systemPrompt || '';
     document.getElementById('temperature').value = this.config.temperature || '0.7';
 
+    // Show/hide provider-specific fields
+    this.toggleProviderFields(provider);
+
     // Update API key field styling
-    const apiKeyField = document.getElementById('apiKey');
-    if (this.config.apiKey) {
-      const isValid = this.config.apiKey.startsWith('sk-') && this.config.apiKey.length > 10;
+    const apiKeyField = document.getElementById(provider === 'openai' ? 'openaiKey' : 'anthropicKey');
+    const key = provider === 'openai' ? this.config.openaiKey : this.config.anthropicKey;
+    if (key) {
+      const isValid = key.startsWith('sk-') && key.length > 10;
       apiKeyField.style.borderColor = isValid ? '#28a745' : '#dc3545';
     }
 
     // Show/hide temperature control based on current model
     this.toggleTemperatureVisibility(this.config.model || 'gpt-5-mini');
+  }
+
+  toggleProviderFields(provider) {
+    const openaiGroup = document.getElementById('openaiKeyGroup');
+    const anthropicGroup = document.getElementById('anthropicKeyGroup');
+    const openaiModels = document.getElementById('openaiModels');
+    const claudeModels = document.getElementById('claudeModels');
+
+    if (provider === 'openai') {
+      openaiGroup.style.display = 'block';
+      anthropicGroup.style.display = 'none';
+      openaiModels.style.display = '';
+      claudeModels.style.display = 'none';
+    } else {
+      openaiGroup.style.display = 'none';
+      anthropicGroup.style.display = 'block';
+      openaiModels.style.display = 'none';
+      claudeModels.style.display = '';
+    }
   }
 
   toggleTemperatureVisibility(model) {
@@ -145,14 +187,18 @@ class PopupManager {
 
   async saveConfig() {
     try {
+      const provider = document.getElementById('provider').value;
       const newConfig = {
-        apiKey: document.getElementById('apiKey').value.trim(),
+        provider: provider,
+        openaiKey: document.getElementById('openaiKey').value.trim(),
+        anthropicKey: document.getElementById('anthropicKey').value.trim(),
+        // Keep old apiKey for backward compatibility
+        apiKey: provider === 'openai' ? document.getElementById('openaiKey').value.trim() : document.getElementById('anthropicKey').value.trim(),
         model: document.getElementById('model').value,
-        enabled: true, // Always enabled - remove if you want to disable
+        enabled: true,
         useTicketContext: document.getElementById('useTicketContext').checked,
         systemPrompt: document.getElementById('systemPrompt').value.trim(),
-        temperature: parseFloat(document.getElementById('temperature').value),
-        provider: 'openai' // Currently only supporting OpenAI
+        temperature: parseFloat(document.getElementById('temperature').value)
       };
 
       const response = await chrome.runtime.sendMessage({
