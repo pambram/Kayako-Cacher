@@ -424,6 +424,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const sample = String(message.text).slice(0, 80).replace(/\s+/g, ' ');
     console.log('[SW] translateText request →', sample, '…');
     translateText(message.text, toLang).then(({ translation, sourceLang }) => {
+      try { console.log('[SW] translateText OK src=', sourceLang || 'auto', ' out=', String(translation||'').slice(0, 60)); } catch(_) {}
       sendResponse({ success: true, translation, sourceLang });
     }).catch(err => {
       console.warn('[SW] translateText failed:', err?.message || err);
@@ -617,18 +618,41 @@ async function fetchPageTitle(url){
 }
 
 // --- Lightweight translation via Google public endpoint ---
+// Adds resilience: tries googleapis first, then google.com, with a timeout.
 async function translateTextSingle(text, toLang) {
-  const endpoint = 'https://translate.googleapis.com/translate_a/single';
-  // Using the free gtx client. This is unofficial and subject to change.
-  const url = `${endpoint}?client=gtx&sl=auto&tl=${encodeURIComponent(toLang)}&dt=t&q=${encodeURIComponent(text)}`;
-  const res = await fetch(url, { redirect: 'follow', credentials: 'omit' });
-  if (!res.ok) throw new Error(`HTTP ${res.status} translating`);
-  const json = await res.json();
-  // Response shape: [[ [translated, original, null, null, ...], ... ], null, sourceLang, ...]
-  let translation = '';
-  try { translation = (json?.[0] || []).map(p => p?.[0] || '').join(''); } catch (_) { translation = ''; }
-  const sourceLang = (json?.[2] || 'auto');
-  return { translation, sourceLang };
+  const buildParams = () => `client=gtx&sl=auto&tl=${encodeURIComponent(toLang)}&dt=t&q=${encodeURIComponent(text)}`;
+  const endpoints = [
+    `https://translate.googleapis.com/translate_a/single?${buildParams()}`,
+    `https://translate.google.com/translate_a/single?${buildParams()}`
+  ];
+  const fetchJsonWithTimeout = async (url, timeoutMs = 8000) => {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => { try { ctrl.abort(); } catch(_) {} }, timeoutMs);
+    try {
+      const res = await fetch(url, { redirect: 'follow', credentials: 'omit', signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(to);
+    }
+  };
+  let lastErr = null;
+  for (const url of endpoints) {
+    try {
+      const json = await fetchJsonWithTimeout(url, 9000);
+      // Response shape: [[ [translated, original, ...], ... ], null, sourceLang, ...]
+      let translation = '';
+      try { translation = (json?.[0] || []).map(p => p?.[0] || '').join(''); } catch (_) { translation = ''; }
+      const sourceLang = (typeof json?.[2] === 'string' && json[2]) || (json && json.src) || 'auto';
+      if (translation && typeof translation === 'string') return { translation, sourceLang };
+      // If we got an empty translation, try next endpoint
+      lastErr = new Error('Empty translation payload');
+    } catch (e) {
+      lastErr = e;
+      try { console.warn('[SW] translate endpoint failed:', url, e?.message || e); } catch(_) {}
+    }
+  }
+  throw lastErr || new Error('Translation failed');
 }
 
 async function translateText(text, toLang) {
@@ -736,12 +760,136 @@ async function fetchCaseMeta(domain, ticketId) {
       if (typeof v === 'object') return v.name || v.label || v.title || v.value || v.state || '';
       return '';
     };
-    let status = pick(data?.status) || pick(data?.state) || pick(data?.status_name) || pick(data?.state_name) || pick(data?.case_status) || pick(data?.caseStatus) || pick(data?.current_status) || pick(data?.currentStatus);
+    // Deep search helpers as a last resort
+    const deepPickKeys = (obj, keys) => {
+      try {
+        const want = new Set(keys.map(k => k.toLowerCase()));
+        const stack = [obj];
+        const seen = new Set();
+        while (stack.length) {
+          const cur = stack.pop();
+          if (!cur || typeof cur !== 'object') continue;
+          if (seen.has(cur)) continue;
+          seen.add(cur);
+          for (const k of Object.keys(cur)) {
+            const v = cur[k];
+            if (want.has(String(k).toLowerCase())) {
+              const out = pick(v);
+              if (out) return out;
+            }
+            if (v && typeof v === 'object') stack.push(v);
+          }
+        }
+      } catch (_) {}
+      return '';
+    };
+    const deepFindFieldByName = (obj, fieldName) => {
+      try {
+        const target = String(fieldName).toLowerCase();
+        const stack = [obj];
+        const seen = new Set();
+        while (stack.length) {
+          const cur = stack.pop();
+          if (!cur || typeof cur !== 'object') continue;
+          if (seen.has(cur)) continue;
+          seen.add(cur);
+          // Common "field" objects: {name:'Product', value:'X'} or {label:'Product', value:'X'}
+          const nm = (cur.name || cur.label || cur.title || cur.key || '').toString().toLowerCase();
+          if (nm === target) {
+            const out = pick(cur.value) || pick(cur.current) || pick(cur.selected) || pick(cur.text) || pick(cur.display) || pick(cur.label);
+            if (out) return out;
+          }
+          for (const k of Object.keys(cur)) {
+            const v = cur[k];
+            if (v && typeof v === 'object') stack.push(v);
+          }
+        }
+      } catch (_) {}
+      return '';
+    };
+    let status = 
+      // direct strings/objects
+      pick(data?.status) ||
+      pick(data?.state) ||
+      pick(data?.status_name) ||
+      pick(data?.state_name) ||
+      pick(data?.status_label) ||
+      pick(data?.state_label) ||
+      pick(data?.case_status) ||
+      pick(data?.caseStatus) ||
+      pick(data?.current_status) ||
+      pick(data?.currentStatus) ||
+      // nested common shapes
+      pick(data?.case?.status) ||
+      pick(data?.case?.state) ||
+      pick(data?.ticket?.status) ||
+    pick(data?.ticket?.state) ||
+    // JSON:API style attributes
+    pick(data?.attributes?.status) ||
+    pick(data?.attributes?.state) ||
+    pick(data?.case?.attributes?.status) ||
+    pick(data?.case?.attributes?.state) ||
+    pick(data?.ticket?.attributes?.status) ||
+    pick(data?.ticket?.attributes?.state) ||
+    // generic property bags
+    pick(data?.properties?.status) ||
+    pick(data?.properties?.state) ||
+    pick(data?.fields?.status) ||
+      pick(data?.fields?.state) ||
+      // deep scan anywhere as last resort
+      deepPickKeys(data, ['status','state','status_name','state_name','current_status','currentStatus']);
+    // If we found a purely numeric status string, map it to a friendly label
+    if (status && typeof status === 'string' && /^\d+$/.test(status.trim())) {
+      const num = Number(status.trim());
+      const statusMap = {
+        1: 'New',
+        2: 'Open',
+        3: 'Pending',
+        4: 'Hold',
+        5: 'Completed',
+        6: 'Closed'
+      };
+      status = statusMap[num] || status;
+    }
+    // If still blank, try numeric status id mapping from common id fields
+    if (!status) {
+      const statusId = Number(
+        (data?.status && (data?.status.id || data?.status.value || data?.status.code)) ||
+        (data?.case?.status && (data?.case?.status.id || data?.case?.status.value || data?.case?.status.code)) ||
+        (data?.ticket?.status && (data?.ticket?.status.id || data?.ticket?.status.value || data?.ticket?.status.code)) ||
+        data?.status_id || data?.case_status_id || data?.current_status_id ||
+        data?.attributes?.status_id || data?.attributes?.state_id ||
+        data?.case?.attributes?.status_id || data?.ticket?.attributes?.status_id || 0
+      ) || 0;
+      if (statusId) {
+        const statusMap = {
+          1: 'New',
+          2: 'Open',
+          3: 'Pending',
+          4: 'Hold',
+          5: 'Completed',
+          6: 'Closed'
+        };
+        status = statusMap[statusId] || String(statusId);
+      }
+    }
     if (!status) {
       // Fallback from booleans commonly present
       if (data?.is_closed || data?.closed) status = 'Closed';
       else if (data?.completed) status = 'Completed';
       else if (data?.resolved || data?.is_resolved) status = 'Resolved';
+    }
+    // Normalize capitalization (OPEN -> Open, hold -> Hold)
+    if (status && typeof status === 'string') {
+      const s = status.trim();
+      const up = s.toUpperCase();
+      // Map common noise "ACTIVE" to empty so UI doesn't show misleading value
+      if (up === 'ACTIVE') {
+        // Prefer empty; downstream will fall back to better value on next refresh
+        status = '';
+      } else {
+        status = s.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+      }
     }
     let updatedAt = Date.parse(data?.updated_at || data?.updatedAt || data?.modified_at || data?.last_activity_at || data?.lastUpdated || '') || 0;
     let product = '';
@@ -753,7 +901,13 @@ async function fetchCaseMeta(domain, ticketId) {
         product = p?.value || '';
       }
     } catch(_) {}
-    return { status: String(status||'').trim(), product: String(product||'').trim(), updatedAt };
+    if (!product) {
+      // Look in generic fields collections or deep objects
+      product = pick(data?.fields?.product) || pick(data?.fields?.Product) || deepFindFieldByName(data, 'product');
+    }
+    const out = { status: String(status||'').trim(), product: String(product||'').trim(), updatedAt };
+    try { console.log('[SW] fetchCaseMeta', domain, `#${ticketId}`, '→', out); } catch(_) {}
+    return out;
   } catch (_) {
     return { status: '', product: '', updatedAt: 0 };
   }
@@ -905,14 +1059,14 @@ async function generateBookmarkNote(domain, ticketId) {
     provider = k.startsWith('openrouter_') ? 'openrouter' : (k.startsWith('sk-') ? 'openai' : 'openrouter');
     apiKey = k;
   }
-  let model = keyData.llmModel || (provider === 'openai' ? 'gpt-4o-mini' : 'gpt-5-mini');
+  let model = keyData.llmModel || (provider === 'openai' ? 'gpt-5-mini' : 'gpt-5-nano=');
   let endpoint = keyData.llmEndpoint || (provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions');
-  if (provider === 'openai' && model === 'gpt-5-mini') model = 'gpt-4o-mini';
+  if (provider === 'openai' && model === 'gpt-5-mini') model = 'gpt-5-nano';
   if (provider === 'openrouter') {
     // Ensure model id format is OpenRouter-compatible
     if (!String(model).includes('/')) {
       if (String(model).includes('gpt-5-mini')) model = 'openrouter/gpt-5-mini';
-      else if (String(model).includes('gpt-4o-mini')) model = 'openai/gpt-4o-mini';
+      else if (String(model).includes('gpt-5-nano')) model = 'openai/gpt-5-nano';
     }
   }
 
@@ -1149,7 +1303,7 @@ async function checkAllTrackedTickets() {
       if (!baseline) {
         // First time baseline
         const meta = await getCaseMeta(t.domain, t.id);
-        history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: latestMeta.createdAt || meta.updatedAt || Date.now(), status: meta.status || t.status || '', product: meta.product || t.product || '' };
+        history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: latestMeta.createdAt || meta.updatedAt || Date.now(), status: (typeof meta.status === 'string' ? meta.status : (t.status || '')), product: meta.product || t.product || '' };
         mutated = true;
         return;
       }
@@ -1181,7 +1335,7 @@ async function checkAllTrackedTickets() {
             p?.private === true ||
             vis === 'internal' || vis === 'private' || vis === 'staff' ||
             ch === 'internal' || ch === 'private' || ch === 'notes' ||
-            t.includes('note') || t.includes('internal')
+            t.includes('note') || t.includes('internal') || t.includes('private')
           );
         };
         const isPublic = (p)=> {
@@ -1216,7 +1370,7 @@ async function checkAllTrackedTickets() {
             if (isPublic(p)) {
               // public reply: ignore if from public-bot list
               if (isBotPublic(p)) return false;
-              return isCustomer(p); // customer public reply only
+              return true; // any human public reply (customer or agent)
             }
             return false;
           });
@@ -1243,22 +1397,22 @@ async function checkAllTrackedTickets() {
         } catch(_) {}
         const displayTs = latestRelevantTs || meta.updatedAt || latestMeta.createdAt || Date.now();
         if (unreadCount > 0) {
-          history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: meta.status || t.status || '', product: meta.product || t.product || '' };
+          history[i] = { ...t, hasUnseenActivity: true, unreadCount, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: (typeof meta.status === 'string' ? meta.status : (t.status || '')), product: meta.product || t.product || '' };
           mutated = true;
         } else {
           // No relevant new activity; baseline to avoid re-fetching same range
-          history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: meta.status || t.status || '', product: meta.product || t.product || '' };
+          history[i] = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: displayTs, status: (typeof meta.status === 'string' ? meta.status : (t.status || '')), product: meta.product || t.product || '' };
           mutated = true;
         }
       } else if (t.hasUnseenActivity || t.unreadCount) {
         const meta = await getCaseMeta(t.domain, t.id);
         const la = latestMeta.createdAt || meta.updatedAt || t.lastActivityAt || Date.now();
-        history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: la, status: meta.status || t.status || '', product: meta.product || t.product || '' };
+        history[i] = { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now(), lastActivityAt: la, status: (typeof meta.status === 'string' ? meta.status : (t.status || '')), product: meta.product || t.product || '' };
         mutated = true;
       } else {
         const meta = await getCaseMeta(t.domain, t.id);
         const la = latestMeta.createdAt || meta.updatedAt || t.lastActivityAt || Date.now();
-        history[i] = { ...t, lastCheckedAt: Date.now(), lastActivityAt: la, status: meta.status || t.status || '', product: meta.product || t.product || '' };
+        history[i] = { ...t, lastCheckedAt: Date.now(), lastActivityAt: la, status: (typeof meta.status === 'string' ? meta.status : (t.status || '')), product: meta.product || t.product || '' };
         mutated = true;
       }
     } catch (e) {
@@ -1322,7 +1476,7 @@ async function checkAllBookmarkedTickets() {
       p?.private === true ||
       vis === 'internal' || vis === 'private' || vis === 'staff' ||
       ch === 'internal' || ch === 'private' || ch === 'notes' ||
-      t.includes('note') || t.includes('internal')
+      t.includes('note') || t.includes('internal') || t.includes('private')
     );
   };
   const isPublic = (p)=> {
@@ -1356,7 +1510,7 @@ async function checkAllBookmarkedTickets() {
       const statusLc = lc(meta.status || b.status || '');
       const isClosed = ['closed','completed','resolved','done'].some(x => statusLc.includes(x));
       // Always update meta fields
-      let updated = { ...b, status: meta.status || b.status || '', product: meta.product || b.product || '', lastActivityAt: meta.updatedAt || b.lastActivityAt || 0, lastCheckedAt: Date.now() };
+      let updated = { ...b, status: (typeof meta.status === 'string' ? meta.status : (b.status || '')), product: meta.product || b.product || '', lastActivityAt: meta.updatedAt || b.lastActivityAt || 0, lastCheckedAt: Date.now() };
       if (isClosed) {
         // Skip polling posts; clear unread
         updated.hasUnseenActivity = false;
@@ -1394,7 +1548,7 @@ async function checkAllBookmarkedTickets() {
             }
             if (isPublic(p)) {
               if (isBotPublic(p)) return false;
-              return isCustomer(p);
+              return true; // any human public reply (customer or agent)
             }
             return false;
           });

@@ -274,13 +274,13 @@ document.addEventListener("DOMContentLoaded", function () {
                 store.openaiApiKey = key;
                 store.llmEndpoint = 'https://api.openai.com/v1/chat/completions';
                 // Use a compatible OpenAI model when not using OpenRouter
-                store.llmModel = 'gpt-4o-mini';
+                store.llmModel = 'gpt-5-mini';
                 store.openrouterApiKey = '';
             } else {
                 // Unknown; store generically and default to OpenRouter
                 store.openrouterApiKey = key;
                 store.llmEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
-                store.llmModel = 'gpt-5-mini';
+                store.llmModel = 'gpt-5-nano';
                 store.openaiApiKey = '';
             }
             chrome.storage.local.set(store, () => {
@@ -521,8 +521,9 @@ function displayBookmarks(list){
     list = list.slice().sort((a,b) => Number(b.lastActivityAt||b.createdAt||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.createdAt||a.lastCheckedAt||0));
     let html = '';
     list.forEach(b => {
-        const unread = Number(b.unreadCount || 0);
-        const hasUnseen = !!b.hasUnseenActivity || unread > 0;
+        let unread = Number(b.unreadCount || 0);
+        let hasUnseen = !!b.hasUnseenActivity || unread > 0;
+        if (__optimisticCleared && __optimisticCleared.has(String(b.id))) { hasUnseen = false; unread = 0; }
         const unreadDot = hasUnseen ? '<span class="unread-dot" title="' + (unread ? unread + ' new' : 'New activity') + '"></span>' : '';
         const when = Number(b.lastActivityAt || b.createdAt || b.lastCheckedAt || Date.now());
         const note = b.note ? `<div class="bookmark-note">${escapeHtml(String(b.note))}</div>` : '';
@@ -599,13 +600,31 @@ function displayBookmarks(list){
     });
     container.querySelectorAll('.bookmark-action-btn.delete-bookmark').forEach(btn => {
         btn.addEventListener('click', (e) => {
+            const item = e.currentTarget.closest('.ticket-item');
+            if (!item) return;
+            item.classList.add('confirming');
+        });
+    });
+    // Confirm Yes -> remove bookmark (inline)
+    container.querySelectorAll('.ticket-item .confirm-inline .yes').forEach(btn => {
+        btn.addEventListener('click', (e) => {
             const el = e.currentTarget;
             const ticketId = el.dataset.ticketId;
-            const domain = el.dataset.domain;
-            if (!confirm('Remove bookmark #' + ticketId + '?')) return;
+            const item = el.closest('.ticket-item');
+            const link = item ? item.querySelector('.ticket-id-link') : null;
+            const domain = link ? (link.dataset.domain || '') : '';
             chrome.runtime.sendMessage({ action: 'deleteBookmark', ticket: { id: ticketId, domain } }, () => {
-                loadBookmarks();
+                if (item && item.parentNode) item.parentNode.removeChild(item);
+                showNotification(`Bookmark #${ticketId} removed`, 'success');
             });
+        });
+    });
+    // Confirm No -> cancel
+    container.querySelectorAll('.ticket-item .confirm-inline .no').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const item = e.currentTarget.closest('.ticket-item');
+            if (!item) return;
+            item.classList.remove('confirming');
         });
     });
 }
@@ -636,10 +655,22 @@ function mapById(arr) {
 function buildMetaBase(ticket) {
     const when = Number(ticket.lastActivityAt || ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now());
     const prod = ticket.product ? ` • ${ticket.product}` : '';
-    const status = ticket.status ? ` • ${ticket.status}` : '';
+    let statusTxt = '';
+    try {
+        const s = (ticket.status || '').toString().trim();
+        if (s && s.toUpperCase() !== 'ACTIVE') statusTxt = ` • ${s}`;
+    } catch (_) {}
+    const status = statusTxt;
     const dom = ticket.domain ? ` • ${ticket.domain}` : '';
     const cust = ticket.customer ? `${ticket.customer} • ` : '';
     return `${cust}${getRelativeTime(when)}${dom}${prod}${status}`;
+}
+
+// Determine if a status means the ticket is closed/completed (hide from Recent)
+function isClosedStatusValue(status) {
+    const s = (status || '').toString().toLowerCase();
+    if (!s) return false;
+    return s === 'closed' || s === 'completed' || s === 'resolved' || s.includes('closed') || s.includes('complete') || s.includes('resolved');
 }
 
 // Update a rendered item's meta line to reflect current product/status/time
@@ -727,6 +758,11 @@ function applyUnreadDiff(prev, next) {
         }
         const item = container.querySelector(`.ticket-item[data-ticket-id="${id}"]`);
         if (!item) return;
+        // If status transitioned to closed/completed, remove immediately from Recent
+        if (n && isClosedStatusValue(n.status)) {
+            if (item && item.parentNode) item.parentNode.removeChild(item);
+            return;
+        }
         // Update meta line (product/status/lastActivity) when changed
         try { updateMetaForItem(item, n || p); } catch (_) {}
         if (!had && has) {
@@ -759,15 +795,23 @@ function displayTicketHistory(history) {
     
     // Apply unread-only filter if enabled
     let list = history.slice(0);
+    // Hide closed/completed/resolved tickets from Recent
+    list = list.filter(t => !(t && isClosedStatusValue(t.status)));
     const filterEl = document.getElementById('filter-unread');
     if (filterEl && filterEl.checked) {
-        list = list.filter(t => (t && (t.hasUnseenActivity || Number(t.unreadCount||0) > 0)));
+        list = list.filter(t => {
+            if (!t) return false;
+            // If the user has optimistically cleared this ticket, treat it as read for filtering
+            if (__optimisticCleared && __optimisticCleared.has(String(t.id))) return false;
+            return t.hasUnseenActivity || Number(t.unreadCount||0) > 0;
+        });
     }
     let historyHTML = '';
     list.slice(0, 20).forEach(ticket => { // Show only last 20 in popup
         const when = Number(ticket.lastActivityAt || ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now());
-        const unread = Number(ticket.unreadCount || 0);
-        const hasUnseen = !!ticket.hasUnseenActivity || unread > 0;
+        let unread = Number(ticket.unreadCount || 0);
+        let hasUnseen = !!ticket.hasUnseenActivity || unread > 0;
+        if (__optimisticCleared && __optimisticCleared.has(String(ticket.id))) { hasUnseen = false; unread = 0; }
         const unreadDot = hasUnseen ? `<span class="unread-dot" title="${unread ? unread + ' new' : 'New activity'}"></span>` : '';
         const unreadMeta = unread ? ` • ${unread} new` : (hasUnseen ? ' • new' : '');
         const prod = ticket.product ? ` • ${ticket.product}` : '';

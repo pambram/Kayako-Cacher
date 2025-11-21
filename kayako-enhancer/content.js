@@ -1178,14 +1178,35 @@ function setupInlineTranslation() {
                     return;
                 }
                 if (!resp || !resp.success || !resp.translation) {
+                    try { console.log('⚠️ translate empty/failed response'); } catch(_) {}
                     // Nothing to show
                     return;
                 }
                 const src = String(resp.sourceLang || '').toLowerCase();
-                const isEnglish = src === 'en' || src.startsWith('en-');
+                let isEnglish = src === 'en' || src.startsWith('en-');
                 // Skip offering translation if detected source is English or translation equals original
                 const norm = (s) => String(s || '').trim();
+                // Heuristic override: if Google reports EN but text looks non-ASCII or the translation diverges a lot, still show
+                try {
+                    if (isEnglish) {
+                        const hasNonAscii = /[^\x00-\x7F]/.test(capped);
+                        // Simple token overlap similarity
+                        const toTokens = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9äöüßéèàçñíóú\-\\s]/gi, ' ').split(/\\s+/).filter(Boolean);
+                        const a = toTokens(capped);
+                        const b = toTokens(resp.translation || '');
+                        let overlap = 0;
+                        if (a.length && b.length) {
+                            const setA = new Set(a);
+                            for (const w of b) if (setA.has(w)) overlap++;
+                            const denom = Math.max(a.length, b.length);
+                            const ratio = denom ? overlap / denom : 1;
+                            if (ratio < 0.8) { isEnglish = false; }
+                        }
+                        if (hasNonAscii) { isEnglish = false; }
+                    }
+                } catch (_) {}
                 if (isEnglish || norm(resp.translation) === norm(capped)) {
+                    try { console.log('ℹ️ skipping bubble: isEnglish=', isEnglish, ' sameAsOriginal=', norm(resp.translation) === norm(capped), ' src=', src, ' len=', (resp.translation||'').length); } catch(_) {}
                     return;
                 }
                 // Create bubble on demand with final text
@@ -1225,11 +1246,22 @@ function createTranslationBubble(container, rect, message, sourceLang) {
             <button class=\"kayako-translate-close\" style=\"background:#f1f3f5;color:#333;border:1px solid #ddd;border-radius:4px;padding:2px 6px;cursor:pointer;\">✕</button>
         </div>
     `;
-    // Position the bubble near selection
-    if (container !== document.body && getComputedStyle(container).position === 'static') {
-        container.style.position = 'relative';
+    // Choose safest mount: if container clips overflow, mount to body (fixed)
+    let mount = container;
+    try {
+        const cs = getComputedStyle(container);
+        const clips = (v) => ['hidden','clip','auto','scroll'].includes(String(v||'').toLowerCase());
+        if (clips(cs.overflow) || clips(cs.overflowX) || clips(cs.overflowY)) {
+            mount = document.body;
+        }
+    } catch (_) {}
+    if (mount !== document.body && getComputedStyle(mount).position === 'static') {
+        mount.style.position = 'relative';
     }
-    container.appendChild(ui);
+    mount.appendChild(ui);
+    if (mount === document.body) {
+        ui.style.position = 'fixed';
+    }
     // Set origin→EN label if known
     try {
         const langEl = ui.querySelector('.kayako-translate-lang');
@@ -1239,15 +1271,21 @@ function createTranslationBubble(container, rect, message, sourceLang) {
             langEl.textContent = src ? `${src}→EN` : '';
         }
     } catch(_) {}
-    ui._container = container;
+    ui._container = mount;
     ui._rect = rect;
-    // Constrain bubble width to container to avoid text appearing outside panel
+    // Constrain bubble width to mount (or viewport when fixed) to avoid clipping
     try {
-        const cr = container.getBoundingClientRect();
-        const maxW = Math.min(420, Math.max(160, (cr.width || container.clientWidth) - 16));
+        let maxW;
+        if (mount === document.body) {
+            const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+            maxW = Math.min(420, Math.max(160, vw - 24));
+        } else {
+            const cr = mount.getBoundingClientRect();
+            maxW = Math.min(420, Math.max(160, (cr.width || mount.clientWidth) - 16));
+        }
         ui.style.maxWidth = maxW + 'px';
     } catch(_) {}
-    positionBubbleNearRect(ui, container, rect);
+    positionBubbleNearRect(ui, mount, rect);
 
     // Dismiss logic
     const close = () => { try { ui.remove(); } catch(_) {} document.removeEventListener('click', onDoc, true); document.removeEventListener('keydown', onKey, true); };
@@ -1321,8 +1359,14 @@ function updateTranslationBubble(ui, translation, sourceLang) {
         // Re-clamp position in case size changed
         if (ui._container && ui._rect) {
             try {
-                const cr = ui._container.getBoundingClientRect();
-                const maxW = Math.min(420, Math.max(160, (cr.width || ui._container.clientWidth) - 16));
+                let maxW;
+                if (ui.style.position === 'fixed') {
+                    const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+                    maxW = Math.min(420, Math.max(160, vw - 24));
+                } else {
+                    const cr = ui._container.getBoundingClientRect();
+                    maxW = Math.min(420, Math.max(160, (cr.width || ui._container.clientWidth) - 16));
+                }
                 ui.style.maxWidth = maxW + 'px';
             } catch(_) {}
             positionBubbleNearRect(ui, ui._container, ui._rect);
@@ -1340,15 +1384,35 @@ function createOrUpdateTranslationBubble(container, rect, message, sourceLang) {
 
 function positionBubbleNearRect(ui, container, rect) {
     try {
-        const containerRect = container.getBoundingClientRect();
         const padding = 8;
-        let left = rect.left - containerRect.left;
-        let top = rect.top - containerRect.top - ui.offsetHeight - padding;
-        if (top < padding) top = rect.bottom - containerRect.top + padding;
-        const maxLeft = (containerRect.width || container.clientWidth) - ui.offsetWidth - padding;
-        left = Math.max(padding, Math.min(left, maxLeft));
-        ui.style.left = left + 'px';
-        ui.style.top = Math.max(padding, top) + 'px';
+        const isFixed = getComputedStyle(ui).position === 'fixed';
+        if (isFixed) {
+            const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+            const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+            let left = rect.left;
+            let top = rect.top - ui.offsetHeight - padding;
+            if (top < padding) top = rect.bottom + padding;
+            const maxLeft = vw - ui.offsetWidth - padding;
+            left = Math.max(padding, Math.min(left, maxLeft));
+            if (top + ui.offsetHeight > vh - padding) {
+                top = Math.max(padding, vh - ui.offsetHeight - padding);
+            }
+            ui.style.left = left + 'px';
+            ui.style.top = top + 'px';
+        } else {
+            const containerRect = container.getBoundingClientRect();
+            let left = rect.left - containerRect.left;
+            let top = rect.top - containerRect.top - ui.offsetHeight - padding;
+            if (top < padding) top = rect.bottom - containerRect.top + padding;
+            // Clamp horizontally
+            const maxLeft = (containerRect.width || container.clientWidth) - ui.offsetWidth - padding;
+            left = Math.max(padding, Math.min(left, maxLeft));
+            // Clamp vertically inside container
+            const maxTop = (containerRect.height || container.clientHeight) - ui.offsetHeight - padding;
+            if (top > maxTop) top = Math.max(padding, maxTop);
+            ui.style.left = left + 'px';
+            ui.style.top = Math.max(padding, top) + 'px';
+        }
     } catch (_) {}
 }
 
@@ -1777,239 +1841,7 @@ function setupManualAutolink(editor) {
     } catch (_) {}
 }
 
-// Normalize minor artifacts created when pressing Enter/Backspace near anchors
-function setupEnterBackspaceStabilizer(editor) {
-	try {
-		if (editor.dataset.enterFixSetup === 'true') return;
-		editor.dataset.enterFixSetup = 'true';
-		const handler = (e) => {
-			if (!e || (e.key !== 'Enter' && e.key !== 'Backspace' && e.key !== 'Delete')) return;
-			// Allow Froala to apply its mutation first
-			setTimeout(() => {
-				try {
-					const sel = window.getSelection && window.getSelection();
-					if (!sel || !sel.rangeCount) return;
-					let node = sel.anchorNode;
-					if (!node) return;
-					if (node.nodeType === 3) node = node.parentNode;
-					const block = node && node.closest && node.closest('li, p, div');
-					if (!block || !editor.contains(block)) return;
-					// Collapse duplicate <br> siblings inside current block
-					(function collapseConsecutiveBr(el) {
-						let i = 0;
-						while (i < el.childNodes.length - 1) {
-							const a = el.childNodes[i];
-							const b = el.childNodes[i + 1];
-							if (a && b && a.nodeType === 1 && b.nodeType === 1 && a.nodeName === 'BR' && b.nodeName === 'BR') {
-								try { el.removeChild(b); } catch(_) {}
-								continue;
-							}
-							i++;
-						}
-					})(block);
-					// Trim leading whitespace text at start of block
-					if (block.firstChild && block.firstChild.nodeType === 3) {
-						block.firstChild.nodeValue = (block.firstChild.nodeValue || '').replace(/^\s+/, '');
-					}
-					// If Enter produced two consecutive blank blocks, keep only one
-					if (e.key === 'Enter') {
-						const isBlank = (el) => {
-							if (!el || el.nodeType !== 1) return false;
-							const tag = String(el.nodeName).toLowerCase();
-							if (!['p','div'].includes(tag)) return false;
-							const html = String(el.innerHTML || '').replace(/\s|&nbsp;/g,'').toLowerCase();
-							return html === '' || html === '<br>';
-						};
-						const prev = block.previousElementSibling;
-						if (isBlank(prev) && isBlank(block)) {
-							try { prev.remove(); } catch(_) {}
-						}
-						// Avoid trailing space at end of previous text line before anchor
-						if (prev && prev.lastChild && prev.lastChild.nodeType === 3) {
-							prev.lastChild.nodeValue = (prev.lastChild.nodeValue || '').replace(/\s+$/,'');
-						}
-					}
-				} catch(_) {}
-			}, 0);
-		};
-		editor.addEventListener('keyup', handler, true);
-	} catch (_) {}
-}
-
-// Normalize a single <li> after word-deletion to prevent stray <br> or wrappers
-function normalizeListItemAfterEdit(li) {
-    try {
-        if (!li || li.nodeName.toLowerCase() !== 'li') return;
-        // Unwrap Froala br-wrapper artifacts within li (prefer converting to a plain <br>)
-        try {
-            li.querySelectorAll('div.br-wrapper, div[class*="br-wrapper"]').forEach(n => {
-                try {
-                    const hasBr = !!n.querySelector('br');
-                    if (hasBr) {
-                        const br = document.createElement('br');
-                        n.parentNode.insertBefore(br, n);
-                    }
-                    n.remove();
-                } catch(_) {}
-            });
-        } catch(_) {}
-        // Avoid aggressive div->p conversions here; Froala relies on transient wrappers
-        // Collapse only duplicate consecutive <br> siblings (keep single placeholders for caret)
-        const collapseConsecutiveBr = (el) => {
-            let i = 0;
-            while (i < el.childNodes.length - 1) {
-                const a = el.childNodes[i];
-                const b = el.childNodes[i + 1];
-                if (a.nodeType === 1 && a.nodeName === 'BR' && b && b.nodeType === 1 && b.nodeName === 'BR') {
-                    try { el.removeChild(b); } catch(_) {}
-                    continue;
-                }
-                i++;
-            }
-        };
-        collapseConsecutiveBr(li);
-        try { li.querySelectorAll('p, div').forEach(collapseConsecutiveBr); } catch(_) {}
-        // Do not strip trailing single <br>; Froala uses it as a caret anchor after Enter
-        // Trim leading nbsp/text run at start of list item
-        if (li.firstChild && li.firstChild.nodeType === 3) {
-            li.firstChild.nodeValue = (li.firstChild.nodeValue || '').replace(/^\s+/, '');
-        }
-        try { li.querySelectorAll('p').forEach(p => { if (p.firstChild && p.firstChild.nodeType === 3) { p.firstChild.nodeValue = (p.firstChild.nodeValue || '').replace(/^\u00a0+/, '').replace(/^\s+/, ''); } }); } catch(_) {}
-        // If a nested list follows, remove stray BR directly before it
-        try {
-            li.querySelectorAll('ul, ol').forEach(lst => {
-                let prev = lst.previousSibling;
-                while (prev && prev.nodeType === 1 && prev.nodeName === 'BR') {
-                    const toRemove = prev; prev = prev.previousSibling; try { toRemove.remove(); } catch(_) {}
-                }
-            });
-        } catch(_) {}
-        // Ensure the list item keeps a placeholder for caret when visually empty
-        try {
-            const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
-            const hasBlocks = !!li.querySelector('p, div, span, a, strong, em, code, ul, ol, img');
-            if (!txt && !hasBlocks) {
-                li.innerHTML = '<br>';
-            }
-        } catch(_) {}
-        // Also normalize ancestor <li> (important for indented bullets)
-        try {
-            const parentLi = li.parentElement && li.parentElement.closest ? li.parentElement.closest('li') : null;
-            if (parentLi) {
-                // light-touch normalization to avoid reflow loops
-                collapseConsecutiveBr(parentLi);
-            }
-        } catch(_) {}
-    } catch(_) {}
-}
-
-function isEmptyListItem(li) {
-    try {
-        if (!li || li.nodeName.toLowerCase() !== 'li') return false;
-        const hasMedia = !!(li.querySelector && li.querySelector('img, picture, svg, video, iframe, figure'));
-        if (hasMedia) return false;
-        const txt = (li.textContent || '').replace(/\u00a0/g,' ').trim();
-        if (txt) return false;
-        // allow a single <br> placeholder to count as empty
-        const html = String(li.innerHTML || '').replace(/\s/gi,'').toLowerCase();
-        return html === '' || html === '<br>' || html === '<p><br></p>';
-    } catch(_) { return false; }
-}
-
-function cleanupConsecutiveEmptyLis(li) {
-    try {
-        if (!li || li.nodeName.toLowerCase() !== 'li') return;
-        const list = li.parentElement;
-        if (!list || !/^(ul|ol)$/i.test(list.nodeName)) return;
-        // Collapse current with previous if both empty
-        const prev = li.previousElementSibling;
-        if (prev && prev.nodeName.toLowerCase() === 'li' && isEmptyListItem(prev) && isEmptyListItem(li)) {
-            try { prev.remove(); } catch(_) {}
-        }
-        // Collapse current with next if both empty
-        const next = li.nextElementSibling;
-        if (next && next.nodeName.toLowerCase() === 'li' && isEmptyListItem(next) && isEmptyListItem(li)) {
-            try { next.remove(); } catch(_) {}
-        }
-        // Sweep the whole list to remove redundant consecutive empties
-        try {
-            let n = list.firstElementChild;
-            while (n) {
-                const nxt = n.nextElementSibling;
-                if (n.nodeName && n.nodeName.toLowerCase() === 'li' && nxt && nxt.nodeName && nxt.nodeName.toLowerCase() === 'li' && isEmptyListItem(n) && isEmptyListItem(nxt)) {
-                    try { nxt.remove(); } catch(_) {}
-                }
-                n = nxt;
-            }
-        } catch(_) {}
-    } catch(_) {}
-}
-
-// Set up a lightweight stabilizer: after Option+Backspace inside a list item, normalize that item
-function setupListEditStabilizer(editor) {
-    try {
-        if (editor._listStabilizerSetup) return; editor._listStabilizerSetup = true;
-        let lastAltBackspaceAt = 0;
-        let lastBackspaceAt = 0;
-        let lastEnterAt = 0;
-        editor.addEventListener('keydown', (e) => {
-            try {
-                if (window.__kayakoDisableListStabilizer) return;
-                if (e && e.altKey && (e.key === 'Backspace' || e.key === 'Delete' || e.code === 'Backspace' || e.code === 'Delete' || e.keyCode === 8 || e.keyCode === 46)) {
-                    lastAltBackspaceAt = Date.now();
-                }
-                if (e && !e.altKey && (e.key === 'Backspace' || e.code === 'Backspace' || e.keyCode === 8 || e.key === 'Delete' || e.code === 'Delete' || e.keyCode === 46)) {
-                    lastBackspaceAt = Date.now();
-                }
-                if (e && !e.shiftKey && (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13)) {
-                    lastEnterAt = Date.now();
-                }
-            } catch(_) {}
-        });
-        editor.addEventListener('input', () => {
-            try {
-                if (window.__kayakoDisableListStabilizer) return;
-                const now = Date.now();
-                const recentAltDel = (now - lastAltBackspaceAt) <= 450;
-                const recentBackspace = (now - lastBackspaceAt) <= 450;
-                const recentEnter = (now - lastEnterAt) <= 450;
-                if (!recentAltDel && !recentBackspace && !recentEnter) return;
-                // Allow DOM to settle first
-                setTimeout(() => {
-                    try {
-                        const sel = window.getSelection && window.getSelection();
-                        if (!sel || !sel.rangeCount) return;
-                        const node = sel.anchorNode ? (sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode) : null;
-                        let li = node && node.closest && node.closest('li');
-                        if (li) {
-                            normalizeListItemAfterEdit(li);
-                            cleanupConsecutiveEmptyLis(li);
-                            // Also normalize neighbor created by Enter split
-                            if (recentEnter) {
-                                const sib = li.nextElementSibling && li.nextElementSibling.nodeName === 'LI' ? li.nextElementSibling : (li.previousElementSibling && li.previousElementSibling.nodeName === 'LI' ? li.previousElementSibling : null);
-                                if (sib) {
-                                    normalizeListItemAfterEdit(sib);
-                                    cleanupConsecutiveEmptyLis(sib);
-                                }
-                            }
-                            // If a backspace merge happened, normalize previous sibling too
-                            if (recentBackspace) {
-                                const prev = li.previousElementSibling;
-                                if (prev && prev.nodeName === 'LI') {
-                                    normalizeListItemAfterEdit(prev);
-                                    cleanupConsecutiveEmptyLis(prev);
-                                }
-                            }
-                            // Run a second pass on next frame to catch late mutations from Froala
-                            setTimeout(() => { try { normalizeListItemAfterEdit(li); cleanupConsecutiveEmptyLis(li); } catch(_) {} }, 16);
-                            try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
-                        }
-                    } catch(_) {}
-                }, 0);
-            } catch(_) {}
-        });
-    } catch(_) {}
-}
+// (All runtime editing stabilizers removed completely)
 
 function isLikelyRawUrlText(text, href) {
     if (!text) return false;
@@ -2180,8 +2012,7 @@ function setupEditorAutoSizing() {
 		// Suggest title when a whole raw URL is selected
 		setupSelectedUrlSuggestion(editor);
 
-		// Optional: list stabilizer (disabled by default to keep behavior simple and maintainable)
-		if (window.__kayakoListStabilizerEnabled) setupListEditStabilizer(editor);
+		// (list stabilizer removed completely)
 
         // Ctrl/Cmd+Enter shortcut to click Send
         setupSendShortcut(editor);
@@ -2941,36 +2772,31 @@ function pasteLatestInternalNoteAboveFooter(editor) {
             // console.log('✂️ QC paste skipped: empty extraction');
             return;
         }
-        // Build a fragment from extracted HTML, without a wrapper to avoid Froala block merging
-        const tmpWrap = document.createElement('div');
-        tmpWrap.innerHTML = extracted;
-        // Trim leading trivial nodes (br/whitespace)
-        while (tmpWrap.firstChild && (
-            (tmpWrap.firstChild.nodeType === 3 && !(/[^\s\u00a0]/.test(tmpWrap.firstChild.nodeValue || '')))
-            || String(tmpWrap.firstChild.nodeName).toLowerCase() === 'br'
-            || (tmpWrap.firstChild.nodeType === 1 && String(tmpWrap.firstChild.innerHTML || '').replace(/\s|&nbsp;/g,'').toLowerCase() === '')
-        )) {
-            tmpWrap.removeChild(tmpWrap.firstChild);
-        }
-        // Normalize snippet HTML once for Froala-friendly editing (no runtime key stabilizers)
-        try { postCleanForFroala(tmpWrap); } catch(_) {}
-        const frag = document.createDocumentFragment();
-        let marked = false;
-        Array.from(tmpWrap.childNodes).forEach((n) => {
-            const clone = n.cloneNode(true);
-            if (!marked && clone.nodeType === 1) { try { clone.setAttribute('data-kayako-qc-snippet','1'); marked = true; } catch(_) {} }
-            frag.appendChild(clone);
-        });
+        // Insert extracted HTML directly with minimal touch - let Froala handle all formatting
+        const wrapper = document.createElement('div');
+        wrapper.setAttribute('data-kayako-qc-snippet', '1');
+        wrapper.innerHTML = extracted;
+        
+        // Remove ONLY a leading empty element to avoid Backspace/Delete triggering merge chaos
+        try {
+            const first = wrapper.firstElementChild;
+            if (first) {
+                const txt = (first.textContent || '').replace(/\s/g, '');
+                const hasMedia = !!(first.querySelector && first.querySelector('img, picture, svg, video, iframe, figure'));
+                if (!txt && !hasMedia) {
+                    wrapper.removeChild(first);
+                }
+            }
+        } catch(_) {}
+        
         if (footerStart && footerStart.parentNode) {
-            // add a blank line before our insert
             const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
             footerStart.parentNode.insertBefore(spacer, footerStart);
-            footerStart.parentNode.insertBefore(frag, footerStart);
+            footerStart.parentNode.insertBefore(wrapper, footerStart);
         } else {
-            editor.appendChild(frag);
+            editor.appendChild(wrapper);
         }
-        // Normalize top spacing of the entire editor so first line starts flush
-        try { normalizeEditorTopSpacing(editor); } catch(_) {}
+        
         try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
         try { editor.dispatchEvent(new Event('fr-change', { bubbles: true })); } catch(_) {}
         try { if (sessionId) window.__kayakoQCPasteDone[sessionId] = true; } catch(_) {}
@@ -2978,7 +2804,7 @@ function pasteLatestInternalNoteAboveFooter(editor) {
 
         // Keep snippet alive briefly across Note/Public toggle re-renders
         try {
-            ensureQCSnippetPersistence(editor, tmpWrap.innerHTML);
+            ensureQCSnippetPersistence(editor, wrapper.innerHTML);
         } catch (_) {}
     } catch (_) {}
 }
