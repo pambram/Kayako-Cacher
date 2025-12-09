@@ -499,7 +499,8 @@ class KayakoAIEnhancer {
     try {
       let ticketContext = '';
       if (this.config?.useTicketContext) {
-        ticketContext = this.extractTicketContext();
+        const contextData = this.extractTicketContext();
+        ticketContext = contextData.text || '';
       }
       const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
       const prompt = `Rephrase the following support response so it is clear and relatable to a child around ${age} years old, without changing the factual meaning or commitments. Use plain words, short sentences, and a warm, respectful tone. Switch to a child-friendly tone, for example, instead of "Dear" use "Hi" or "Hello". Briefly explain technical words in simple language when necessary. Avoid promises of timelines or remote sessions. ${formatting}`;
@@ -589,7 +590,8 @@ class KayakoAIEnhancer {
       const textTransformActions = ['polish', 'formalize', 'simplify', 'kidfriendly', 'beautify'];
       let ticketContext = '';
       if (this.config?.useTicketContext && !textTransformActions.includes(action.id)) {
-        ticketContext = this.extractTicketContext();
+        const contextData = this.extractTicketContext();
+        ticketContext = contextData.text || '';
         console.log('🎯 Extracted ticket context:', ticketContext ? 'Found context' : 'No context found');
       } else if (textTransformActions.includes(action.id)) {
         console.log(`🔧 Skipping ticket context for ${action.id} (text transformation action)`);
@@ -1901,7 +1903,8 @@ class KayakoAIEnhancer {
       // Optional ticket context (like other actions; skip would be fine too)
       let ticketContext = '';
       if (this.config?.useTicketContext) {
-        ticketContext = this.extractTicketContext();
+        const contextData = this.extractTicketContext();
+        ticketContext = contextData.text || '';
       }
 
       const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
@@ -1981,17 +1984,28 @@ By default, write a professional customer support response starting with "Dear [
 
       // Get ticket context if enabled
       let ticketContext = '';
+      let ticketContextText = '';
+      let timelineImages = [];
       let productInfo = '';
       if (this.config?.useTicketContext) {
-        ticketContext = this.extractTicketContext();
-        productInfo = this.extractProductInfo(ticketContext);
-        console.log('🎯 Extracted ticket context for custom prompt:', ticketContext ? 'Found context' : 'No context found');
+        const contextData = this.extractTicketContext();
+        ticketContextText = contextData.text || '';
+        timelineImages = contextData.images || [];
+        ticketContext = ticketContextText; // For backward compatibility
+        productInfo = this.extractProductInfo(ticketContextText);
+        console.log('🎯 Extracted ticket context for custom prompt:', ticketContextText ? 'Found context' : 'No context found');
+        console.log('🖼️ Timeline images found:', timelineImages.length);
         console.log('🏷️ Detected product:', productInfo || 'None detected');
         
         if (productInfo) {
           fullPrompt += `\n\nProduct context: We are supporting ${productInfo}. Please ensure the response and signature are relevant to this product.`;
         }
       }
+      
+      // Collect timeline images (from previous messages) and merge with editor images
+      const timelineImageDataUrls = await this.collectTimelineImagesAsDataUrls(timelineImages, 5);
+      const allContextImages = [...contextImages, ...timelineImageDataUrls];
+      console.log(`🖼️ Total images for AI: ${allContextImages.length} (${contextImages.length} from editor, ${timelineImageDataUrls.length} from timeline)`);
 
       // Append formatting guidance for limited HTML output and placeholders
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
@@ -2001,21 +2015,23 @@ By default, write a professional customer support response starting with "Dear [
       // Debug visibility: log the assembled prompt and context summary
       try {
         const dbg = {
-          usingTicketContext: !!ticketContext,
-          contextImages: contextImages.length,
+          usingTicketContext: !!ticketContextText,
+          editorImages: contextImages.length,
+          timelineImages: timelineImageDataUrls.length,
+          totalImages: allContextImages.length,
           promptPreview: fullPrompt.slice(0, 1500) + (fullPrompt.length > 1500 ? '... [truncated]' : '')
         };
         console.log('🧪 Help me write: composed prompt', dbg);
       } catch (_) {}
 
       // Send the user's prompt as the primary instruction; include our assembled details separately
-      let generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, contextImages);
+      let generatedText = await this.callAI(customPrompt, fullPrompt, ticketContextText, allContextImages);
       
       // If empty and we had images, retry with fewer images (token limit mitigation)
-      if ((!generatedText || generatedText.trim().length === 0) && contextImages.length > 0) {
-        console.warn(`⚠️ Empty response with ${contextImages.length} images; retrying with reduced images`);
-        const reducedImages = contextImages.slice(0, Math.max(1, Math.floor(contextImages.length / 2)));
-        generatedText = await this.callAI(customPrompt, fullPrompt, ticketContext, reducedImages);
+      if ((!generatedText || generatedText.trim().length === 0) && allContextImages.length > 0) {
+        console.warn(`⚠️ Empty response with ${allContextImages.length} images; retrying with reduced images`);
+        const reducedImages = allContextImages.slice(0, Math.max(1, Math.floor(allContextImages.length / 2)));
+        generatedText = await this.callAI(customPrompt, fullPrompt, ticketContextText, reducedImages);
       }
       
       // Remove processing notification before showing modal
@@ -2388,6 +2404,7 @@ By default, write a professional customer support response starting with "Dear [
       console.log(`🔍 Found ${messageItems.length} messages/notes in timeline`);
       
       const messages = [];
+      const timelineImages = []; // Collect images from timeline
       
       messageItems.forEach((item, index) => {
         try {
@@ -2398,8 +2415,26 @@ By default, write a professional customer support response starting with "Dear [
           // Extract content
           const contentElement = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
           let content = '';
+          let hasImages = false;
           
           if (contentElement) {
+            // Check for images in this message and collect them
+            const images = contentElement.querySelectorAll('img');
+            if (images.length > 0) {
+              hasImages = true;
+              images.forEach((img, imgIdx) => {
+                const src = img.getAttribute('src');
+                if (src) {
+                  timelineImages.push({
+                    src,
+                    author,
+                    messageIndex: index,
+                    imgIndex: imgIdx
+                  });
+                }
+              });
+            }
+            
             // Get clean text content, removing HTML
             const tempDiv = document.createElement('div');
             tempDiv.innerHTML = contentElement.innerHTML;
@@ -2416,7 +2451,8 @@ By default, write a professional customer support response starting with "Dear [
               author,
               content: content.substring(0, 500), // Limit length to manage tokens
               time,
-              index
+              index,
+              hasImages
             });
           }
         } catch (error) {
@@ -2425,26 +2461,29 @@ By default, write a professional customer support response starting with "Dear [
       });
       
       console.log(`📋 Extracted ${messages.length} substantial messages for context`);
+      console.log(`🖼️ Found ${timelineImages.length} images in timeline messages`);
       
       if (messages.length === 0) {
-        return '';
+        return { text: '', images: timelineImages };
       }
       
       // Number messages chronologically (DOM order = oldest first in Kayako timeline)
       const numberedMessages = messages.map((msg, i) => {
         const recency = messages.length - i; // 1 = most recent
         const recencyLabel = recency === 1 ? '[MOST RECENT]' : recency === 2 ? '[2nd most recent]' : `[#${i + 1} of ${messages.length}]`;
-        return `${recencyLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`;
+        const imgNote = msg.hasImages ? ' [contains image(s)]' : '';
+        return `${recencyLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
       });
       
       // Highlight the last 2 messages as THE current conversation state
       const last2 = messages.slice(-2);
       const currentExchangeLines = last2.map((msg, i) => {
         const label = i === last2.length - 1 ? '>>> [MOST RECENT MESSAGE]' : '>>> [PREVIOUS MESSAGE]';
-        return `${label} ${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`;
+        const imgNote = msg.hasImages ? ' [contains image(s) - see attached]' : '';
+        return `${label} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
       }).join('\n\n');
 
-      return `[TICKET CONVERSATION - ${messages.length} messages, CHRONOLOGICAL ORDER]
+      const text = `[TICKET CONVERSATION - ${messages.length} messages, CHRONOLOGICAL ORDER]
 
 === CURRENT STATE - FOCUS HERE ===
 These are the MOST RECENT messages. Your response should address THIS state of the conversation:
@@ -2460,10 +2499,52 @@ ${numberedMessages.join('\n\n')}
 
 `;
       
+      return { text, images: timelineImages };
     } catch (error) {
       console.error('Error extracting ticket context:', error);
-      return '';
+      return { text: '', images: [] };
     }
+  }
+  
+  // Convert timeline image URLs to data URLs for API consumption
+  async collectTimelineImagesAsDataUrls(timelineImages, maxImages = 5) {
+    if (!timelineImages || timelineImages.length === 0) return [];
+    
+    // Prioritize most recent images (last messages first)
+    const sortedImages = [...timelineImages].reverse().slice(0, maxImages);
+    console.log(`🖼️ Processing ${sortedImages.length} timeline images (from ${timelineImages.length} total)`);
+    
+    const dataUrls = [];
+    for (const imgInfo of sortedImages) {
+      try {
+        const src = imgInfo.src;
+        let dataUrl = '';
+        
+        if (src.startsWith('data:')) {
+          dataUrl = src;
+        } else {
+          const res = await fetch(src, { credentials: 'include' });
+          const blob = await res.blob();
+          dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        }
+        
+        if (typeof dataUrl === 'string') {
+          const compressed = await this.compressImageDataUrl(dataUrl);
+          dataUrls.push(compressed);
+          console.log(`🖼️ Timeline image from ${imgInfo.author}: ${Math.round(dataUrl.length/1024)}KB → ${Math.round(compressed.length/1024)}KB`);
+        }
+      } catch (e) {
+        console.warn(`⚠️ Could not fetch timeline image from ${imgInfo.author}:`, e?.message || e);
+      }
+    }
+    
+    console.log(`🖼️ Total timeline images loaded: ${dataUrls.length}`);
+    return dataUrls;
   }
 
   extractProductInfo(ticketContext) {
