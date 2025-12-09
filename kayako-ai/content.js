@@ -199,7 +199,7 @@ class KayakoAIEnhancer {
         id: 'polish',
         icon: '✨',
         title: 'Polish',
-        prompt: 'Polish and improve the following text while maintaining its original meaning and tone: ' + formatHint,
+        prompt: 'Polish and improve ONLY the grammar, spelling, punctuation, and readability of the following text. DO NOT change the meaning, content, facts, or intent. DO NOT add new information or remove existing information. Keep ALL original details, names, instructions, and requests exactly as they are. Only fix language issues. ' + formatHint,
         tooltip: 'Improve grammar and readability; keep meaning intact.'
       },
       {
@@ -584,11 +584,15 @@ class KayakoAIEnhancer {
     const processingNotification = this.showPersistentNotification(`🤖 ${action.title}...`, 'info', null, anchorEl || this.getAnchorForEditor(editorElement));
 
     try {
-      // Get ticket context if enabled (skip for Beautify to keep it fast)
+      // Get ticket context if enabled - only for actions that draft new content
+      // Skip for text transformation actions (polish, formalize, simplify, kidfriendly, beautify)
+      const textTransformActions = ['polish', 'formalize', 'simplify', 'kidfriendly', 'beautify'];
       let ticketContext = '';
-      if (this.config?.useTicketContext && action.id !== 'beautify') {
+      if (this.config?.useTicketContext && !textTransformActions.includes(action.id)) {
         ticketContext = this.extractTicketContext();
         console.log('🎯 Extracted ticket context:', ticketContext ? 'Found context' : 'No context found');
+      } else if (textTransformActions.includes(action.id)) {
+        console.log(`🔧 Skipping ticket context for ${action.id} (text transformation action)`);
       }
       
       let enhancedText = await this.callAI(action.prompt, textData.extractedText, ticketContext);
@@ -1952,8 +1956,10 @@ class KayakoAIEnhancer {
       let contextText = '';
       if (textData.hasTemplate) {
         contextText = this.extractAdditionalContextSection(textData.fullText).trim();
+        console.log(`📝 Editor context (from Additional Context section): ${contextText ? `"${contextText.slice(0, 100)}${contextText.length > 100 ? '...' : ''}" (${contextText.length} chars)` : '(empty)'}`);
       } else {
         contextText = (textData.fullText || '').trim();
+        console.log(`📝 Editor context (full editor text): ${contextText ? `"${contextText.slice(0, 100)}${contextText.length > 100 ? '...' : ''}" (${contextText.length} chars)` : '(empty)'}`);
       }
       // Collect inline images referenced in context via [IMG#] placeholders and convert to data URLs
       const contextImages = await this.collectContextImagesAsDataUrls(contextText, textData.imgMap);
@@ -1961,7 +1967,11 @@ class KayakoAIEnhancer {
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
       // Enhanced prompt - let the model interpret user intent flexibly
-      let enhancedPrompt = `${customPrompt}\n\nNote: By default, write a professional customer support response starting with "Dear [Customer Name]," unless the user's request clearly asks for something else (e.g., filling an escalation template, completing internal forms, drafting notes). Use the context provided in any case.`;
+      let enhancedPrompt = `USER INSTRUCTION: ${customPrompt}
+
+CRITICAL: Follow the user's instruction EXACTLY. The user instruction tells you WHAT to write. The ticket context below tells you WHO you're writing to and what the conversation is about. Do NOT conflate old messages with recent ones - focus on the CURRENT STATE of the conversation (the most recent 1-2 messages).
+
+By default, write a professional customer support response starting with "Dear [Customer Name]," unless the user's request clearly asks for something else.`;
       
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;
@@ -2420,12 +2430,35 @@ class KayakoAIEnhancer {
         return '';
       }
       
-      // Robust latest message selection: pick the last collected entry
-      const latest = messages[messages.length - 1];
-      const latestLine = latest ? `${latest.author}${latest.time ? ` (${latest.time})` : ''}: ${latest.content}` : '';
-      const contextLines = messages.map(msg => `${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`);
+      // Number messages chronologically (DOM order = oldest first in Kayako timeline)
+      const numberedMessages = messages.map((msg, i) => {
+        const recency = messages.length - i; // 1 = most recent
+        const recencyLabel = recency === 1 ? '[MOST RECENT]' : recency === 2 ? '[2nd most recent]' : `[#${i + 1} of ${messages.length}]`;
+        return `${recencyLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`;
+      });
+      
+      // Highlight the last 2 messages as THE current conversation state
+      const last2 = messages.slice(-2);
+      const currentExchangeLines = last2.map((msg, i) => {
+        const label = i === last2.length - 1 ? '>>> [MOST RECENT MESSAGE]' : '>>> [PREVIOUS MESSAGE]';
+        return `${label} ${msg.author}${msg.time ? ` (${msg.time})` : ''}: ${msg.content}`;
+      }).join('\n\n');
 
-      return `[TICKET CONVERSATION HISTORY]\nThese are the ACTUAL messages exchanged between the customer and support agents in this ticket. Use this to understand what the customer asked and what has been communicated so far.\n\nLatest message:\n${latestLine}\n\nFull history:\n${contextLines.join('\n\n')}\n\n[END TICKET HISTORY]\n\n---\n\n`;
+      return `[TICKET CONVERSATION - ${messages.length} messages, CHRONOLOGICAL ORDER]
+
+=== CURRENT STATE - FOCUS HERE ===
+These are the MOST RECENT messages. Your response should address THIS state of the conversation:
+
+${currentExchangeLines}
+
+=== FULL HISTORY (oldest → newest, for background only) ===
+${numberedMessages.join('\n\n')}
+
+[END TICKET CONTEXT]
+
+---
+
+`;
       
     } catch (error) {
       console.error('Error extracting ticket context:', error);
