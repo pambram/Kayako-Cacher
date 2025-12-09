@@ -577,8 +577,8 @@ function setupAutoHyperlinking() {
             console.log('Could not get clipboard data from paste event:', error.message);
         }
         
-        // If no selection (collapsed) and clipboard contains ONLY a standalone raw URL,
-        // let paste happen, then offer title replacement. If other text exists too,
+        // If no selection (collapsed) and clipboard contains ONLY raw URLs,
+        // let paste happen, then offer title replacement(s). If other text exists too,
         // skip here (auto-link scan will catch the URL later if needed).
         if (!selection.rangeCount || selection.isCollapsed) {
             if (clipboardText) {
@@ -592,11 +592,15 @@ function setupAutoHyperlinking() {
                 } catch (_) {}
                 const standalone = extractStandaloneUrl(clipboardText);
                 if (standalone) {
-                    console.log('📎 Pasted standalone URL, will suggest title:', standalone);
-                    // Give the editor a moment to insert/auto-link, then suggest replacement
-                    setTimeout(() => {
-                        trySuggestTitleReplace(target, standalone, 1);
-                    }, 150);
+                    // Could be single URL string or array of URLs
+                    const urls = Array.isArray(standalone) ? standalone : [standalone];
+                    console.log('📎 Pasted standalone URL(s), will suggest title:', urls);
+                    // Queue title suggestions for all URLs with staggered delays
+                    urls.forEach((url, i) => {
+                        setTimeout(() => {
+                            trySuggestTitleReplace(target, url, 1);
+                        }, 150 + (i * 300)); // Stagger by 300ms each
+                    });
                 } else {
                     // Not just a URL → do nothing now; rely on auto-link scan after paste
                     setTimeout(() => { try { scanEditorForAutoLinks(target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element')); } catch(_) {} }, 250);
@@ -654,6 +658,25 @@ function setupAutoHyperlinking() {
         
         // If we get here, it's not a URL - let normal paste happen
     }, true); // Use capture phase to get first shot at the event
+}
+
+// Ensure links in editors show their target URL on hover via native browser tooltip
+function setupEditorLinkHoverPreview() {
+    try {
+        const editors = document.querySelectorAll('.fr-element[contenteditable=\"true\"], [contenteditable=\"true\"].fr-element, .fr-element');
+        editors.forEach(editor => {
+            if (!editor) return;
+            const links = editor.querySelectorAll('a[href]');
+            links.forEach(link => {
+                try {
+                    const href = link.getAttribute('href') || '';
+                    if (!href) return;
+                    if (link.getAttribute('title')) return; // respect existing titles
+                    link.setAttribute('title', href);
+                } catch (_) {}
+            });
+        });
+    } catch (_) {}
 }
 
 function trySuggestTitleReplace(pasteTarget, url, attempt) {
@@ -802,6 +825,11 @@ function suggestReplaceURLWithTitle(editor, url) {
                 console.log('⚠️ Title looks like URL or equals URL, skipping suggestion for', url, 'title:', title);
                 return;
             }
+            // Skip meaningless titles that indicate auth/permission errors
+            if (isMeaninglessTitle(title)) {
+                console.log('⚠️ Title indicates auth/permission error, skipping suggestion for', url, 'title:', title);
+                return;
+            }
             // If an anchor exists and its current visible text already equals this title, skip
             try {
                 const a = findAnchorForURL(editor, url);
@@ -846,6 +874,34 @@ function titlesEquivalentOrUrlLike(title, url) {
         const domainLike = /^[a-z0-9][a-z0-9.-]*\.(com|net|org|io|co|us|uk|de|fr|es|it|br|ca|au|in|jp|cn|dev|app|cloud|gov|edu|info|biz|me|ai|site|xyz|gg|tv)(\/|$)/i.test(t);
         if (noSpace && domainLike) return true;
         return false;
+    } catch (_) {
+        return false;
+    }
+}
+
+// Check if title indicates auth/permission error (Sign In, Login, 404, etc.)
+function isMeaninglessTitle(title) {
+    try {
+        const t = String(title || '').trim().toLowerCase();
+        if (!t) return true;
+        // Common auth/error page titles
+        const patterns = [
+            /^sign\s*in$/i,
+            /^log\s*in$/i,
+            /^login$/i,
+            /^signin$/i,
+            /^authenticate$/i,
+            /^authentication$/i,
+            /^access\s*denied$/i,
+            /^forbidden$/i,
+            /^unauthorized$/i,
+            /^404$/i,
+            /^not\s*found$/i,
+            /^error$/i,
+            /^(page\s*)?not\s*available$/i,
+            /^permission\s*denied$/i
+        ];
+        return patterns.some(p => p.test(t));
     } catch (_) {
         return false;
     }
@@ -1151,8 +1207,10 @@ function setupInlineTranslation() {
             // Ignore clicks in editors
             if (target.closest('.fr-element, [contenteditable="true"]')) return;
             // Limit to timeline content areas
-            const timelineContainer = target.closest('[class*="ko-timeline-2_list_item__content"], [class*="ko-timeline-2_list_item__post"], [class*="ko-timeline-2_list_item__note"]');
-            if (!timelineContainer) return;
+            const timelineContent = target.closest('[class*="ko-timeline-2_list_item__content"], [class*="ko-timeline-2_list_item__post"], [class*="ko-timeline-2_list_item__note"]');
+            if (!timelineContent) return;
+            // Mount bubble to parent item (not the content div which may clip overflow)
+            const timelineContainer = timelineContent.closest('[class*="ko-timeline-2_list_item__item"], [class*="ko-timeline-2_list_post__item"]') || timelineContent.parentElement || timelineContent;
 
             const sel = window.getSelection();
             if (!sel || !sel.rangeCount) return;
@@ -1390,28 +1448,38 @@ function positionBubbleNearRect(ui, container, rect) {
             const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
             const vh = window.innerHeight || document.documentElement.clientHeight || 800;
             let left = rect.left;
-            let top = rect.top - ui.offsetHeight - padding;
-            if (top < padding) top = rect.bottom + padding;
+            // Prefer below to not cover selected text
+            let top = rect.bottom + padding;
+            // If below overflows viewport, try above
+            if (top + ui.offsetHeight + padding > vh) {
+                top = rect.top - ui.offsetHeight - padding;
+                // If above is negative, go back to below
+                if (top < padding) {
+                    top = rect.bottom + padding;
+                }
+            }
             const maxLeft = vw - ui.offsetWidth - padding;
             left = Math.max(padding, Math.min(left, maxLeft));
-            if (top + ui.offsetHeight > vh - padding) {
-                top = Math.max(padding, vh - ui.offsetHeight - padding);
-            }
             ui.style.left = left + 'px';
             ui.style.top = top + 'px';
         } else {
             const containerRect = container.getBoundingClientRect();
             let left = rect.left - containerRect.left;
-            let top = rect.top - containerRect.top - ui.offsetHeight - padding;
-            if (top < padding) top = rect.bottom - containerRect.top + padding;
+            // Prefer below the selection to not cover original text
+            let top = rect.bottom - containerRect.top + padding;
+            // If below overflows container, try above
+            if (top + ui.offsetHeight + padding > (containerRect.height || container.clientHeight)) {
+                top = rect.top - containerRect.top - ui.offsetHeight - padding;
+                // If above is negative, go back to below (user can scroll)
+                if (top < padding) {
+                    top = rect.bottom - containerRect.top + padding;
+                }
+            }
             // Clamp horizontally
             const maxLeft = (containerRect.width || container.clientWidth) - ui.offsetWidth - padding;
             left = Math.max(padding, Math.min(left, maxLeft));
-            // Clamp vertically inside container
-            const maxTop = (containerRect.height || container.clientHeight) - ui.offsetHeight - padding;
-            if (top > maxTop) top = Math.max(padding, maxTop);
             ui.style.left = left + 'px';
-            ui.style.top = Math.max(padding, top) + 'px';
+            ui.style.top = top + 'px';
         }
     } catch (_) {}
 }
@@ -1465,19 +1533,43 @@ function isValidURL(string) {
     }
 }
 
-// Extract a single standalone raw URL from plain text; return null if the
-// text contains any additional non-URL content besides trivial whitespace
+// Extract standalone raw URLs from plain text
+// Returns: single URL string, array of URLs, or null if mixed content
 function extractStandaloneUrl(text) {
     try {
         let s = String(text || '').trim();
-        // Collapse whitespace/newlines to a single space and trim
         s = s.replace(/\s+/g, ' ').trim();
-        const m = s.match(/^(https?:\/\/[\S<>]+|www\.[\S<>]+)$/i);
-        if (!m) return null;
-        // Strip trailing punctuation commonly copied with URLs
-        let url = m[1].replace(/[),.;:!?]+$/, '');
-        if (/^www\./i.test(url)) url = 'http://' + url;
-        return isValidURL(url) ? url : null;
+        
+        // Single URL? (backwards compat - return as string)
+        const single = s.match(/^(https?:\/\/[\S<>]+|www\.[\S<>]+)$/i);
+        if (single) {
+            let url = single[1].replace(/[),.;:!?]+$/, '');
+            if (/^www\./i.test(url)) url = 'http://' + url;
+            return isValidURL(url) ? url : null;
+        }
+        
+        // Multiple URLs separated by whitespace?
+        const tokens = s.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0) return null;
+        if (tokens.length === 1) {
+            // Single token already handled above; if we're here it didn't match
+            return null;
+        }
+        
+        const urls = [];
+        for (const tok of tokens) {
+            const m = tok.match(/^(https?:\/\/[\S<>]+|www\.[\S<>]+)$/i);
+            if (m) {
+                let url = m[1].replace(/[),.;:!?]+$/, '');
+                if (/^www\./i.test(url)) url = 'http://' + url;
+                if (isValidURL(url)) urls.push(url);
+            } else {
+                return null; // non-URL token → abort
+            }
+        }
+        
+        // Return array only if we found multiple URLs
+        return urls.length > 1 ? urls : null;
     } catch (_) {
         return null;
     }
@@ -2772,29 +2864,27 @@ function pasteLatestInternalNoteAboveFooter(editor) {
             // console.log('✂️ QC paste skipped: empty extraction');
             return;
         }
-        // Insert extracted HTML directly with minimal touch - let Froala handle all formatting
-        const wrapper = document.createElement('div');
-        wrapper.setAttribute('data-kayako-qc-snippet', '1');
-        wrapper.innerHTML = extracted;
+        // Insert extracted HTML as individual block elements (NO wrapper div - Froala breaks with wrappers)
+        const tmpContainer = document.createElement('div');
+        tmpContainer.innerHTML = extracted;
         
-        // Remove ONLY a leading empty element to avoid Backspace/Delete triggering merge chaos
-        try {
-            const first = wrapper.firstElementChild;
-            if (first) {
-                const txt = (first.textContent || '').replace(/\s/g, '');
-                const hasMedia = !!(first.querySelector && first.querySelector('img, picture, svg, video, iframe, figure'));
-                if (!txt && !hasMedia) {
-                    wrapper.removeChild(first);
-                }
+        // Build a fragment with individual top-level nodes; mark only the first for tracking
+        const frag = document.createDocumentFragment();
+        let marked = false;
+        Array.from(tmpContainer.childNodes).forEach((n) => {
+            const clone = n.cloneNode(true);
+            if (!marked && clone.nodeType === 1) {
+                try { clone.setAttribute('data-kayako-qc-snippet', '1'); marked = true; } catch(_) {}
             }
-        } catch(_) {}
+            frag.appendChild(clone);
+        });
         
         if (footerStart && footerStart.parentNode) {
             const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
             footerStart.parentNode.insertBefore(spacer, footerStart);
-            footerStart.parentNode.insertBefore(wrapper, footerStart);
+            footerStart.parentNode.insertBefore(frag, footerStart);
         } else {
-            editor.appendChild(wrapper);
+            editor.appendChild(frag);
         }
         
         try { editor.dispatchEvent(new Event('input', { bubbles: true })); } catch(_) {}
@@ -2804,7 +2894,7 @@ function pasteLatestInternalNoteAboveFooter(editor) {
 
         // Keep snippet alive briefly across Note/Public toggle re-renders
         try {
-            ensureQCSnippetPersistence(editor, wrapper.innerHTML);
+            ensureQCSnippetPersistence(editor, extracted);
         } catch (_) {}
     } catch (_) {}
 }
@@ -2840,11 +2930,18 @@ function ensureQCSnippetPersistence(editor, insertedHtml) {
             const done = !!(sess && window.__kayakoQCPasteDone && window.__kayakoQCPasteDone[sess]);
             if (done) { try { observer.disconnect(); } catch(_) {} return; }
             if (!insertedHtml) return;
-            // Reinsert above footer if present, else append at end
+            // Reinsert above footer if present, else append at end (NO wrapper)
             const wrap = document.createElement('div');
             wrap.innerHTML = insertedHtml;
             const frag = document.createDocumentFragment();
-            Array.from(wrap.childNodes).forEach(n => frag.appendChild(n.cloneNode(true)));
+            let marked = false;
+            Array.from(wrap.childNodes).forEach(n => {
+                const clone = n.cloneNode(true);
+                if (!marked && clone.nodeType === 1) {
+                    try { clone.setAttribute('data-kayako-qc-snippet', '1'); marked = true; } catch(_) {}
+                }
+                frag.appendChild(clone);
+            });
             const footerStart = findFooterStartInEditor(currentEditor);
             if (footerStart && footerStart.parentNode) {
                 const spacer = document.createElement('p'); spacer.innerHTML = '<br>';
@@ -3028,7 +3125,67 @@ function extractQCResponseHtmlFromHtml(html, stripFooter) {
         const out = document.createElement('div');
         // Clone nodes exactly as in the note first
         slice.forEach((n) => out.appendChild(n.cloneNode(true)));
-        // Preserve original structure from the template; avoid aggressive cleanups here
+        
+        // CRITICAL: Strip whitespace-only text nodes at ALL levels - Froala converts these to &nbsp; on edit
+        try {
+            const stripWhitespaceTextNodes = (parent) => {
+                [...parent.childNodes].forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE && !/\S/.test(node.textContent || '')) {
+                        try { node.remove(); } catch(_) {}
+                    }
+                });
+            };
+            // Strip at root level (between top-level blocks)
+            stripWhitespaceTextNodes(out);
+            // Strip inside lists (between <li> elements)
+            out.querySelectorAll('ul, ol').forEach(stripWhitespaceTextNodes);
+            // Strip inside divs that contain blocks (structural containers)
+            out.querySelectorAll('div').forEach(div => {
+                if (div.querySelector('p, div, ul, ol')) stripWhitespaceTextNodes(div);
+            });
+            
+            // Convert or remove br-wrapper divs (Kayako adds these, they cause issues in Froala)
+            out.querySelectorAll('div[class*="br-wrapper"], div.br-wrapper').forEach(wrapper => {
+                // Replace with a simple <p><br></p> for spacing
+                const p = document.createElement('p');
+                p.innerHTML = '<br>';
+                try { wrapper.parentNode.replaceChild(p, wrapper); } catch(_) {}
+            });
+            // Also handle nested br-wrapper inside other divs
+            out.querySelectorAll('div > div[class*="br-wrapper"], div > div.br-wrapper').forEach(wrapper => {
+                const parent = wrapper.parentElement;
+                const p = document.createElement('p');
+                p.innerHTML = '<br>';
+                try { parent.parentNode.replaceChild(p, parent); } catch(_) {}
+            });
+            
+            // Unwrap <p> inside <li> (Froala breaks when <li> contains <p>)
+            out.querySelectorAll('li > p').forEach(p => {
+                const li = p.parentElement;
+                if (!li || li.nodeName.toLowerCase() !== 'li') return;
+                while (p.firstChild) {
+                    li.insertBefore(p.firstChild, p);
+                }
+                try { p.remove(); } catch(_) {}
+            });
+            // Remove empty list items
+            out.querySelectorAll('li').forEach(li => {
+                const txt = (li.textContent || '').replace(/[\s\u00a0]/g, '');
+                const hasMedia = !!(li.querySelector && li.querySelector('img, picture, svg, video, iframe, figure'));
+                if (!txt && !hasMedia) {
+                    try { li.remove(); } catch(_) {}
+                }
+            });
+            // Remove now-empty UL/OL after cleaning LIs
+            out.querySelectorAll('ul, ol').forEach(list => {
+                if (!list.querySelector('li')) {
+                    try { list.remove(); } catch(_) {}
+                }
+            });
+            // Final pass: strip any whitespace text nodes created by removals
+            stripWhitespaceTextNodes(out);
+        } catch(_) {}
+        
         return out.innerHTML;
     } catch (_) { return ''; }
 }
@@ -3646,6 +3803,8 @@ const observer = new MutationObserver(() => {
         // Ensure QOL improvements are applied to new content
         removeTimelineMaxWidth();
         narrowInternalNotes();
+        // Ensure editor link hovers show their URL
+        setupEditorLinkHoverPreview();
         // Ensure sidebar controls exist
         setupSidebarControls();
         // Setup auto-sizing for any new editors
@@ -3672,6 +3831,7 @@ attachAllListeners();
 removeTimelineMaxWidth();
 narrowInternalNotes();
 setupAutoHyperlinking();
+setupEditorLinkHoverPreview();
 setupHyperlinkShortcut();
 setupGlobalSendShortcut();
 setupAutoSizing();

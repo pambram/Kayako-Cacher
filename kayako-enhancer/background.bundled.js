@@ -575,6 +575,53 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+  // Mark a ticket as seen (clear unread flags immediately in both history and bookmarks)
+  if (message.action === 'markTicketSeen' && message.ticketId) {
+    (async () => {
+      const ticketId = String(message.ticketId);
+      const now = Date.now();
+      console.log('[SW] markTicketSeen received for ticketId:', ticketId);
+      // Update ticketHistory
+      const dataH = await storageGet(['ticketHistory']);
+      let history = Array.isArray(dataH.ticketHistory) ? dataH.ticketHistory : [];
+      let hChanged = false;
+      const beforeH = history.find(t => t && String(t.id) === ticketId);
+      console.log('[SW] markTicketSeen history BEFORE:', beforeH ? { id: beforeH.id, hasUnseenActivity: beforeH.hasUnseenActivity, unreadCount: beforeH.unreadCount, lastSeenAt: beforeH.lastSeenAt } : 'NOT FOUND');
+      history = history.map(t => {
+        if (!t || String(t.id) !== ticketId) return t;
+        hChanged = true;
+        return { ...t, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: now, lastSeenAt: now };
+      });
+      if (hChanged) {
+        await storageSet({ ticketHistory: history });
+        const afterH = history.find(t => t && String(t.id) === ticketId);
+        console.log('[SW] markTicketSeen history AFTER write:', afterH ? { id: afterH.id, hasUnseenActivity: afterH.hasUnseenActivity, unreadCount: afterH.unreadCount, lastSeenAt: afterH.lastSeenAt } : 'NOT FOUND');
+      } else {
+        console.log('[SW] markTicketSeen: ticket NOT in history');
+      }
+      // Update ticketBookmarks
+      const dataB = await storageGet(['ticketBookmarks']);
+      let bookmarks = Array.isArray(dataB.ticketBookmarks) ? dataB.ticketBookmarks : [];
+      let bChanged = false;
+      const beforeB = bookmarks.find(b => b && String(b.id) === ticketId);
+      console.log('[SW] markTicketSeen bookmarks BEFORE:', beforeB ? { id: beforeB.id, hasUnseenActivity: beforeB.hasUnseenActivity, unreadCount: beforeB.unreadCount, lastSeenAt: beforeB.lastSeenAt } : 'NOT FOUND');
+      bookmarks = bookmarks.map(b => {
+        if (!b || String(b.id) !== ticketId) return b;
+        bChanged = true;
+        return { ...b, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: now, lastSeenAt: now };
+      });
+      if (bChanged) {
+        await storageSet({ ticketBookmarks: bookmarks });
+        const afterB = bookmarks.find(b => b && String(b.id) === ticketId);
+        console.log('[SW] markTicketSeen bookmarks AFTER write:', afterB ? { id: afterB.id, hasUnseenActivity: afterB.hasUnseenActivity, unreadCount: afterB.unreadCount, lastSeenAt: afterB.lastSeenAt } : 'NOT FOUND');
+      } else {
+        console.log('[SW] markTicketSeen: ticket NOT in bookmarks');
+      }
+      console.log('[SW] markTicketSeen COMPLETE for', ticketId);
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
 });
 
 // --- Page title fetcher ---
@@ -1362,6 +1409,11 @@ async function checkAllTrackedTickets() {
         const relevant = posts
           .filter(p => pid(p) > baseline)
           .filter(p => {
+            // Only count posts that happened after the last time *you* viewed this ticket (if known)
+            try {
+              const ts = Date.parse(extractPostCreatedAt(p) || '') || 0;
+              if (t.lastSeenAt && ts && ts <= t.lastSeenAt) return false;
+            } catch (_) {}
             if (isInternal(p)) {
               // internal note: ignore if from internal-bot list
               if (isBotInternal(p)) return false;
@@ -1542,6 +1594,11 @@ async function checkAllBookmarkedTickets() {
         const relevant = posts
           .filter(p => pid(p) > baseline)
           .filter(p => {
+            // Only count posts that happened after the last time *you* viewed this ticket (if known)
+            try {
+              const ts = Date.parse(extractPostCreatedAt(p) || '') || 0;
+              if (b.lastSeenAt && ts && ts <= b.lastSeenAt) return false;
+            } catch (_) {}
             if (isInternal(p)) {
               if (isBotInternal(p)) return false;
               return true;
@@ -1609,13 +1666,14 @@ async function baselineAfterSend(domain, ticketId) {
         }
       } catch (_) {}
     }
-    // Update baseline to latest observed (includes our own post)
+    // Update baseline to latest observed (includes our own post + any immediate bot posts after)
+    const now = Date.now();
     const data = await storageGet(['ticketHistory']);
     let history = Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
     let changed = false;
     history = history.map(t => {
       if (String(t.id) === String(ticketId) && t.domain === domain) {
-        const updated = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: Date.now() };
+        const updated = { ...t, lastKnownPostId: latest, hasUnseenActivity: false, unreadCount: 0, lastCheckedAt: now, lastSeenAt: now };
         changed = true;
         return updated;
       }

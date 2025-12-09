@@ -1,4 +1,5 @@
 let __lastTicketHistoryCache = [];
+let __lastBookmarksCache = [];
 let __optimisticCleared = new Set();
 let __cachedRecents = [];
 let __cachedUnified = [];
@@ -254,9 +255,12 @@ document.addEventListener("DOMContentLoaded", function () {
     // Unread-only filter
     if (filterUnread) {
         filterUnread.addEventListener('change', () => {
+            console.log('[Popup] Unread-only checkbox CHANGED to:', filterUnread.checked);
             chrome.storage.local.set({ recentUnreadOnly: filterUnread.checked });
             // Re-render using cached unified list if present
-            try { displayTicketHistory(__cachedUnified && __cachedUnified.length ? __cachedUnified : __lastTicketHistoryCache); } catch (_) {}
+            const dataToRender = __cachedUnified && __cachedUnified.length ? __cachedUnified : __lastTicketHistoryCache;
+            console.log('[Popup] Re-rendering with', dataToRender.length, 'tickets after checkbox change');
+            try { displayTicketHistory(dataToRender); } catch (e) { console.error('[Popup] Error re-rendering:', e); }
         });
     }
     // Save API key (auto-detect provider)
@@ -374,6 +378,10 @@ function loadUnifiedRecent() {
     showRefreshIndicator(true);
     chrome.storage.local.get(['ticketHistory'], (data) => {
         const history = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+        console.log('[Popup] LOAD ticketHistory from storage, count:', history.length);
+        history.forEach(t => {
+            if (t && t.hasUnseenActivity) console.log('[Popup] LOAD unread ticket:', t.id, 'hasUnseenActivity:', t.hasUnseenActivity, 'lastSeenAt:', t.lastSeenAt);
+        });
         __lastTicketHistoryCache = history;
         // Show history immediately to avoid spinner hang
         try { displayTicketHistory(history); } catch (_) {}
@@ -405,6 +413,10 @@ function loadUnifiedRecent() {
         chrome.runtime.sendMessage({ action: 'forceCheckTickets' }, () => {
             chrome.storage.local.get(['ticketHistory'], (data) => {
                 const fresh = data && Array.isArray(data.ticketHistory) ? data.ticketHistory : [];
+                console.log('[Popup] AFTER forceCheckTickets, fresh ticketHistory count:', fresh.length);
+                fresh.forEach(t => {
+                    if (t && t.hasUnseenActivity) console.log('[Popup] AFTER forceCheck unread:', t.id, 'hasUnseenActivity:', t.hasUnseenActivity, 'lastSeenAt:', t.lastSeenAt);
+                });
                 applyUnreadDiff(__lastTicketHistoryCache, fresh);
                 __lastTicketHistoryCache = fresh;
                 // Rebuild unified with latest history flags
@@ -438,11 +450,13 @@ document.addEventListener('click', (e) => {
 
 // Ignored bots
 function loadIgnoredBots(){
+    const pubInput = document.getElementById('ignored-bots-public');
+    const intInput = document.getElementById('ignored-bots-internal');
     try {
         chrome.runtime.sendMessage({ action: 'getIgnoredBotsLists' }, (res) => {
             if (res && res.success) {
-                if (ignoredBotsPublicInput) ignoredBotsPublicInput.value = (res.public || ['hermes']).join(', ');
-                if (ignoredBotsInternalInput) ignoredBotsInternalInput.value = (res.internal || ['centralsupport-ai-acc','lachesis']).join(', ');
+                if (pubInput) pubInput.value = (res.public || ['hermes']).join(', ');
+                if (intInput) intInput.value = (res.internal || ['centralsupport-ai-acc','lachesis']).join(', ');
             }
         });
     } catch (_) {}
@@ -450,24 +464,28 @@ function loadIgnoredBots(){
     setTimeout(() => {
         try {
             chrome.storage.local.get(['ignoredBotsPublic','ignoredBotsInternal'], (data) => {
-                if (ignoredBotsPublicInput && !ignoredBotsPublicInput.value) ignoredBotsPublicInput.value = (Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic : ['hermes']).join(', ');
-                if (ignoredBotsInternalInput && !ignoredBotsInternalInput.value) ignoredBotsInternalInput.value = (Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal : ['centralsupport-ai-acc','lachesis']).join(', ');
+                if (pubInput && !pubInput.value) pubInput.value = (Array.isArray(data.ignoredBotsPublic) ? data.ignoredBotsPublic : ['hermes']).join(', ');
+                if (intInput && !intInput.value) intInput.value = (Array.isArray(data.ignoredBotsInternal) ? data.ignoredBotsInternal : ['centralsupport-ai-acc','lachesis']).join(', ');
             });
         } catch (_) {}
     }, 500);
 }
-if (saveIgnoredBotsBtn) {
-    saveIgnoredBotsBtn.addEventListener('click', () => {
-        const pub = (ignoredBotsPublicInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
-        const intl = (ignoredBotsInternalInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
-        setButtonLoading(saveIgnoredBotsBtn, true, 'Saving…');
+// Re-query elements since we're outside DOMContentLoaded
+const __saveIgnoredBotsBtn = document.getElementById('save-ignored-bots');
+const __ignoredBotsPublicInput = document.getElementById('ignored-bots-public');
+const __ignoredBotsInternalInput = document.getElementById('ignored-bots-internal');
+if (__saveIgnoredBotsBtn) {
+    __saveIgnoredBotsBtn.addEventListener('click', () => {
+        const pub = (__ignoredBotsPublicInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const intl = (__ignoredBotsInternalInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        setButtonLoading(__saveIgnoredBotsBtn, true, 'Saving…');
         try {
             chrome.runtime.sendMessage({ action: 'setIgnoredBotsLists', public: pub, internal: intl }, () => {
                 showNotification('Ignored bots saved', 'success');
-                setButtonLoading(saveIgnoredBotsBtn, false, 'Saved ✓');
-                setTimeout(() => { if (saveIgnoredBotsBtn) saveIgnoredBotsBtn.textContent = '💾 Save'; }, 1000);
+                setButtonLoading(__saveIgnoredBotsBtn, false, 'Saved ✓');
+                setTimeout(() => { if (__saveIgnoredBotsBtn) __saveIgnoredBotsBtn.textContent = '💾 Save'; }, 1000);
             });
-        } catch (_) { setButtonLoading(saveIgnoredBotsBtn, false); }
+        } catch (_) { setButtonLoading(__saveIgnoredBotsBtn, false); }
     });
 }
 
@@ -514,11 +532,13 @@ function displayBookmarks(list){
     const container = document.getElementById('bookmarks-container');
     if (!container) return;
     if (!list || !list.length) {
+        __lastBookmarksCache = [];
         container.innerHTML = '<div class="no-history">No bookmarks yet</div>';
         return;
     }
     // Sort by most recent relevant activity first
     list = list.slice().sort((a,b) => Number(b.lastActivityAt||b.createdAt||b.lastCheckedAt||0) - Number(a.lastActivityAt||a.createdAt||a.lastCheckedAt||0));
+    __lastBookmarksCache = list;
     let html = '';
     list.forEach(b => {
         let unread = Number(b.unreadCount || 0);
@@ -557,14 +577,19 @@ function displayBookmarks(list){
             const ticketId = e.currentTarget.dataset.ticketId;
             let domain = e.currentTarget.dataset.domain || '';
             if (!domain && url) { try { domain = new URL(url).hostname; } catch (_) {} }
+            console.log('[Popup] CLICK on Bookmark ticket:', ticketId, 'domain:', domain);
             try {
                 chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {});
             } catch (_) {
                 try { chrome.tabs.create({ url, active: false }); } catch (_) {}
             }
             __optimisticCleared.add(String(ticketId));
+            console.log('[Popup] Added to __optimisticCleared:', String(ticketId));
             const item = e.currentTarget.closest('.ticket-item');
             clearUnreadForItem(item);
+            // Mark as seen via background script (persists reliably across all popup instances)
+            console.log('[Popup] Sending markTicketSeen for bookmark:', ticketId);
+            try { chrome.runtime.sendMessage({ action: 'markTicketSeen', ticketId }, (resp) => { console.log('[Popup] markTicketSeen response:', resp); }); } catch (err) { console.error('[Popup] markTicketSeen error:', err); }
             try { chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {}); } catch (_) {}
         });
     });
@@ -795,17 +820,24 @@ function displayTicketHistory(history) {
     
     // Apply unread-only filter if enabled
     let list = history.slice(0);
+    console.log('[Popup] displayTicketHistory input:', history.length, 'tickets');
     // Hide closed/completed/resolved tickets from Recent
+    const beforeClosedFilter = list.length;
     list = list.filter(t => !(t && isClosedStatusValue(t.status)));
+    console.log('[Popup] After closed filter:', list.length, '(removed', beforeClosedFilter - list.length, 'closed tickets)');
     const filterEl = document.getElementById('filter-unread');
+    console.log('[Popup] filter-unread checkbox checked?', filterEl ? filterEl.checked : 'ELEMENT NOT FOUND');
     if (filterEl && filterEl.checked) {
+        const beforeUnreadFilter = list.length;
         list = list.filter(t => {
             if (!t) return false;
             // If the user has optimistically cleared this ticket, treat it as read for filtering
             if (__optimisticCleared && __optimisticCleared.has(String(t.id))) return false;
             return t.hasUnseenActivity || Number(t.unreadCount||0) > 0;
         });
+        console.log('[Popup] After unread filter:', list.length, '(removed', beforeUnreadFilter - list.length, 'read tickets)');
     }
+    console.log('[Popup] Final list to display:', list.length, 'tickets');
     let historyHTML = '';
     list.slice(0, 20).forEach(ticket => { // Show only last 20 in popup
         const when = Number(ticket.lastActivityAt || ticket.touchedAt || ticket.timestamp || ticket.lastCheckedAt || Date.now());
@@ -849,17 +881,30 @@ function displayTicketHistory(history) {
             const ticketId = el.dataset.ticketId;
             const domain = el.dataset.domain;
             try { chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {}); } catch (_) { try { chrome.tabs.create({ url: url, active: false }); } catch (_) {} }
+            __optimisticCleared.add(String(ticketId));
+            const item = el.closest('.ticket-item');
+            clearUnreadForItem(item);
+            // Persist local baseline so all future popups see this as read immediately
             try {
-                __optimisticCleared.add(String(ticketId));
-                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {
-                    const item = el.closest('.ticket-item');
-                    clearUnreadForItem(item);
+                chrome.storage.local.get(['ticketHistory'], (data) => {
+                    const history = (data && Array.isArray(data.ticketHistory)) ? data.ticketHistory : [];
+                    const now = Date.now();
+                    const updated = history.map(t => {
+                        if (!t || String(t.id) !== String(ticketId)) return t;
+                        return Object.assign({}, t, {
+                            hasUnseenActivity: false,
+                            unreadCount: 0,
+                            lastCheckedAt: now,
+                            lastSeenAt: now
+                        });
+                    });
+                    chrome.storage.local.set({ ticketHistory: updated }, () => {});
                 });
-            } catch (_) {
-                __optimisticCleared.add(String(ticketId));
-                const item = el.closest('.ticket-item');
-                clearUnreadForItem(item);
-            }
+            } catch (_) {}
+            // Baseline in background (best effort)
+            try {
+                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {});
+            } catch (_) {}
         });
     });
     
@@ -872,16 +917,19 @@ function displayTicketHistory(history) {
             const ticketId = el.dataset.ticketId;
             let domain = el.dataset.domain || '';
             if (!domain && url) { try { domain = new URL(url).hostname; } catch (_) {} }
+            console.log('[Popup] CLICK on Recent ticket:', ticketId, 'domain:', domain);
             // Open in background
             try { chrome.runtime.sendMessage({ action: 'openInBackground', url }, () => {}); } catch (_) { try { chrome.tabs.create({ url: url, active: false }); } catch (_) {} }
             // Optimistic UI clear immediately
             __optimisticCleared.add(String(ticketId));
+            console.log('[Popup] Added to __optimisticCleared:', String(ticketId), '__optimisticCleared now:', [...__optimisticCleared]);
             const item = el.closest('.ticket-item');
             clearUnreadForItem(item);
+            // Mark as seen via background script (persists reliably across all popup instances)
+            console.log('[Popup] Sending markTicketSeen for:', ticketId);
+            try { chrome.runtime.sendMessage({ action: 'markTicketSeen', ticketId }, (resp) => { console.log('[Popup] markTicketSeen response:', resp); }); } catch (err) { console.error('[Popup] markTicketSeen error:', err); }
             // Baseline in background (best effort)
-            try {
-                chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {});
-            } catch (_) {}
+            try { chrome.runtime.sendMessage({ action: 'baselineTicketActivity', domain, ticketId }, () => {}); } catch (_) {}
         });
     });
     
