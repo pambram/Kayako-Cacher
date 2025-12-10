@@ -14,27 +14,157 @@ const DEFAULT_CONFIG = {
   // Escalation templates library - default template is extracted from screen
   escalationTemplates: [
     {
-      id: 'academics-quicksight',
-      name: 'Academics QuickSight',
-      template: `Proposed Team: Academics QuickSight
-Affected student(s):
-Affected date(s):
-Dashboard/Report affected:
-Data discrepancy description:
-Expected vs Actual data:
-Screenshots/links:`
+      id: 'academics-high-school',
+      name: 'Academics High School',
+      template: `Proposed Team:\tAcademics High School
+Affected students:\t 
+Affected apps:\t 
+Presumed DRI:\tCheck this sheet
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
     },
     {
-      id: 'superbuilders-adapters',
-      name: 'Superbuilders Adapters',
-      template: `Proposed Team: Superbuilders Adapters
-Affected app: 
-Affected metrics: e.g. Accuracy/Time/Mastered units/XP/Other
-Affected student(s):
-Affected date(s):
-Technical issue description:
-Impact on student:
-Investigation carried out:`
+      id: 'academics-k-8-general',
+      name: 'Academics K-8 (General)',
+      template: `Proposed Team:\tAcademics (General)
+Affected students:\t 
+Affected apps:\t 
+Presumed DRI:\tCheck the subject specific knowledge grade for the student(s) in their learning hub.
+
+Then check this sheet to find the corresponding Academics DRI
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-language',
+      name: 'Academics Language',
+      template: `Proposed Team:\tAcademics Language
+Affected apps:\t 
+Affected students:\t 
+Student Knowledge Grade:\tCheck the subject specific knowledge grade (not age grade) for the student(s) in their learning hub. In Dash, this will be on the "Student App Roster". In Timeback, this till be in the "My Learning Report".
+Presumed DRI:\tCheck this sheet to find the corresponding Academics DRI for the Knowledge Grade of the student(s).
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-math',
+      name: 'Academics Math',
+      template: `Proposed Team:\tAcademics Math
+Affected apps:\t 
+Affected students:\t 
+Student Knowledge Grade:\tCheck the subject specific knowledge grade (not age grade) for the student(s) in their learning hub. In Dash, this will be on the "Student App Roster". In Timeback, this till be in the "My Learning Report".
+Presumed DRI:\tCheck this sheet to find the corresponding Academics DRI for the Knowledge Grade of the student(s).
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-quicksight',
+      name: 'Academics QuickSight',
+      template: `Proposed Team:\tAcademics Quicksight
+Affected student(s):\t 
+Affected dashboard:\t 
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, and a summary of the assessment]
+What is requested of Academics Quicksight?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-reading',
+      name: 'Academics Reading',
+      template: `Proposed Team:\tAcademics Reading
+Affected apps:\t 
+Affected students:\t 
+Student Knowledge Grade:\tCheck the subject specific knowledge grade (not age grade) for the student(s) in their learning hub. In Dash, this will be on the "Student App Roster". In Timeback, this till be in the "My Learning Report".
+Presumed DRI:\tCheck this sheet to find the corresponding Academics DRI for the Knowledge Grade of the student(s).
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-science',
+      name: 'Academics Science',
+      template: `Proposed Team:\tAcademics Science
+Affected apps:\t 
+Affected students:\t 
+Student Knowledge Grade:\tCheck the subject specific knowledge grade (not age grade) for the student(s) in their learning hub. In Dash, this will be on the "Student App Roster". In Timeback, this till be in the "My Learning Report".
+Presumed DRI:\tCheck this sheet to find the corresponding Academics DRI for the Knowledge Grade of the student(s).
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-social-science',
+      name: 'Academics Social Science',
+      template: `Proposed Team:\tAcademics Social Science
+Affected apps:\t 
+Affected students:\t 
+Student Knowledge Grade:\tCheck the subject specific knowledge grade (not age grade) for the student(s) in their learning hub. In Dash, this will be on the "Student App Roster". In Timeback, this till be in the "My Learning Report".
+Presumed DRI:\tCheck this sheet to find the corresponding Academics DRI for the Knowledge Grade of the student(s).
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'academics-testing',
+      name: 'Academics Testing',
+      template: `Proposed Team:\tAcademics Testing
+Affected student(s):\t 
+Test name:\t 
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'alpha-eigen',
+      name: 'Alpha Eigen',
+      template: `Proposed Team:\tAlpha Eigen
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected student email(s):\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:`
+    },
+    {
+      id: 'coachbot',
+      name: 'Coachbot',
+      template: `Proposed Team:\tCoachbot
+Affected app:\t 
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected students:\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
     },
     {
       id: 'engineering-defect',
@@ -47,6 +177,77 @@ Expected behavior:
 Actual behavior:
 Error messages/logs:
 Browser/device info:`
+    },
+    {
+      id: 'sis',
+      name: 'SIS',
+      template: `Proposed Team:\tSIS
+Affected students:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
+    },
+    {
+      id: 'superbuilders-100-for-100',
+      name: 'Superbuilders 100 for 100',
+      template: `Proposed Team:\tSuperbuilders 100 for 100
+Affected app:\t 
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected students:\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
+    },
+    {
+      id: 'superbuilders-adapters',
+      name: 'Superbuilders Adapters',
+      template: `Proposed Team:\tSuperbuilders Adapters
+Affected app:\t 
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected students:\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
+    },
+    {
+      id: 'superbuilders-nice-academy',
+      name: 'Superbuilders Nice Academy',
+      template: `Proposed Team:\tSuperbuilders NiceAcademy
+Affected app:\t 
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected students:\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
+    },
+    {
+      id: 'superbuilders-timeback-app',
+      name: 'Superbuilders Timeback (App)',
+      template: `Proposed Team:\tTimeback
+Affected students:\t 
+Affected apps:\t 
+Subject, skill, and course:\t 
+What is the issue reported?
+
+How does this affect the student? :\t[Explain the issue from a technical point of view, as well as the impact the issue has on the student]
+What investigation did CS carry out? :\t[Include evidence, links to any DDs performed, and a summary of the assessment]
+What is requested of Academics?\t[Share your proposed action and the reason for escalation]
+Other notes:`
+    },
+    {
+      id: 'superbuilders-timeback-dash',
+      name: 'Superbuilders Timeback Dash',
+      template: `Proposed Team:\tSuperbuilders Timeback Dash
+Affected app:\t 
+Affected metrics:\tAccuracy/Time/Mastered units/XP
+Affected students:\t 
+Affected dates:\t 
+Evidence:\t[Include screenshots and recordings, where available]
+Reason for Escalation:\t 
+Other notes:`
     }
   ]
 };
