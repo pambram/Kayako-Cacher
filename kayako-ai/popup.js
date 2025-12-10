@@ -3,6 +3,8 @@
 class PopupManager {
   constructor() {
     this.config = null;
+    this.templates = [];
+    this.editingTemplateId = null;
     this.init();
   }
 
@@ -11,6 +13,9 @@ class PopupManager {
     
     // Load current configuration
     await this.loadConfig();
+    
+    // Load templates
+    await this.loadTemplates();
     
     // Set up event listeners
     this.setupEventListeners();
@@ -24,7 +29,29 @@ class PopupManager {
     // Initialize help section (collapsed by default)
     this.initHelpSection();
     
+    // Initialize templates section (collapsed by default)
+    this.initTemplatesSection();
+    
     console.log('Popup initialized');
+  }
+  
+  async loadTemplates() {
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'getTemplates' });
+      if (response.success) {
+        this.templates = response.templates || [];
+        this.renderTemplates();
+      }
+    } catch (error) {
+      console.error('Error loading templates:', error);
+    }
+  }
+  
+  initTemplatesSection() {
+    const content = document.getElementById('templatesContent');
+    const icon = document.querySelector('#templatesToggle .collapse-icon');
+    content.style.display = 'none';
+    icon.textContent = '▶';
   }
 
   initHelpSection() {
@@ -99,6 +126,42 @@ class PopupManager {
     // Toggle help section
     document.getElementById('helpToggle').addEventListener('click', () => {
       this.toggleHelpSection();
+    });
+    
+    // Toggle templates section
+    document.getElementById('templatesToggle').addEventListener('click', () => {
+      this.toggleTemplatesSection();
+    });
+    
+    // Add new template
+    document.getElementById('addTemplate').addEventListener('click', () => {
+      this.openTemplateModal(null);
+    });
+    
+    // Sort templates alphabetically
+    document.getElementById('sortTemplates').addEventListener('click', () => {
+      this.sortTemplatesAlphabetically();
+    });
+    
+    // Template modal actions
+    document.getElementById('closeTemplateModal').addEventListener('click', () => {
+      this.closeTemplateModal();
+    });
+    document.getElementById('cancelTemplateEdit').addEventListener('click', () => {
+      this.closeTemplateModal();
+    });
+    document.getElementById('saveTemplate').addEventListener('click', () => {
+      this.saveTemplateFromModal();
+    });
+    document.getElementById('deleteTemplate').addEventListener('click', () => {
+      this.deleteCurrentTemplate();
+    });
+    
+    // Close modal on backdrop click
+    document.getElementById('templateModal').addEventListener('click', (e) => {
+      if (e.target.id === 'templateModal') {
+        this.closeTemplateModal();
+      }
     });
   }
 
@@ -183,6 +246,259 @@ class PopupManager {
       helpContent.style.display = 'none'; 
       helpIcon.textContent = '▶';
     }
+  }
+  
+  toggleTemplatesSection() {
+    const content = document.getElementById('templatesContent');
+    const icon = document.querySelector('#templatesToggle .collapse-icon');
+    
+    if (content.style.display === 'none') {
+      content.style.display = 'block';
+      icon.textContent = '▼';
+    } else {
+      content.style.display = 'none';
+      icon.textContent = '▶';
+    }
+  }
+  
+  renderTemplates() {
+    const container = document.getElementById('templatesList');
+    
+    if (!this.templates || this.templates.length === 0) {
+      container.innerHTML = '<div class="templates-empty">No custom templates yet. The default template from your Kayako editor will be used.</div>';
+      return;
+    }
+    
+    container.innerHTML = this.templates.map((t, index) => `
+      <div class="template-item" data-id="${t.id}" data-index="${index}" draggable="true">
+        <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
+        <div class="template-info">
+          <div class="template-name">${this.escapeHtml(t.name)}</div>
+        </div>
+        <div class="template-actions">
+          <button class="btn-icon edit-template" data-id="${t.id}" title="Edit">✏️</button>
+        </div>
+      </div>
+    `).join('');
+    
+    // Add click handlers for edit buttons
+    container.querySelectorAll('.edit-template').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = e.target.dataset.id;
+        this.openTemplateModal(id);
+      });
+    });
+    
+    // Also allow clicking the template info to edit (but not drag handle)
+    container.querySelectorAll('.template-info').forEach(info => {
+      info.addEventListener('click', (e) => {
+        const item = info.closest('.template-item');
+        const id = item.dataset.id;
+        this.openTemplateModal(id);
+      });
+    });
+    
+    // Drag and drop reordering
+    this.setupDragAndDrop(container);
+  }
+  
+  setupDragAndDrop(container) {
+    let draggedItem = null;
+    let draggedIndex = null;
+    
+    container.querySelectorAll('.template-item').forEach(item => {
+      // Only allow drag from the handle
+      item.querySelector('.drag-handle').addEventListener('mousedown', () => {
+        item.setAttribute('draggable', 'true');
+      });
+      
+      item.addEventListener('mouseup', () => {
+        // Keep draggable for the drag operation
+      });
+      
+      item.addEventListener('dragstart', (e) => {
+        draggedItem = item;
+        draggedIndex = parseInt(item.dataset.index);
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', item.dataset.id);
+      });
+      
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        container.querySelectorAll('.template-item').forEach(i => {
+          i.classList.remove('drag-over');
+        });
+        draggedItem = null;
+        draggedIndex = null;
+      });
+      
+      item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        
+        if (item !== draggedItem) {
+          item.classList.add('drag-over');
+        }
+      });
+      
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over');
+      });
+      
+      item.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        
+        if (item === draggedItem) return;
+        
+        const targetIndex = parseInt(item.dataset.index);
+        
+        // Reorder templates array
+        const [movedTemplate] = this.templates.splice(draggedIndex, 1);
+        this.templates.splice(targetIndex, 0, movedTemplate);
+        
+        // Save and re-render
+        await this.saveTemplatesOrder();
+        this.renderTemplates();
+      });
+    });
+  }
+  
+  async saveTemplatesOrder() {
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'saveTemplates',
+        templates: this.templates
+      });
+    } catch (error) {
+      console.error('Error saving template order:', error);
+    }
+  }
+  
+  async sortTemplatesAlphabetically() {
+    this.templates.sort((a, b) => a.name.localeCompare(b.name));
+    await this.saveTemplatesOrder();
+    this.renderTemplates();
+    this.showSuccess('Templates sorted alphabetically');
+  }
+  
+  openTemplateModal(templateId) {
+    this.editingTemplateId = templateId;
+    const modal = document.getElementById('templateModal');
+    const title = document.getElementById('templateModalTitle');
+    const deleteBtn = document.getElementById('deleteTemplate');
+    
+    if (templateId) {
+      // Editing existing template
+      const template = this.templates.find(t => t.id === templateId);
+      if (!template) return;
+      
+      title.textContent = 'Edit Template';
+      document.getElementById('templateName').value = template.name;
+      document.getElementById('templateText').value = template.template;
+      deleteBtn.style.display = 'block';
+    } else {
+      // Adding new template
+      title.textContent = 'Add New Template';
+      document.getElementById('templateName').value = '';
+      document.getElementById('templateText').value = '';
+      deleteBtn.style.display = 'none';
+    }
+    
+    modal.style.display = 'flex';
+    document.getElementById('templateName').focus();
+  }
+  
+  closeTemplateModal() {
+    document.getElementById('templateModal').style.display = 'none';
+    this.editingTemplateId = null;
+  }
+  
+  async saveTemplateFromModal() {
+    const name = document.getElementById('templateName').value.trim();
+    const template = document.getElementById('templateText').value.trim();
+    
+    if (!name) {
+      this.showError('Please enter a template name');
+      return;
+    }
+    
+    if (!template) {
+      this.showError('Please enter the template content');
+      return;
+    }
+    
+    const id = this.editingTemplateId || this.generateTemplateId(name);
+    
+    const templateObj = { id, name, template };
+    
+    if (this.editingTemplateId) {
+      // Update existing
+      const index = this.templates.findIndex(t => t.id === this.editingTemplateId);
+      if (index >= 0) {
+        this.templates[index] = templateObj;
+      }
+    } else {
+      // Add new
+      this.templates.push(templateObj);
+    }
+    
+    // Save to storage
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'saveTemplates',
+        templates: this.templates
+      });
+      
+      if (response.success) {
+        this.renderTemplates();
+        this.closeTemplateModal();
+        this.showSuccess('Template saved successfully!');
+      } else {
+        this.showError('Failed to save template: ' + response.error);
+      }
+    } catch (error) {
+      console.error('Error saving template:', error);
+      this.showError('Failed to save template');
+    }
+  }
+  
+  async deleteCurrentTemplate() {
+    if (!this.editingTemplateId) return;
+    
+    if (!confirm('Are you sure you want to delete this template?')) return;
+    
+    this.templates = this.templates.filter(t => t.id !== this.editingTemplateId);
+    
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'saveTemplates',
+        templates: this.templates
+      });
+      
+      if (response.success) {
+        this.renderTemplates();
+        this.closeTemplateModal();
+        this.showSuccess('Template deleted');
+      } else {
+        this.showError('Failed to delete template: ' + response.error);
+      }
+    } catch (error) {
+      console.error('Error deleting template:', error);
+      this.showError('Failed to delete template');
+    }
+  }
+  
+  generateTemplateId(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  
+  escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   async saveConfig() {

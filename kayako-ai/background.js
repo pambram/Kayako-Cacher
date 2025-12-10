@@ -10,7 +10,45 @@ const DEFAULT_CONFIG = {
   enabled: true,
   useTicketContext: false,
   systemPrompt: '',
-  temperature: 0.7
+  temperature: 0.7,
+  // Escalation templates library - default template is extracted from screen
+  escalationTemplates: [
+    {
+      id: 'academics-quicksight',
+      name: 'Academics QuickSight',
+      template: `Proposed Team: Academics QuickSight
+Affected student(s):
+Affected date(s):
+Dashboard/Report affected:
+Data discrepancy description:
+Expected vs Actual data:
+Screenshots/links:`
+    },
+    {
+      id: 'superbuilders-adapters',
+      name: 'Superbuilders Adapters',
+      template: `Proposed Team: Superbuilders Adapters
+Affected app: 
+Affected metrics: e.g. Accuracy/Time/Mastered units/XP/Other
+Affected student(s):
+Affected date(s):
+Technical issue description:
+Impact on student:
+Investigation carried out:`
+    },
+    {
+      id: 'engineering-defect',
+      name: 'Engineering Defect',
+      template: `Proposed Team: Engineering
+Issue Type: Defect
+Affected component:
+Steps to reproduce:
+Expected behavior:
+Actual behavior:
+Error messages/logs:
+Browser/device info:`
+    }
+  ]
 };
 
 // Initialize extension on install
@@ -54,6 +92,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     case 'classifyPrompt':
       handleClassifyPrompt(request.prompt, sendResponse);
+      return true;
+    
+    case 'getTemplates':
+      handleGetTemplates(sendResponse);
+      return true;
+    
+    case 'saveTemplates':
+      handleSaveTemplates(request.templates, sendResponse);
       return true;
       
     default:
@@ -222,14 +268,38 @@ async function handleAnthropicChat(requestBody, sendResponse) {
 }
 
 // Fast classification using Haiku (or fallback to configured model)
+// Now supports identifying specific escalation templates
 async function handleClassifyPrompt(prompt, sendResponse) {
   try {
     const result = await chrome.storage.local.get(['kayakoAIConfig']);
     const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    const templates = config.escalationTemplates || [];
+    
+    // Build template options for classification
+    const templateList = templates.map(t => `- ${t.id}: ${t.name}`).join('\n');
+    
+    const classificationPrompt = `Classify this support agent request. The key distinction is:
+
+- CUSTOMER = Writing a reply TO the customer (even if the reply MENTIONS an escalation, e.g., "tell customer we escalated")
+- ESCALATION = Actually WRITING/FILLING OUT an escalation document/template to send to an internal team
+
+Request: "${prompt}"
+
+IMPORTANT: If the request says things like "reply to customer", "draft response", "tell them we escalated", "inform customer" - that's CUSTOMER even if escalation is mentioned.
+ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template", "create escalation to [team]".
+
+If ESCALATION, which team template matches best?
+Available templates:
+${templateList}
+- default: Use the on-screen template (no specific match)
+
+Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
+
+    let responseText = '';
     
     // Prefer Anthropic Haiku for fast classification if available
     if (config.anthropicKey) {
-      console.log('🏷️ Using Haiku for fast classification');
+      console.log('🏷️ Using Haiku for template classification');
       const resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -240,22 +310,20 @@ async function handleClassifyPrompt(prompt, sendResponse) {
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5',
-          max_tokens: 10,
-          messages: [{ role: 'user', content: prompt }]
+          max_tokens: 50,
+          messages: [{ role: 'user', content: classificationPrompt }]
         })
       });
       
       if (resp.ok) {
         const data = await resp.json();
-        const text = data.content?.[0]?.text || '';
-        sendResponse({ success: true, result: text });
-        return;
+        responseText = data.content?.[0]?.text || '';
       }
     }
     
-    // Fallback to OpenAI if Anthropic not available
-    if (config.openaiKey || config.apiKey) {
-      console.log('🏷️ Falling back to OpenAI for classification');
+    // Fallback to OpenAI if Anthropic not available or failed
+    if (!responseText && (config.openaiKey || config.apiKey)) {
+      console.log('🏷️ Falling back to OpenAI for template classification');
       const apiKey = config.openaiKey || config.apiKey;
       const resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -265,23 +333,60 @@ async function handleClassifyPrompt(prompt, sendResponse) {
         },
         body: JSON.stringify({
           model: 'gpt-4o-mini',
-          max_completion_tokens: 10,
-          messages: [{ role: 'user', content: prompt }]
+          max_completion_tokens: 50,
+          messages: [{ role: 'user', content: classificationPrompt }]
         })
       });
       
       if (resp.ok) {
         const data = await resp.json();
-        const text = data.choices?.[0]?.message?.content || '';
-        sendResponse({ success: true, result: text });
-        return;
+        responseText = data.choices?.[0]?.message?.content || '';
       }
     }
     
-    // No API available
-    sendResponse({ success: false, error: 'No API key configured for classification' });
+    if (responseText) {
+      sendResponse({ success: true, result: responseText.trim() });
+    } else {
+      sendResponse({ success: false, error: 'No API key configured for classification' });
+    }
   } catch (error) {
     console.error('classifyPrompt failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Get escalation templates - merge with defaults if not present
+async function handleGetTemplates(sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || {};
+    
+    // If no templates saved, use defaults
+    let templates = config.escalationTemplates;
+    if (!templates || templates.length === 0) {
+      templates = DEFAULT_CONFIG.escalationTemplates;
+      // Save the defaults so they persist
+      config.escalationTemplates = templates;
+      await chrome.storage.local.set({ kayakoAIConfig: { ...DEFAULT_CONFIG, ...config } });
+    }
+    
+    sendResponse({ success: true, templates: templates || [] });
+  } catch (error) {
+    console.error('getTemplates failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Save escalation templates
+async function handleSaveTemplates(templates, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    config.escalationTemplates = templates;
+    await chrome.storage.local.set({ kayakoAIConfig: config });
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error('saveTemplates failed:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
