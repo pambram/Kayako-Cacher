@@ -51,6 +51,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'anthropicChat':
       handleAnthropicChat(request.requestBody, sendResponse);
       return true;
+    
+    case 'classifyPrompt':
+      handleClassifyPrompt(request.prompt, sendResponse);
+      return true;
       
     default:
       sendResponse({ success: false, error: 'Unknown action' });
@@ -213,6 +217,71 @@ async function handleAnthropicChat(requestBody, sendResponse) {
     sendResponse({ success: true, data: openaiFormat });
   } catch (error) {
     console.error('anthropicChat failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Fast classification using Haiku (or fallback to configured model)
+async function handleClassifyPrompt(prompt, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    
+    // Prefer Anthropic Haiku for fast classification if available
+    if (config.anthropicKey) {
+      console.log('🏷️ Using Haiku for fast classification');
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': config.anthropicKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5',
+          max_tokens: 10,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        const text = data.content?.[0]?.text || '';
+        sendResponse({ success: true, result: text });
+        return;
+      }
+    }
+    
+    // Fallback to OpenAI if Anthropic not available
+    if (config.openaiKey || config.apiKey) {
+      console.log('🏷️ Falling back to OpenAI for classification');
+      const apiKey = config.openaiKey || config.apiKey;
+      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          max_completion_tokens: 10,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        const text = data.choices?.[0]?.message?.content || '';
+        sendResponse({ success: true, result: text });
+        return;
+      }
+    }
+    
+    // No API available
+    sendResponse({ success: false, error: 'No API key configured for classification' });
+  } catch (error) {
+    console.error('classifyPrompt failed:', error);
     sendResponse({ success: false, error: error.message });
   }
 }

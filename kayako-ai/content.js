@@ -1058,6 +1058,89 @@ class KayakoAIEnhancer {
     }
   }
 
+  // Fast classification to determine if prompt is for an escalation (uses Haiku for speed)
+  async classifyPromptAsEscalation(prompt) {
+    try {
+      console.log('🔍 Classifying prompt for escalation...');
+      const classificationPrompt = `Classify if this support agent request is asking to write an ESCALATION (to another team, engineering, DevOps, etc) or a CUSTOMER RESPONSE (reply to customer).
+
+Request: "${prompt}"
+
+Reply with ONLY one word: ESCALATION or CUSTOMER`;
+
+      // Use Haiku for fast classification (falls back to current model if Anthropic not configured)
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'classifyPrompt',
+          prompt: classificationPrompt
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (response?.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response?.result || '');
+          }
+        });
+      });
+
+      const isEscalation = (response || '').toUpperCase().includes('ESCALATION');
+      console.log(`🏷️ Prompt classified as: ${isEscalation ? 'ESCALATION' : 'CUSTOMER RESPONSE'}`);
+      return isEscalation;
+    } catch (error) {
+      console.warn('⚠️ Classification failed, defaulting to customer response:', error?.message);
+      return false; // Default to customer response section
+    }
+  }
+
+  // Replace content in the escalation section of the template
+  replaceEscalationSection(editorElement, newTextHTML) {
+    try {
+      const startRe = /Also\s+fill\s+the\s+following\s+if\s+you\s+are\s+proposing\s+an\s+escalation:?/i;
+      
+      const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
+      let startNode = null, startOffset = 0;
+      
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const val = node.nodeValue;
+        const m = val.match(startRe);
+        if (m) {
+          startNode = node;
+          startOffset = m.index + m[0].length;
+          break;
+        }
+      }
+      
+      if (!startNode) {
+        console.warn('⚠️ Could not find escalation section marker');
+        return false;
+      }
+      
+      // Find the end of the document or next major section
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.setEndAfter(editorElement.lastChild || editorElement);
+      
+      // Delete content after the marker and insert new content
+      range.deleteContents();
+      
+      // Insert a line break then the new content
+      const brNode = document.createElement('br');
+      const contentWrapper = document.createElement('span');
+      contentWrapper.innerHTML = newTextHTML;
+      
+      range.insertNode(contentWrapper);
+      range.insertNode(brNode);
+      
+      console.log('✅ Escalation content inserted successfully');
+      return true;
+    } catch (error) {
+      console.error('Error replacing escalation section:', error);
+      return false;
+    }
+  }
+
   // Replace content between PR template markers when placeholder is empty
   replaceTemplatePlaceholder(editorElement, newTextHTML) {
     try {
@@ -2024,6 +2107,11 @@ By default, write a professional customer support response starting with "Dear [
         console.log('🧪 Help me write: composed prompt', dbg);
       } catch (_) {}
 
+      // Run classification in PARALLEL with main AI call (only if template detected)
+      const classificationPromise = textData.hasTemplate 
+        ? this.classifyPromptAsEscalation(customPrompt)
+        : Promise.resolve(false);
+
       // Send the user's prompt as the primary instruction; include our assembled details separately
       let generatedText = await this.callAI(customPrompt, fullPrompt, ticketContextText, allContextImages);
       
@@ -2034,6 +2122,10 @@ By default, write a professional customer support response starting with "Dear [
         generatedText = await this.callAI(customPrompt, fullPrompt, ticketContextText, reducedImages);
       }
       
+      // Get classification result (should be ready by now since it ran in parallel)
+      const isEscalation = await classificationPromise;
+      console.log(`🏷️ Content will be placed in: ${isEscalation ? 'ESCALATION section' : 'PR section'}`);
+      
       // Remove processing notification before showing modal
       processingNotification.remove();
       
@@ -2042,7 +2134,8 @@ By default, write a professional customer support response starting with "Dear [
         const cleanGeneratedText = this.normalizeHTMLForInsert(generatedText.trim().replace(/^\s+/gm, ''));
         
         // For custom prompts, show preview with option to replace or append
-        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, currentResponseText);
+        // Pass isEscalation flag to determine which section to target
+        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, currentResponseText, isEscalation);
       } else {
         this.showNotification('❌ No content was generated', 'error');
       }
@@ -2056,7 +2149,7 @@ By default, write a professional customer support response starting with "Dear [
     }
   }
 
-  showCustomWritePreview(editorElement, originalTextData, generatedText, customPrompt, existingText) {
+  showCustomWritePreview(editorElement, originalTextData, generatedText, customPrompt, existingText, isEscalation = false) {
     // Remove any existing preview
     const existingPreview = document.querySelector('.kayako-ai-preview');
     if (existingPreview) {
@@ -2068,10 +2161,14 @@ By default, write a professional customer support response starting with "Dear [
     preview.className = 'kayako-ai-preview';
     
     const hasExistingText = existingText && existingText.length > 0;
-    
+    const targetSection = isEscalation ? 'escalation section' : 'PR section';
+    const sectionBadge = originalTextData.hasTemplate 
+      ? `<span class="ai-section-badge ${isEscalation ? 'escalation' : 'pr'}">${isEscalation ? '📋 → Escalation Section' : '💬 → PR Section'}</span>` 
+      : '';
+
     preview.innerHTML = `
       <div class="ai-preview-header">
-        <span class="ai-preview-title">✍️ Generated Content</span>
+        <span class="ai-preview-title">✍️ Generated Content ${sectionBadge}</span>
         <button class="ai-preview-close" type="button">×</button>
       </div>
       <div class="ai-preview-content">
@@ -2129,8 +2226,8 @@ By default, write a professional customer support response starting with "Dear [
     const insertBtn = preview.querySelector('.ai-preview-insert');
     if (insertBtn) {
       insertBtn.addEventListener('click', () => {
-        this.insertCustomText(editorElement, originalTextData, generatedText, 'insert');
-        this.showNotification(`✅ Content inserted successfully`, 'success');
+        this.insertCustomText(editorElement, originalTextData, generatedText, 'insert', isEscalation);
+        this.showNotification(`✅ Content inserted in ${targetSection}`, 'success');
         preview.remove();
         document.removeEventListener('keydown', onKeyDown);
       });
@@ -2139,8 +2236,8 @@ By default, write a professional customer support response starting with "Dear [
     const replaceBtn = preview.querySelector('.ai-preview-replace');
     if (replaceBtn) {
       replaceBtn.addEventListener('click', () => {
-        this.insertCustomText(editorElement, originalTextData, generatedText, 'replace');
-        this.showNotification(`✅ Content replaced successfully`, 'success');
+        this.insertCustomText(editorElement, originalTextData, generatedText, 'replace', isEscalation);
+        this.showNotification(`✅ Content replaced in ${targetSection}`, 'success');
         preview.remove();
         document.removeEventListener('keydown', onKeyDown);
       });
@@ -2149,8 +2246,8 @@ By default, write a professional customer support response starting with "Dear [
     const appendBtn = preview.querySelector('.ai-preview-append');
     if (appendBtn) {
       appendBtn.addEventListener('click', () => {
-        this.insertCustomText(editorElement, originalTextData, generatedText, 'append');
-        this.showNotification(`✅ Content appended successfully`, 'success');
+        this.insertCustomText(editorElement, originalTextData, generatedText, 'append', isEscalation);
+        this.showNotification(`✅ Content appended to ${targetSection}`, 'success');
         preview.remove();
         document.removeEventListener('keydown', onKeyDown);
       });
@@ -2260,7 +2357,7 @@ By default, write a professional customer support response starting with "Dear [
     });
   }
 
-  insertCustomText(editorElement, originalTextData, generatedText, action) {
+  insertCustomText(editorElement, originalTextData, generatedText, action, isEscalation = false) {
     // If selection was captured, prefer replacing that selection
     if (originalTextData && originalTextData.selectionRange) {
       const range = originalTextData.selectionRange;
@@ -2298,8 +2395,25 @@ By default, write a professional customer support response starting with "Dear [
     if (action === 'insert' || !originalTextData.extractedText.trim()) {
       // Insert new content (for empty editor or explicit insert)
       if (originalTextData.hasTemplate) {
-        // Use the same surgical approach as regular text replacement
-        this.setEditorText(editorElement, originalTextData, generatedText);
+        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
+        const textWithRestored = this.restoreImagesInText(
+          this.restoreLinksInText(normalized, originalTextData.linkMap),
+          originalTextData.imgMap
+        );
+        const htmlContent = this.normalizeHTMLForInsert(textWithRestored);
+        
+        // For escalations, use escalation section; otherwise use PR section
+        if (isEscalation) {
+          console.log('📋 Inserting into ESCALATION section');
+          const inserted = this.replaceEscalationSection(editorElement, htmlContent);
+          if (!inserted) {
+            console.warn('⚠️ Escalation section not found, falling back to PR section');
+            this.setEditorText(editorElement, originalTextData, generatedText);
+          }
+        } else {
+          // Use the same surgical approach as regular text replacement
+          this.setEditorText(editorElement, originalTextData, generatedText);
+        }
       } else {
         const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
         const textWithRestored = this.restoreImagesInText(
@@ -2316,8 +2430,25 @@ By default, write a professional customer support response starting with "Dear [
       const currentTextData = this.getEditorText(editorElement);
       
       if (currentTextData.hasTemplate) {
-        console.log('🎯 Template detected! Using surgical replacement within template');
-        this.setEditorText(editorElement, currentTextData, generatedText);
+        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
+        const textWithRestored = this.restoreImagesInText(
+          this.restoreLinksInText(normalized, originalTextData.linkMap),
+          originalTextData.imgMap
+        );
+        const htmlContent = this.normalizeHTMLForInsert(textWithRestored);
+        
+        // For escalations, use escalation section; otherwise use PR section
+        if (isEscalation) {
+          console.log('🎯 Template detected! Using escalation section for replacement');
+          const inserted = this.replaceEscalationSection(editorElement, htmlContent);
+          if (!inserted) {
+            console.warn('⚠️ Escalation section not found, falling back to PR section');
+            this.setEditorText(editorElement, currentTextData, generatedText);
+          }
+        } else {
+          console.log('🎯 Template detected! Using surgical replacement within PR section');
+          this.setEditorText(editorElement, currentTextData, generatedText);
+        }
       } else {
         console.log('📝 No template detected, replacing full content');
         const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kayako AI Text Enhancer",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "description": "AI-powered text enhancement for Kayako editors with Polish, Formalize, Elaborate, and Shorten functionality",
   "permissions": [
     "storage",
