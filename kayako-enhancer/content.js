@@ -4085,16 +4085,13 @@ function setupSearchHoverPreview() {
 				} else {
 					placeBelow = false; // neither fits fully → bias to above near bottom rows
 				}
-				// If pointer is near the bottom of the viewport, force placing above to avoid cutoffs
-				try {
-					const bottomBiasThreshold = Math.floor(vh * 0.66); // bottom ~34% of viewport
-					if (pointerY >= bottomBiasThreshold) {
-						placeBelow = false;
-					}
-				} catch(_) {}
-				let top = placeBelow
-					? pointerY + gapY
-					: pointerY - gapY - br.height;
+			// Aggressive bottom placement: if there's not AMPLE space below, choose above
+			if (availBelow < (br.height + 80)) {
+				placeBelow = false;
+			}
+			let top = placeBelow
+				? pointerY + gapY
+				: pointerY - gapY - br.height;
 
                 // Clamp within viewport
                 const finalLeft = Math.max(padding, Math.min(left, vw - br.width - padding));
