@@ -2217,33 +2217,41 @@ By default, write a professional customer support response starting with "Dear [
 
 
       // Run classification FIRST to determine if we need to include a template in the prompt
+      // Always run classification - we have a template library now, not just on-screen templates
       let isEscalation = false;
       let templateId = null;
       let escalationTemplate = null;
       let userPromptWithTemplate = customPrompt;
       
-      if (textData.hasTemplate) {
-        const classification = await this.classifyPromptAsEscalation(customPrompt);
-        isEscalation = classification.isEscalation;
-        templateId = classification.templateId;
+      const classification = await this.classifyPromptAsEscalation(customPrompt);
+      isEscalation = classification.isEscalation;
+      templateId = classification.templateId;
+      
+      if (isEscalation) {
+        escalationTemplate = await this.getEscalationTemplate(templateId);
+        console.log(`🏷️ Escalation detected! Using template: ${escalationTemplate.name}`);
         
-        if (isEscalation) {
-          escalationTemplate = await this.getEscalationTemplate(templateId);
-          console.log(`🏷️ Escalation detected! Using template: ${escalationTemplate.name}`);
-          
-          // Append the template to the user's prompt so the AI fills it in
-          if (escalationTemplate.template) {
-            userPromptWithTemplate = `${customPrompt}
+        // Append the template to the user's prompt so the AI fills it in
+        if (escalationTemplate.template) {
+          userPromptWithTemplate = `${customPrompt}
 
-IMPORTANT: Fill in the following template exactly as shown. Do NOT add extra sections like "Issue Summary" or other headers. Simply fill in the blanks/placeholders in this template:
+IMPORTANT: Fill in the following escalation template exactly as shown. Do NOT add extra sections, headers, or preambles.
 
---- TEMPLATE START ---
+FORMAT REQUIREMENTS:
+- Use HTML only, NOT Markdown. Use <strong>field name:</strong> for bold labels (NOT **bold**)
+- Each field must be on its own line - use <br> tags between lines
+- Keep the exact field names from the template
+- Fill in the values based on the ticket context
+
+--- TEMPLATE TO FILL ---
 ${escalationTemplate.template}
---- TEMPLATE END ---
+--- END TEMPLATE ---
 
-Return ONLY the filled-in template above, nothing else. You should make the section headers BOLD if possible but do not add any other formatting.`;
-            console.log('📋 Template appended to prompt for AI to fill in');
-          }
+Return ONLY the filled-in HTML template. Example format:
+<strong>Proposed Team:</strong> [value]<br>
+<strong>Affected students:</strong> [value]<br>
+...and so on for each field.`;
+          console.log('📋 Template appended to prompt for AI to fill in');
         }
       }
 
