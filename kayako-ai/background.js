@@ -11,6 +11,10 @@ const DEFAULT_CONFIG = {
   useTicketContext: false,
   systemPrompt: '',
   temperature: 0.7,
+  // Experimental features
+  tavilyKey: '',
+  enableUrlFetch: false,
+  enableWebSearch: false,
   // Escalation templates library - default template is extracted from screen
   escalationTemplates: [
     {
@@ -295,6 +299,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       handleClassifyPrompt(request.prompt, sendResponse);
       return true;
     
+    case 'fetchUrl':
+      handleFetchUrl(request.url, request.prompt, sendResponse);
+      return true;
+    
+    case 'tavilySearch':
+      handleTavilySearch(request.query, sendResponse);
+      return true;
+    
     case 'getTemplates':
       handleGetTemplates(sendResponse);
       return true;
@@ -469,38 +481,56 @@ async function handleAnthropicChat(requestBody, sendResponse) {
 }
 
 // Fast classification using Haiku (or fallback to configured model)
-// Now supports identifying specific escalation templates
+// Now supports identifying: escalation templates, URL fetch, web search
 async function handleClassifyPrompt(prompt, sendResponse) {
   try {
     const result = await chrome.storage.local.get(['kayakoAIConfig']);
     const config = result.kayakoAIConfig || DEFAULT_CONFIG;
     const templates = config.escalationTemplates || [];
     
+    // Extract URLs from prompt
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urls = prompt.match(urlRegex) || [];
+    
     // Build template options for classification
     const templateList = templates.map(t => `- ${t.id}: ${t.name}`).join('\n');
     
-    const classificationPrompt = `Classify this support agent request. The key distinction is:
-
-- CUSTOMER = Writing a reply TO the customer (even if the reply MENTIONS an escalation, e.g., "tell customer we escalated")
-- ESCALATION = Actually WRITING/FILLING OUT an escalation document/template to send to an internal team
+    const classificationPrompt = `Classify this support agent request and detect if special actions are needed:
 
 Request: "${prompt}"
 
-IMPORTANT: If the request says things like "reply to customer", "draft response", "tell them we escalated", "inform customer" - that's CUSTOMER even if escalation is mentioned.
-ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template", "create escalation to [team]".
+Classify into ONE of these categories:
 
-If ESCALATION, which team template matches best?
-Available templates:
+1. CUSTOMER = Writing a reply TO the customer (even if the reply MENTIONS an escalation)
+2. ESCALATION = Actually WRITING/FILLING OUT an escalation document/template to send to an internal team
+3. WEB_SEARCH = User explicitly asks to "search", "look up", "find information online", "search the internet/web"
+4. URL_FETCH = Contains URLs and needs information FROM those URLs to answer
+
+IMPORTANT Rules:
+- If request says "reply to customer", "draft response", "tell them we escalated" - that's CUSTOMER
+- ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template"
+- WEB_SEARCH is when user says "search for", "look up online", "find information about" 
+- URL_FETCH is when URLs are present AND user needs info from them (not just mentioning URLs)
+
+URLs found: ${urls.length > 0 ? urls.join(', ') : 'none'}
+
+If ESCALATION, which team template?
 ${templateList}
 - default: Use the on-screen template (no specific match)
 
-Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
+Reply format:
+- "CUSTOMER" 
+- "ESCALATION:template-id"
+- "WEB_SEARCH"
+- "URL_FETCH:url1,url2" (comma-separated URLs)
+
+Reply with ONLY ONE of the above formats:`;
 
     let responseText = '';
     
     // Prefer Anthropic Haiku for fast classification if available
     if (config.anthropicKey) {
-      console.log('🏷️ Using Haiku for template classification');
+      console.log('🏷️ Using Haiku for intent classification');
       const resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -511,7 +541,7 @@ Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5',
-          max_tokens: 50,
+          max_tokens: 100,
           messages: [{ role: 'user', content: classificationPrompt }]
         })
       });
@@ -524,7 +554,7 @@ Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
     
     // Fallback to OpenAI if Anthropic not available or failed
     if (!responseText && (config.openaiKey || config.apiKey)) {
-      console.log('🏷️ Falling back to OpenAI for template classification');
+      console.log('🏷️ Falling back to OpenAI for intent classification');
       const apiKey = config.openaiKey || config.apiKey;
       const resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -534,7 +564,7 @@ Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
         },
         body: JSON.stringify({
           model: 'gpt-4o-mini',
-          max_completion_tokens: 50,
+          max_completion_tokens: 100,
           messages: [{ role: 'user', content: classificationPrompt }]
         })
       });
@@ -552,6 +582,206 @@ Reply with ONLY: "CUSTOMER" or "ESCALATION:template-id"`;
     }
   } catch (error) {
     console.error('classifyPrompt failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Fetch URL and extract relevant content using AI
+async function handleFetchUrl(url, userPrompt, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    
+    if (!config.enableUrlFetch) {
+      sendResponse({ success: false, error: 'URL fetching is not enabled. Enable it in settings.' });
+      return;
+    }
+    
+    console.log(`🔗 Fetching URL: ${url}`);
+    
+    // Fetch the URL content
+    const fetchResp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; KayakoAI/1.0)'
+      }
+    });
+    
+    if (!fetchResp.ok) {
+      throw new Error(`Failed to fetch URL: HTTP ${fetchResp.status}`);
+    }
+    
+    const contentType = fetchResp.headers.get('content-type') || '';
+    let rawContent = '';
+    
+    if (contentType.includes('text/html')) {
+      rawContent = await fetchResp.text();
+      // Strip HTML tags for basic text extraction
+      rawContent = rawContent
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    } else if (contentType.includes('application/json')) {
+      const jsonData = await fetchResp.json();
+      rawContent = JSON.stringify(jsonData, null, 2);
+    } else {
+      rawContent = await fetchResp.text();
+    }
+    
+    // Truncate if too long (keep first 10000 chars for context)
+    if (rawContent.length > 10000) {
+      rawContent = rawContent.substring(0, 10000) + '\n\n[Content truncated...]';
+    }
+    
+    console.log(`📄 Fetched ${rawContent.length} characters from ${url}`);
+    
+    // Use AI to extract relevant information based on user's prompt
+    const extractionPrompt = `You are helping a support agent. They asked: "${userPrompt}"
+
+Here is content fetched from ${url}:
+
+${rawContent}
+
+Extract and summarize ONLY the information relevant to answering the user's question. Be concise but complete. Focus on facts, solutions, steps, or specific details they need.`;
+    
+    let extractedContent = '';
+    
+    // Use Anthropic Haiku for fast extraction if available
+    if (config.anthropicKey) {
+      console.log('🤖 Using Haiku for content extraction');
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': config.anthropicKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5',
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: extractionPrompt }]
+        })
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        extractedContent = data.content?.[0]?.text || rawContent;
+      } else {
+        extractedContent = rawContent; // Fallback to raw content
+      }
+    } else if (config.openaiKey || config.apiKey) {
+      console.log('🤖 Using OpenAI for content extraction');
+      const apiKey = config.openaiKey || config.apiKey;
+      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          max_completion_tokens: 1500,
+          messages: [{ role: 'user', content: extractionPrompt }]
+        })
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        extractedContent = data.choices?.[0]?.message?.content || rawContent;
+      } else {
+        extractedContent = rawContent; // Fallback to raw content
+      }
+    } else {
+      // No AI available, return raw content
+      extractedContent = rawContent;
+    }
+    
+    console.log(`✅ Extracted ${extractedContent.length} characters of relevant content`);
+    
+    sendResponse({ 
+      success: true, 
+      url: url,
+      content: extractedContent,
+      rawLength: rawContent.length
+    });
+  } catch (error) {
+    console.error('fetchUrl failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Perform web search using Tavily API
+async function handleTavilySearch(query, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['kayakoAIConfig']);
+    const config = result.kayakoAIConfig || DEFAULT_CONFIG;
+    
+    if (!config.enableWebSearch) {
+      sendResponse({ success: false, error: 'Web search is not enabled. Enable it in settings.' });
+      return;
+    }
+    
+    if (!config.tavilyKey) {
+      sendResponse({ success: false, error: 'Tavily API key is required for web search' });
+      return;
+    }
+    
+    console.log(`🔍 Searching with Tavily: ${query}`);
+    
+    const resp = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        api_key: config.tavilyKey,
+        query: query,
+        search_depth: 'basic',
+        max_results: 5,
+        include_answer: true,
+        include_raw_content: false
+      })
+    });
+    
+    if (!resp.ok) {
+      let errText = `HTTP ${resp.status}`;
+      try {
+        const errJson = await resp.json();
+        errText = errJson.error || errText;
+      } catch (_) {}
+      throw new Error(`Tavily search failed: ${errText}`);
+    }
+    
+    const data = await resp.json();
+    console.log(`✅ Tavily found ${data.results?.length || 0} results`);
+    
+    // Format results for AI consumption
+    let formattedResults = '';
+    
+    if (data.answer) {
+      formattedResults += `Quick Answer: ${data.answer}\n\n`;
+    }
+    
+    if (data.results && data.results.length > 0) {
+      formattedResults += 'Search Results:\n\n';
+      data.results.forEach((result, idx) => {
+        formattedResults += `${idx + 1}. ${result.title}\n`;
+        formattedResults += `   URL: ${result.url}\n`;
+        formattedResults += `   ${result.content}\n\n`;
+      });
+    }
+    
+    sendResponse({ 
+      success: true, 
+      query: query,
+      answer: data.answer,
+      results: data.results,
+      formattedContent: formattedResults
+    });
+  } catch (error) {
+    console.error('tavilySearch failed:', error);
     sendResponse({ success: false, error: error.message });
   }
 }

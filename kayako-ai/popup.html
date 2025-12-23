@@ -100,6 +100,53 @@
         </div>
       </section>
 
+      <!-- Experimental Features Section -->
+      <section class="section">
+        <h2 class="collapsible-header" id="experimentalToggle">
+          🧪 Experimental Features
+          <span class="collapse-icon">▶</span>
+        </h2>
+        <div class="collapsible-content" id="experimentalContent" style="display: none;">
+          <p class="section-description">
+            Enable advanced AI capabilities like URL fetching and web search. These features are experimental and may increase response time.
+          </p>
+          
+          <div class="form-group toggle-group">
+            <label class="toggle-label-container">
+              <span class="toggle-label-text">🔗 Enable URL Fetching</span>
+              <div class="toggle-switch">
+                <input type="checkbox" id="enableUrlFetch" />
+                <span class="toggle-slider"></span>
+              </div>
+            </label>
+            <small class="help-text">
+              Automatically fetch and analyze content from URLs mentioned in your prompts.
+            </small>
+          </div>
+
+          <div class="form-group toggle-group">
+            <label class="toggle-label-container">
+              <span class="toggle-label-text">🔍 Enable Web Search</span>
+              <div class="toggle-switch">
+                <input type="checkbox" id="enableWebSearch" />
+                <span class="toggle-slider"></span>
+              </div>
+            </label>
+            <small class="help-text">
+              Allow AI to search the web when you ask it to look up information.
+            </small>
+          </div>
+
+          <div class="form-group" id="tavilyKeyGroup">
+            <label for="tavilyKey">Tavily API Key (for Web Search)</label>
+            <input type="password" id="tavilyKey" placeholder="tvly-..." />
+            <small class="help-text">
+              Required for web search. Get your API key from <a href="https://tavily.com/" target="_blank">Tavily</a>
+            </small>
+          </div>
+        </div>
+      </section>
+
       <!-- Status Section -->
       <section class="section">
         <h2>Status</h2>
@@ -189,7 +236,7 @@
     </main>
 
     <footer class="footer">
-      <div class="version">v1.5.3</div>
+      <div class="version">v1.6.0</div>
       <div class="links">
         <a href="#" id="refreshPage">Refresh Current Tab</a>
       </div>

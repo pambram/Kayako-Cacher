@@ -32,6 +32,9 @@ class PopupManager {
     // Initialize templates section (collapsed by default)
     this.initTemplatesSection();
     
+    // Initialize experimental section (collapsed by default)
+    this.initExperimentalSection();
+    
     console.log('Popup initialized');
   }
   
@@ -61,6 +64,13 @@ class PopupManager {
     // Start collapsed
     helpContent.style.display = 'none';
     helpIcon.textContent = '▶';
+  }
+  
+  initExperimentalSection() {
+    const content = document.getElementById('experimentalContent');
+    const icon = document.querySelector('#experimentalToggle .collapse-icon');
+    content.style.display = 'none';
+    icon.textContent = '▶';
   }
 
   async loadConfig() {
@@ -118,6 +128,14 @@ class PopupManager {
       this.saveConfig();
     });
 
+    // Auto-save experimental features toggles
+    document.getElementById('enableUrlFetch').addEventListener('change', () => {
+      this.saveConfig();
+    });
+    document.getElementById('enableWebSearch').addEventListener('change', () => {
+      this.saveConfig();
+    });
+
     // Show/hide temperature control based on model selection
     document.getElementById('model').addEventListener('change', (e) => {
       this.toggleTemperatureVisibility(e.target.value);
@@ -131,6 +149,11 @@ class PopupManager {
     // Toggle templates section
     document.getElementById('templatesToggle').addEventListener('click', () => {
       this.toggleTemplatesSection();
+    });
+    
+    // Toggle experimental section
+    document.getElementById('experimentalToggle').addEventListener('click', () => {
+      this.toggleExperimentalSection();
     });
     
     // Add new template
@@ -182,6 +205,11 @@ class PopupManager {
     document.getElementById('useTicketContext').checked = this.config.useTicketContext === true;
     document.getElementById('systemPrompt').value = this.config.systemPrompt || '';
     document.getElementById('temperature').value = this.config.temperature || '0.7';
+    
+    // Update experimental features
+    document.getElementById('tavilyKey').value = this.config.tavilyKey || '';
+    document.getElementById('enableUrlFetch').checked = this.config.enableUrlFetch === true;
+    document.getElementById('enableWebSearch').checked = this.config.enableWebSearch === true;
 
     // Show/hide provider-specific fields
     this.toggleProviderFields(provider);
@@ -251,6 +279,19 @@ class PopupManager {
   toggleTemplatesSection() {
     const content = document.getElementById('templatesContent');
     const icon = document.querySelector('#templatesToggle .collapse-icon');
+    
+    if (content.style.display === 'none') {
+      content.style.display = 'block';
+      icon.textContent = '▼';
+    } else {
+      content.style.display = 'none';
+      icon.textContent = '▶';
+    }
+  }
+  
+  toggleExperimentalSection() {
+    const content = document.getElementById('experimentalContent');
+    const icon = document.querySelector('#experimentalToggle .collapse-icon');
     
     if (content.style.display === 'none') {
       content.style.display = 'block';
@@ -514,7 +555,11 @@ class PopupManager {
         enabled: true,
         useTicketContext: document.getElementById('useTicketContext').checked,
         systemPrompt: document.getElementById('systemPrompt').value.trim(),
-        temperature: parseFloat(document.getElementById('temperature').value)
+        temperature: parseFloat(document.getElementById('temperature').value),
+        // Experimental features
+        tavilyKey: document.getElementById('tavilyKey').value.trim(),
+        enableUrlFetch: document.getElementById('enableUrlFetch').checked,
+        enableWebSearch: document.getElementById('enableWebSearch').checked
       };
 
       const response = await chrome.runtime.sendMessage({

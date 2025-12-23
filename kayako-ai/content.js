@@ -66,7 +66,10 @@ class KayakoAIEnhancer {
         enabled: config.enabled !== false,
         useTicketContext: config.useTicketContext || false,
         systemPrompt: config.systemPrompt || '',
-        temperature: config.temperature || 0.7
+        temperature: config.temperature || 0.7,
+        tavilyKey: config.tavilyKey || '',
+        enableUrlFetch: config.enableUrlFetch || false,
+        enableWebSearch: config.enableWebSearch || false
       };
     } catch (error) {
       console.error('Error loading config:', error);
@@ -1061,7 +1064,7 @@ class KayakoAIEnhancer {
   // Fast classification to determine if prompt is for an escalation and which template to use
   async classifyPromptAsEscalation(prompt) {
     try {
-      console.log('🔍 Classifying prompt for escalation and template...');
+      console.log('🔍 Classifying prompt intent...');
 
       // Use Haiku for fast classification (falls back to current model if Anthropic not configured)
       const response = await new Promise((resolve, reject) => {
@@ -1085,15 +1088,25 @@ class KayakoAIEnhancer {
         // Extract template ID if present (format: "ESCALATION:template-id")
         const match = result.match(/ESCALATION[:\s]+([a-z0-9-]+)/i);
         const templateId = match ? match[1].toLowerCase() : 'default';
-        console.log(`🏷️ Prompt classified as: ESCALATION (template: ${templateId})`);
-        return { isEscalation: true, templateId };
+        console.log(`🏷️ Intent: ESCALATION (template: ${templateId})`);
+        return { intent: 'escalation', isEscalation: true, templateId };
+      } else if (result.includes('WEB_SEARCH')) {
+        console.log(`🏷️ Intent: WEB_SEARCH`);
+        return { intent: 'web_search', isEscalation: false, templateId: null };
+      } else if (result.includes('URL_FETCH')) {
+        // Extract URLs from the classification result
+        const urlMatch = result.match(/URL_FETCH[:\s]+(.+)/i);
+        const urlsString = urlMatch ? urlMatch[1] : '';
+        const urls = urlsString.split(',').map(u => u.trim()).filter(u => u.length > 0);
+        console.log(`🏷️ Intent: URL_FETCH (${urls.length} URLs)`);
+        return { intent: 'url_fetch', isEscalation: false, templateId: null, urls };
       } else {
-        console.log(`🏷️ Prompt classified as: CUSTOMER RESPONSE`);
-        return { isEscalation: false, templateId: null };
+        console.log(`🏷️ Intent: CUSTOMER RESPONSE`);
+        return { intent: 'customer', isEscalation: false, templateId: null };
       }
     } catch (error) {
       console.warn('⚠️ Classification failed, defaulting to customer response:', error?.message);
-      return { isEscalation: false, templateId: null };
+      return { intent: 'customer', isEscalation: false, templateId: null };
     }
   }
   
@@ -2173,12 +2186,28 @@ What investigation did CS carry out:`,
       // What the UI should show as "Current text" and what REPLACE operates on: PR placeholder (or whole text when no template)
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
+      // Extract customer name for personalization
+      const customerName = this.extractCustomerName();
+      console.log('👤 Customer name:', customerName || '(not found)');
+
       // Enhanced prompt - let the model interpret user intent flexibly
-      let enhancedPrompt = `USER INSTRUCTION: ${customPrompt}
+      let enhancedPrompt = `YOU ARE A GHOSTWRITER. You write messages that will be sent FROM the support agent TO the customer.
 
-CRITICAL: Follow the user's instruction EXACTLY. The user instruction tells you WHAT to write. The ticket context below tells you WHO you're writing to and what the conversation is about. Do NOT conflate old messages with recent ones - focus on the CURRENT STATE of the conversation (the most recent 1-2 messages).
+The support agent is giving you instructions about what to write. Your output will be SENT TO THE CUSTOMER, not to the agent.
 
-By default, write a professional customer support response starting with "Dear [Customer Name]," unless the user's request clearly asks for something else.`;
+AGENT'S INSTRUCTION: "${customPrompt}"
+
+WHAT THIS MEANS:
+- If the agent says "I did X" → Write to customer: "We have done X for you..."
+- If the agent says "tell them Y" → Write to customer: "Dear Customer, Y..."
+- If the agent says "thanks" or "I relayed info" → Write to customer thanking THEM and confirming the action was taken on THEIR behalf
+${customerName ? `\nCUSTOMER NAME: ${customerName}` : ''}
+
+OUTPUT REQUIREMENTS:
+- Write a message TO THE CUSTOMER (not to the agent!)
+- Start with "Dear ${customerName || '[Customer Name]'},"
+- Professional, helpful tone
+- Only add signature if template doesn't already have one`;
       
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;
@@ -2198,6 +2227,7 @@ By default, write a professional customer support response starting with "Dear [
         ticketContext = ticketContextText; // For backward compatibility
         productInfo = this.extractProductInfo(ticketContextText);
         console.log('🎯 Extracted ticket context for custom prompt:', ticketContextText ? 'Found context' : 'No context found');
+        console.log('📜 Ticket context preview (first 800 chars):', ticketContextText.slice(0, 800));
         console.log('🖼️ Timeline images found:', timelineImages.length);
         console.log('🏷️ Detected product:', productInfo || 'None detected');
         
@@ -2216,17 +2246,71 @@ By default, write a professional customer support response starting with "Dear [
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
 
 
-      // Run classification FIRST to determine if we need to include a template in the prompt
-      // Always run classification - we have a template library now, not just on-screen templates
+      // Run classification FIRST to determine intent and handle prefetching
       let isEscalation = false;
       let templateId = null;
       let escalationTemplate = null;
       let userPromptWithTemplate = customPrompt;
+      let prefetchedContext = '';
       
       const classification = await this.classifyPromptAsEscalation(customPrompt);
+      const intent = classification.intent || 'customer';
       isEscalation = classification.isEscalation;
       templateId = classification.templateId;
       
+      // Handle URL fetching if needed
+      if (intent === 'url_fetch' && classification.urls && classification.urls.length > 0) {
+        console.log(`🔗 Fetching ${classification.urls.length} URL(s) before AI call...`);
+        const fetchPromises = classification.urls.map(url => 
+          new Promise((resolve) => {
+            chrome.runtime.sendMessage({
+              action: 'fetchUrl',
+              url: url,
+              prompt: customPrompt
+            }, (response) => {
+              if (response?.success) {
+                resolve(`\n\n--- Content from ${url} ---\n${response.content}\n--- End of fetched content ---\n`);
+              } else {
+                console.warn(`Failed to fetch ${url}:`, response?.error);
+                resolve('');
+              }
+            });
+          })
+        );
+        
+        const fetchedContents = await Promise.all(fetchPromises);
+        prefetchedContext = fetchedContents.join('\n');
+        
+        if (prefetchedContext.trim()) {
+          fullPrompt += `\n\nAdditional context from URLs:\n${prefetchedContext}`;
+          console.log(`✅ Added ${prefetchedContext.length} characters from URL fetch to context`);
+        }
+      }
+      
+      // Handle web search if needed
+      if (intent === 'web_search') {
+        console.log(`🔍 Performing web search before AI call...`);
+        const searchResult = await new Promise((resolve) => {
+          chrome.runtime.sendMessage({
+            action: 'tavilySearch',
+            query: customPrompt
+          }, (response) => {
+            if (response?.success && response.formattedContent) {
+              resolve(response.formattedContent);
+            } else {
+              console.warn('Web search failed:', response?.error);
+              resolve('');
+            }
+          });
+        });
+        
+        if (searchResult.trim()) {
+          fullPrompt += `\n\nWeb search results:\n${searchResult}`;
+          console.log(`✅ Added ${searchResult.length} characters from web search to context`);
+        }
+      }
+      
+      // Handle escalation templates
       if (isEscalation) {
         escalationTemplate = await this.getEscalationTemplate(templateId);
         console.log(`🏷️ Escalation detected! Using template: ${escalationTemplate.name}`);
@@ -2258,12 +2342,14 @@ Return ONLY the filled-in HTML template. Example format:
       // Debug visibility: log the assembled prompt and context summary
       try {
         const dbg = {
+          intent: intent,
           usingTicketContext: !!ticketContextText,
           editorImages: contextImages.length,
           timelineImages: timelineImageDataUrls.length,
           totalImages: allContextImages.length,
           isEscalation: isEscalation,
           templateUsed: escalationTemplate?.name || 'none',
+          prefetchedContext: prefetchedContext.length > 0,
           promptPreview: fullPrompt.slice(0, 1500) + (fullPrompt.length > 1500 ? '... [truncated]' : '')
         };
         console.log('🧪 Help me write: composed prompt', dbg);
@@ -2700,9 +2786,16 @@ Return ONLY the filled-in HTML template. Example format:
       
       messageItems.forEach((item, index) => {
         try {
+          // Detect if this is an internal note (agent) vs public message
+          const isNote = item.classList.contains('ko-timeline-2_list_item__note_1oksrd') || 
+                         item.closest('.ko-timeline-2_list_item__note_1oksrd') !== null;
+          
           // Extract author
           const authorElement = item.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
           const author = authorElement ? authorElement.textContent.trim() : 'Unknown';
+          
+          // Detect system/automated messages
+          const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis', 'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'System', 'Automation'].includes(author);
           
           // Extract content
           const contentElement = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
@@ -2744,7 +2837,9 @@ Return ONLY the filled-in HTML template. Example format:
               content: content.substring(0, 500), // Limit length to manage tokens
               time,
               index,
-              hasImages
+              hasImages,
+              isNote,
+              isSystemMessage
             });
           }
         } catch (error) {
@@ -2754,6 +2849,11 @@ Return ONLY the filled-in HTML template. Example format:
       
       console.log(`📋 Extracted ${messages.length} substantial messages for context`);
       console.log(`🖼️ Found ${timelineImages.length} images in timeline messages`);
+      // Debug: log each extracted message author, type, and content preview
+      messages.forEach((m, i) => {
+        const type = m.isNote ? '📝NOTE' : m.isSystemMessage ? '🤖SYS' : '👤CUST';
+        console.log(`  📨 [${i+1}] ${type} ${m.author}: "${m.content.slice(0,100)}..."`);
+      });
       
       if (messages.length === 0) {
         return { text: '', images: timelineImages };
@@ -2764,7 +2864,8 @@ Return ONLY the filled-in HTML template. Example format:
         const recency = messages.length - i; // 1 = most recent
         const recencyLabel = recency === 1 ? '[MOST RECENT]' : recency === 2 ? '[2nd most recent]' : `[#${i + 1} of ${messages.length}]`;
         const imgNote = msg.hasImages ? ' [contains image(s)]' : '';
-        return `${recencyLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
+        const typeLabel = msg.isNote ? '[AGENT NOTE]' : msg.isSystemMessage ? '[SYSTEM]' : '[CUSTOMER/PUBLIC]';
+        return `${recencyLabel} ${typeLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
       });
       
       // Highlight the last 2 messages as THE current conversation state
@@ -2772,7 +2873,8 @@ Return ONLY the filled-in HTML template. Example format:
       const currentExchangeLines = last2.map((msg, i) => {
         const label = i === last2.length - 1 ? '>>> [MOST RECENT MESSAGE]' : '>>> [PREVIOUS MESSAGE]';
         const imgNote = msg.hasImages ? ' [contains image(s) - see attached]' : '';
-        return `${label} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
+        const typeLabel = msg.isNote ? '[AGENT NOTE]' : msg.isSystemMessage ? '[SYSTEM]' : '[CUSTOMER/PUBLIC]';
+        return `${label} ${typeLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
       }).join('\n\n');
 
       const text = `[TICKET CONVERSATION - ${messages.length} messages, CHRONOLOGICAL ORDER]
@@ -2837,6 +2939,40 @@ ${numberedMessages.join('\n\n')}
     
     console.log(`🖼️ Total timeline images loaded: ${dataUrls.length}`);
     return dataUrls;
+  }
+
+  // Extract customer name from the Kayako ticket page
+  extractCustomerName() {
+    try {
+      // Try requester name in sidebar (most reliable)
+      const requesterEl = document.querySelector('.ko-info-bar_requester-field-value_1p5g6r, [data-test="requester-name"], .ko-sidebar_requester__name_1irhz3');
+      if (requesterEl) {
+        const name = requesterEl.textContent?.trim();
+        if (name && !name.includes('@')) return name; // Not an email
+      }
+      
+      // Try ticket header area
+      const headerEl = document.querySelector('.ko-conversation-timeline_header_creator_1oksrd, .ko-ticket-header__requester-name');
+      if (headerEl) {
+        const name = headerEl.textContent?.trim();
+        if (name && !name.includes('@')) return name;
+      }
+      
+      // Try the first message author if it looks like a customer (not system/agent)
+      const firstMsgAuthor = document.querySelector('.message-or-note:first-child .ko-timeline-2_list_item__creator_1oksrd');
+      if (firstMsgAuthor) {
+        const name = firstMsgAuthor.textContent?.trim();
+        // Exclude common system/agent names
+        if (name && !name.includes('@') && !['Log Agent', 'ATLAS', 'System'].includes(name)) {
+          return name;
+        }
+      }
+      
+      return null;
+    } catch (e) {
+      console.warn('Could not extract customer name:', e);
+      return null;
+    }
   }
 
   extractProductInfo(ticketContext) {
