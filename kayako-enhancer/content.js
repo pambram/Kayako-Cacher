@@ -595,12 +595,10 @@ function setupAutoHyperlinking() {
                     // Could be single URL string or array of URLs
                     const urls = Array.isArray(standalone) ? standalone : [standalone];
                     console.log('📎 Pasted standalone URL(s), will suggest title:', urls);
-                    // Queue title suggestions for all URLs with staggered delays
-                    urls.forEach((url, i) => {
-                        setTimeout(() => {
-                            trySuggestTitleReplace(target, url, 1);
-                        }, 150 + (i * 300)); // Stagger by 300ms each
-                    });
+                    // Queue title suggestions sequentially
+                    setTimeout(() => {
+                        queueTitleSuggestions(target, urls);
+                    }, 150);
                 } else {
                     // Not just a URL → do nothing now; rely on auto-link scan after paste
                     setTimeout(() => { try { scanEditorForAutoLinks(target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element')); } catch(_) {} }, 250);
@@ -677,6 +675,21 @@ function setupEditorLinkHoverPreview() {
             });
         });
     } catch (_) {}
+}
+
+// Queue multiple URLs for sequential title suggestions
+function queueTitleSuggestions(pasteTarget, urls) {
+    if (!urls || urls.length === 0) return;
+    let currentIndex = 0;
+    const processNext = () => {
+        if (currentIndex >= urls.length) return;
+        const url = urls[currentIndex];
+        currentIndex++;
+        // Set callback to process next URL after this one is handled
+        window.__kayakoNextUrlInQueue = processNext;
+        trySuggestTitleReplace(pasteTarget, url, 1);
+    };
+    processNext();
 }
 
 function trySuggestTitleReplace(pasteTarget, url, attempt) {
@@ -1030,18 +1043,42 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
             } finally {
                 try { ui.remove(); } catch(_) {}
                 document.removeEventListener('keydown', keydownHandler, true);
+                // Process next URL in queue if any
+                if (window.__kayakoNextUrlInQueue) {
+                    const next = window.__kayakoNextUrlInQueue;
+                    window.__kayakoNextUrlInQueue = null;
+                    setTimeout(next, 100);
+                }
             }
         }
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
 			e.stopImmediatePropagation();
-			try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); }
+			try { ui.remove(); } finally { 
+                document.removeEventListener('keydown', keydownHandler, true); 
+                // Process next URL in queue if any
+                if (window.__kayakoNextUrlInQueue) {
+                    const next = window.__kayakoNextUrlInQueue;
+                    window.__kayakoNextUrlInQueue = null;
+                    setTimeout(next, 100);
+                }
+            }
 		}
     };
     document.addEventListener('keydown', keydownHandler, true);
 
-	ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => { try { ui.remove(); } finally { document.removeEventListener('keydown', keydownHandler, true); } });
+	ui.querySelector('.kayako-link-suggest-dismiss').addEventListener('click', () => { 
+        try { ui.remove(); } finally { 
+            document.removeEventListener('keydown', keydownHandler, true); 
+            // Process next URL in queue if any
+            if (window.__kayakoNextUrlInQueue) {
+                const next = window.__kayakoNextUrlInQueue;
+                window.__kayakoNextUrlInQueue = null;
+                setTimeout(next, 100);
+            }
+        } 
+    });
     ui.querySelector('.kayako-link-suggest-apply').addEventListener('click', () => {
         try {
             try { editor && editor.focus(); } catch(_) {}
@@ -1058,6 +1095,12 @@ function createOrUpdateLinkSuggestion(editor, url, title) {
 		} finally {
 			ui.remove();
 			document.removeEventListener('keydown', keydownHandler, true);
+            // Process next URL in queue if any
+            if (window.__kayakoNextUrlInQueue) {
+                const next = window.__kayakoNextUrlInQueue;
+                window.__kayakoNextUrlInQueue = null;
+                setTimeout(next, 100);
+            }
 		}
     });
     
