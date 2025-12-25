@@ -680,13 +680,19 @@ function setupEditorLinkHoverPreview() {
 // Queue multiple URLs for sequential title suggestions
 function queueTitleSuggestions(pasteTarget, urls) {
     if (!urls || urls.length === 0) return;
+    console.log(`🔗 Queueing ${urls.length} URL(s) for title suggestions`);
     let currentIndex = 0;
     const processNext = () => {
-        if (currentIndex >= urls.length) return;
+        if (currentIndex >= urls.length) {
+            console.log('✅ All URLs in queue processed');
+            window.__kayakoNextUrlInQueue = null;
+            return;
+        }
         const url = urls[currentIndex];
+        console.log(`🔗 Processing URL ${currentIndex + 1}/${urls.length}: ${url}`);
         currentIndex++;
         // Set callback to process next URL after this one is handled
-        window.__kayakoNextUrlInQueue = processNext;
+        window.__kayakoNextUrlInQueue = currentIndex < urls.length ? processNext : null;
         trySuggestTitleReplace(pasteTarget, url, 1);
     };
     processNext();
