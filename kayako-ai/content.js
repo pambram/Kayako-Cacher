@@ -2207,7 +2207,7 @@ OUTPUT REQUIREMENTS:
 - Write a message TO THE CUSTOMER (not to the agent!)
 - Start with "Dear ${customerName || '[Customer Name]'},"
 - Professional, helpful tone
-- Only add signature if template doesn't already have one`;
+- DO NOT add a signature/closing (Best regards, Sincerely, Thanks, etc.) if the template ALREADY contains one like "Best regards, {{current_user.name}}" - just leave that part alone`;
       
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;

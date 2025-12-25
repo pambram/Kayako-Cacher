@@ -212,3 +212,4 @@ Potential improvements for future versions:
 - [ ] Configurable max results count
 - [ ] Parallel URL fetching optimization
 
+
