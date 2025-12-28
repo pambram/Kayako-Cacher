@@ -846,6 +846,7 @@ class KayakoAIEnhancer {
     }
   }
 
+
   setEditorText(editorElement, textData, newText) {
     // Normalize placeholders then restore links/images in the enhanced text
     const normalized = this.normalizePlaceholders(newText, textData.linkMap, textData.imgMap);
@@ -2190,6 +2191,16 @@ What investigation did CS carry out:`,
       const customerName = this.extractCustomerName();
       console.log('👤 Customer name:', customerName || '(not found)');
 
+      // Pass the template structure (up to Additional Context) so LLM can see any existing signature
+      let rawTemplate = '';
+      if (textData.hasTemplate) {
+        const fullText = textData.fullText || '';
+        // Truncate at "Additional Context" to avoid passing context twice
+        const contextIdx = fullText.search(/Additional\s*Context/i);
+        rawTemplate = contextIdx > 0 ? fullText.slice(0, contextIdx).trim() : fullText.slice(0, 1000);
+        console.log('📄 Template structure passed to LLM:', rawTemplate.slice(0, 200) + '...');
+      }
+
       // Enhanced prompt - let the model interpret user intent flexibly
       let enhancedPrompt = `YOU ARE A GHOSTWRITER. You write messages that will be sent FROM the support agent TO the customer.
 
@@ -2202,12 +2213,18 @@ WHAT THIS MEANS:
 - If the agent says "tell them Y" → Write to customer: "Dear Customer, Y..."
 - If the agent says "thanks" or "I relayed info" → Write to customer thanking THEM and confirming the action was taken on THEIR behalf
 ${customerName ? `\nCUSTOMER NAME: ${customerName}` : ''}
+${rawTemplate ? `
+TEMPLATE CURRENTLY IN EDITOR (for context):
+---
+${rawTemplate}
+---
+IMPORTANT: Look at this template. If it already contains a signature/closing (like "Best regards, {{current_user.name}}"), DO NOT add your own signature. Just write the message body and stop before any closing.` : ''}
 
 OUTPUT REQUIREMENTS:
 - Write a message TO THE CUSTOMER (not to the agent!)
 - Start with "Dear ${customerName || '[Customer Name]'},"
 - Professional, helpful tone
-- DO NOT add a signature/closing (Best regards, Sincerely, Thanks, etc.) if the template ALREADY contains one like "Best regards, {{current_user.name}}" - just leave that part alone`;
+- If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.`;
       
       // If there's existing text, include it as context
       let fullPrompt = enhancedPrompt;

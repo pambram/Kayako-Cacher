@@ -387,7 +387,7 @@ async function handleAnthropicChat(requestBody, sendResponse) {
       throw new Error('Anthropic API key is required');
     }
     
-    const model = requestBody?.model || 'claude-3-5-sonnet-latest';
+    const model = requestBody?.model || 'claude-sonnet-4-5';
     
     // Convert OpenAI-style messages to Anthropic format
     const messages = requestBody?.messages || [];
