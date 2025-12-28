@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Meet AI Transcriber - Settings</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🎥 Meet AI Transcriber</h1>
+      <p class="subtitle">Visual transcription for Google Meet</p>
+    </div>
+
+    <div class="settings">
+      <!-- Provider Selection -->
+      <div class="setting-group">
+        <label class="setting-label">
+          AI Provider
+          <span class="tooltip" title="Choose between OpenAI (GPT-4) or Anthropic (Claude)">ⓘ</span>
+        </label>
+        <select id="provider" class="setting-input">
+          <option value="anthropic">Anthropic Claude (Recommended)</option>
+          <option value="openai">OpenAI GPT-4</option>
+        </select>
+      </div>
+
+      <!-- API Keys -->
+      <div class="setting-group">
+        <label class="setting-label" for="openai-key">
+          OpenAI API Key
+          <span class="tooltip" title="Required if using OpenAI as provider">ⓘ</span>
+        </label>
+        <input 
+          type="password" 
+          id="openai-key" 
+          class="setting-input" 
+          placeholder="sk-..." 
+        />
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label" for="anthropic-key">
+          Anthropic API Key
+          <span class="tooltip" title="Required if using Anthropic as provider">ⓘ</span>
+        </label>
+        <input 
+          type="password" 
+          id="anthropic-key" 
+          class="setting-input" 
+          placeholder="sk-ant-..." 
+        />
+      </div>
+
+      <!-- Model Selection -->
+      <div class="setting-group">
+        <label class="setting-label">
+          Model
+          <span class="tooltip" title="AI model to use for analysis">ⓘ</span>
+        </label>
+        <select id="model" class="setting-input">
+          <!-- Anthropic models -->
+          <optgroup label="Anthropic" id="anthropic-models">
+            <option value="claude-haiku-4-5">Claude Haiku 4.5 (Recommended)</option>
+            <option value="claude-sonnet-4-5">Claude Sonnet 4.5 (Most Capable)</option>
+          </optgroup>
+          <!-- OpenAI models -->
+          <optgroup label="OpenAI" id="openai-models">
+            <option value="gpt-5-mini">GPT-5 Mini (Recommended)</option>
+            <option value="gpt-5.2">GPT-5.2 (Best Quality)</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <!-- Capture Settings -->
+      <div class="setting-group">
+        <label class="setting-label">
+          Capture Interval (seconds)
+          <span class="tooltip" title="How often to take screenshots">ⓘ</span>
+        </label>
+        <div class="slider-container">
+          <input 
+            type="range" 
+            id="capture-interval" 
+            class="slider" 
+            min="5" 
+            max="30" 
+            step="5" 
+            value="10"
+          />
+          <span class="slider-value" id="interval-value">10s</span>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">
+          Batch Size (screenshots)
+          <span class="tooltip" title="How many screenshots to analyze at once">ⓘ</span>
+        </label>
+        <div class="slider-container">
+          <input 
+            type="range" 
+            id="batch-size" 
+            class="slider" 
+            min="3" 
+            max="12" 
+            step="1" 
+            value="6"
+          />
+          <span class="slider-value" id="batch-value">6 (60s)</span>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">
+          Image Quality
+          <span class="tooltip" title="Lower quality = less bandwidth/storage">ⓘ</span>
+        </label>
+        <div class="slider-container">
+          <input 
+            type="range" 
+            id="image-quality" 
+            class="slider" 
+            min="0.1" 
+            max="1" 
+            step="0.1" 
+            value="0.5"
+          />
+          <span class="slider-value" id="quality-value">50%</span>
+        </div>
+      </div>
+
+      <!-- Technical Mode Toggle -->
+      <div class="setting-group">
+        <label class="setting-label">
+          🔬 Ultra-Technical Mode
+          <span class="tooltip" title="Extract EVERY technical detail with extreme precision (costs more tokens)">ⓘ</span>
+        </label>
+        <div class="toggle-container">
+          <label class="toggle-switch">
+            <input type="checkbox" id="technical-mode" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label" id="technical-mode-label">Enabled (Verbose)</span>
+        </div>
+        <p class="setting-help">
+          When enabled: Extracts exact commands, complete resource IDs, precise metrics, verbatim code/logs
+        </p>
+      </div>
+
+      <!-- Status -->
+      <div class="status-section">
+        <div id="status-message" class="status-message"></div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="button-group">
+        <button id="save-btn" class="btn btn-primary">
+          💾 Save Settings
+        </button>
+        <button id="reset-btn" class="btn btn-secondary">
+          🔄 Reset to Defaults
+        </button>
+      </div>
+
+      <!-- Info Section -->
+      <div class="info-section">
+        <h3>📖 How to Use</h3>
+        <ol>
+          <li>Configure your API key above</li>
+          <li>Join a Google Meet call</li>
+          <li>Click the floating control panel</li>
+          <li>Press "Start" to begin transcription</li>
+          <li>View live transcript in the panel</li>
+        </ol>
+        
+        <div class="warning">
+          <strong>⚠️ Privacy Note:</strong> Screenshots are processed by your chosen AI provider and then immediately deleted. No screenshots are stored permanently.
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Version 1.0.0 | Made with ❤️</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+
