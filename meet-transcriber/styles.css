@@ -287,6 +287,32 @@
   color: #6b7280;
 }
 
+/* Meta-summary styling */
+.meta-summary {
+  background: linear-gradient(135deg, #f0f4ff 0%, #e6f0ff 100%);
+  border: 2px solid #667eea;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 20px !important;
+}
+
+.meta-timestamp {
+  color: #667eea !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+}
+
+.meta-content {
+  color: #1f2937 !important;
+  font-weight: 500;
+  line-height: 1.7;
+}
+
+.meta-content strong {
+  color: #667eea;
+  font-weight: 700;
+}
+
 /* Notifications */
 .meet-notification {
   position: fixed;

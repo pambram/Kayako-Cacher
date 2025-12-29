@@ -10,6 +10,9 @@ class MeetTranscriber {
     this.transcriptionHistory = '';
     this.controlPanel = null;
     this.meetTabId = null; // Store the Meet tab ID
+    // Meta-analysis tracking
+    this.transcriptLog = []; // Store all transcripts with timestamps
+    this.batchCounter = 0; // Track number of batches processed
     this.init();
   }
 
@@ -226,9 +229,14 @@ class MeetTranscriber {
 
   async captureScreenshot() {
     try {
-      // Skip if already processing to avoid race conditions
+      // Skip if already processing OR buffer is full
       if (this.isProcessing) {
         console.log('⏭️ Skipping capture - batch processing in progress');
+        return;
+      }
+      
+      if (this.screenshotBuffer.length >= this.config.batchSize) {
+        console.log('⏭️ Skipping capture - batch is already full');
         return;
       }
       
@@ -240,6 +248,12 @@ class MeetTranscriber {
       });
       
       if (response.success) {
+        // Double-check buffer size again (race condition protection)
+        if (this.screenshotBuffer.length >= this.config.batchSize) {
+          console.log('⏭️ Buffer filled while capturing - discarding screenshot');
+          return;
+        }
+        
         const screenshot = {
           dataUrl: response.dataUrl,
           timestamp: new Date().toISOString()
@@ -250,15 +264,20 @@ class MeetTranscriber {
         
         console.log(`📸 Screenshot captured (${this.screenshotBuffer.length}/${this.config.batchSize})`);
         
-        // Process batch when we reach the batch size
-        if (this.screenshotBuffer.length >= this.config.batchSize && !this.isProcessing) {
-          await this.processScreenshots();
+        // Process batch when we reach the batch size (exactly, not >=)
+        if (this.screenshotBuffer.length === this.config.batchSize && !this.isProcessing) {
+          // Use setImmediate to avoid blocking
+          setTimeout(() => this.processScreenshots(), 0);
         }
       } else {
-        // Only log error if it's not a DevTools issue (which is expected)
-        if (!response.error.includes('devtools') && !response.error.includes('chrome://')) {
+        // Only log error if it's not an expected skip
+        if (!response.skipNotification && 
+            !response.error.includes('devtools') && 
+            !response.error.includes('chrome://') &&
+            !response.error.includes('not currently visible')) {
           console.error('Failed to capture screenshot:', response.error);
         }
+        // If Meet tab not visible, that's fine - we'll capture next time it is
       }
     } catch (error) {
       console.error('Error capturing screenshot:', error);
@@ -266,13 +285,19 @@ class MeetTranscriber {
   }
 
   async processScreenshots() {
-    if (this.screenshotBuffer.length === 0 || this.isProcessing) {
+    // Check if already processing or no screenshots
+    if (this.isProcessing) {
+      console.log('⚠️ Already processing - skipping duplicate call');
+      return;
+    }
+    
+    if (this.screenshotBuffer.length === 0) {
+      console.log('⚠️ No screenshots to process');
       return;
     }
     
     // Set processing flag FIRST to prevent concurrent processing
     this.isProcessing = true;
-    this.updateStatus('processing', 'Analyzing...');
     
     try {
       // Grab current buffer and clear it IMMEDIATELY to prevent duplicates
@@ -280,7 +305,8 @@ class MeetTranscriber {
       this.screenshotBuffer = [];
       this.updateScreenshotCount();
       
-      console.log(`🔄 Processing ${screenshots.length} screenshots...`);
+      this.updateStatus('processing', 'Analyzing...');
+      console.log(`🔄 Processing ${screenshots.length} screenshots... (batch #${this.batchCounter + 1})`);
       
       // Send to background for AI analysis
       const response = await chrome.runtime.sendMessage({
@@ -296,9 +322,26 @@ class MeetTranscriber {
         // Update history (keep last 2 batches for context)
         this.transcriptionHistory = response.transcription;
         
+        // Store in transcript log for meta-analysis
+        this.transcriptLog.push({
+          content: response.transcription,
+          timestamp: screenshots[0].timestamp,
+          batchNumber: this.batchCounter + 1
+        });
+        
+        this.batchCounter++;
         this.updateBatchCount();
         
-        console.log('✅ Screenshots analyzed successfully');
+        console.log(`✅ Batch #${this.batchCounter} analyzed successfully`);
+        
+        // Check if we should generate meta-summary
+        if (this.config.enableMetaAnalysis && 
+            this.batchCounter % this.config.metaAnalysisInterval === 0 &&
+            this.transcriptLog.length > 0) {
+          console.log(`📊 Triggering meta-summary (every ${this.config.metaAnalysisInterval} batches, batch #${this.batchCounter})`);
+          await this.generateMetaSummary();
+        }
+        
         this.updateStatus(this.isRecording ? 'recording' : 'idle', 
                          this.isRecording ? 'Recording...' : 'Ready');
       } else {
@@ -367,10 +410,70 @@ class MeetTranscriber {
     count.textContent = current + 1;
   }
 
+  async generateMetaSummary() {
+    try {
+      console.log('📊 Generating meta-summary...');
+      
+      // Get transcripts from the last N minutes
+      const timeWindowMs = this.config.metaAnalysisWindow * 60 * 1000;
+      const now = Date.now();
+      
+      const recentTranscripts = this.transcriptLog.filter(t => {
+        const tTime = new Date(t.timestamp).getTime();
+        return (now - tTime) <= timeWindowMs;
+      });
+      
+      if (recentTranscripts.length === 0) {
+        console.log('No recent transcripts to summarize');
+        return;
+      }
+      
+      const response = await chrome.runtime.sendMessage({
+        action: 'generateMetaSummary',
+        transcripts: recentTranscripts,
+        timeWindow: this.config.metaAnalysisWindow
+      });
+      
+      if (response.success) {
+        this.appendMetaSummary(response.summary);
+        console.log('✅ Meta-summary generated');
+      } else {
+        console.error('Meta-summary failed:', response.error);
+      }
+    } catch (error) {
+      console.error('Error generating meta-summary:', error);
+    }
+  }
+
+  appendMetaSummary(summary) {
+    const output = this.controlPanel.querySelector('#transcript-output');
+    const placeholder = output.querySelector('.placeholder');
+    
+    if (placeholder) {
+      placeholder.remove();
+    }
+    
+    const entry = document.createElement('div');
+    entry.className = 'transcript-entry meta-summary';
+    
+    const time = new Date().toLocaleTimeString();
+    entry.innerHTML = `
+      <div class="entry-timestamp meta-timestamp">📊 Summary Generated: ${time}</div>
+      <div class="entry-content meta-content">${this.formatMarkdown(summary)}</div>
+    `;
+    
+    output.appendChild(entry);
+    
+    // Auto-scroll to bottom
+    output.scrollTop = output.scrollHeight;
+  }
+
   clearTranscript() {
     const output = this.controlPanel.querySelector('#transcript-output');
     output.innerHTML = '<p class="placeholder">Start recording to see transcript...</p>';
     this.transcriptionHistory = '';
+    this.transcriptLog = [];
+    this.batchCounter = 0;
     
     // Reset batch count
     this.controlPanel.querySelector('#batch-count').textContent = '0';

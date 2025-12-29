@@ -21,10 +21,14 @@ async function loadSettings() {
       document.getElementById('batch-size').value = config.batchSize || 6;
       document.getElementById('image-quality').value = config.imageQuality || 0.5;
       document.getElementById('technical-mode').checked = config.technicalMode !== false;
+      document.getElementById('meta-analysis-enabled').checked = config.enableMetaAnalysis !== false;
+      document.getElementById('meta-interval').value = config.metaAnalysisInterval || 5;
+      document.getElementById('meta-window').value = config.metaAnalysisWindow || 5;
       
       // Update slider displays
       updateSliderDisplays();
       updateTechnicalModeLabel();
+      updateMetaLabel();
       
       // Update model options based on provider
       updateModelOptions(config.provider);
@@ -49,6 +53,11 @@ function setupEventListeners() {
   // Technical mode toggle
   document.getElementById('technical-mode').addEventListener('change', updateTechnicalModeLabel);
   
+  // Meta-analysis controls
+  document.getElementById('meta-analysis-enabled').addEventListener('change', updateMetaLabel);
+  document.getElementById('meta-interval').addEventListener('input', updateSliderDisplays);
+  document.getElementById('meta-window').addEventListener('input', updateSliderDisplays);
+  
   // Buttons
   document.getElementById('save-btn').addEventListener('click', saveSettings);
   document.getElementById('reset-btn').addEventListener('click', resetSettings);
@@ -58,6 +67,8 @@ function updateSliderDisplays() {
   const interval = document.getElementById('capture-interval').value;
   const batchSize = document.getElementById('batch-size').value;
   const quality = document.getElementById('image-quality').value;
+  const metaInterval = document.getElementById('meta-interval').value;
+  const metaWindow = document.getElementById('meta-window').value;
   
   document.getElementById('interval-value').textContent = `${interval}s`;
   
@@ -65,12 +76,21 @@ function updateSliderDisplays() {
   document.getElementById('batch-value').textContent = `${batchSize} (${totalTime}s)`;
   
   document.getElementById('quality-value').textContent = `${Math.round(quality * 100)}%`;
+  
+  document.getElementById('meta-interval-value').textContent = `Every ${metaInterval} batches`;
+  document.getElementById('meta-window-value').textContent = `${metaWindow} minutes`;
 }
 
 function updateTechnicalModeLabel() {
   const isEnabled = document.getElementById('technical-mode').checked;
   const label = document.getElementById('technical-mode-label');
   label.textContent = isEnabled ? 'Enabled (Verbose)' : 'Disabled (Standard)';
+}
+
+function updateMetaLabel() {
+  const isEnabled = document.getElementById('meta-analysis-enabled').checked;
+  const label = document.getElementById('meta-label');
+  label.textContent = isEnabled ? 'Enabled' : 'Disabled';
 }
 
 function updateModelOptions(provider) {
@@ -112,7 +132,10 @@ async function saveSettings() {
       imageFormat: 'jpeg',
       enabled: true,
       technicalMode: document.getElementById('technical-mode').checked,
-      maxTokens: 4000
+      maxTokens: 4000,
+      enableMetaAnalysis: document.getElementById('meta-analysis-enabled').checked,
+      metaAnalysisInterval: parseInt(document.getElementById('meta-interval').value),
+      metaAnalysisWindow: parseInt(document.getElementById('meta-window').value)
     };
     
     // Validate that at least one API key is provided

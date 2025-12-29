@@ -11,7 +11,11 @@ const DEFAULT_CONFIG = {
   imageQuality: 0.5, // JPEG quality (0-1)
   imageFormat: 'jpeg', // 'jpeg' or 'webp'
   technicalMode: true, // Ultra-verbose technical documentation mode
-  maxTokens: 4000 // Increased from 2000 for more detailed output
+  maxTokens: 4000, // Increased from 2000 for more detailed output
+  // Meta-analysis settings
+  enableMetaAnalysis: true, // Enable periodic summary generation
+  metaAnalysisInterval: 5, // Generate summary every N batches
+  metaAnalysisWindow: 5 // Minutes of transcript to analyze
 };
 
 // Initialize extension on install
@@ -58,6 +62,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     case 'captureTab':
       handleCaptureTab(request.tabId, sendResponse);
+      return true;
+    
+    case 'generateMetaSummary':
+      handleGenerateMetaSummary(request.transcripts, request.timeWindow, sendResponse);
       return true;
       
     default:
@@ -120,14 +128,18 @@ async function handleCaptureTab(tabId, sendResponse) {
     // Get the first Meet tab (or the one that's active if multiple)
     const meetTab = tabs.find(t => t.active) || tabs[0];
     
-    // If Meet tab is not active, temporarily activate it
+    // ONLY capture if Meet tab is already active/visible
+    // DO NOT switch tabs automatically
     if (!meetTab.active) {
-      await chrome.tabs.update(meetTab.id, { active: true });
-      // Small delay to ensure tab is rendered
-      await new Promise(resolve => setTimeout(resolve, 100));
+      sendResponse({ 
+        success: false, 
+        error: 'Meet tab not currently visible - skipping capture',
+        skipNotification: true // Don't show error to user
+      });
+      return;
     }
     
-    // Capture the Meet tab
+    // Capture the currently active Meet tab (no tab switching)
     const dataUrl = await chrome.tabs.captureVisibleTab(meetTab.windowId, {
       format: 'jpeg',
       quality: 50
@@ -178,17 +190,26 @@ async function analyzeWithAnthropic(screenshots, previousContext, config) {
   
   // Build system prompt based on technical mode
   const systemPrompt = config.technicalMode ? 
-    `You are a highly detail-oriented technical documentation AI analyzing screenshots from a Google Meet call where engineers are doing infrastructure work, debugging, deployments, or technical discussions.
+    `You are analyzing screenshots from a Google Meet call to document technical work.
 
-YOUR MISSION: Extract EVERY visible technical detail with extreme precision. Be obsessive about:
+CRITICAL RULES:
+- IGNORE the AI Transcriber panel itself (the purple panel on the right) - DO NOT document it
+- ONLY document the actual screen content being shared/viewed
+- If nothing technical is visible, respond with "No significant technical activity visible"
+- Be FACTUAL - no speculation, no narrative, no severity assessments
+- Extract visible text, commands, metrics EXACTLY as shown
+
+YOUR MISSION: Extract technical details with precision:
 
 **TEXT EXTRACTION (OCR Focus):**
-- Read ALL visible text in terminals, dashboards, browsers, IDEs
-- Extract complete command lines, not summaries (e.g., "aws logs tail /aws/lambda/payment-processor --follow --filter-pattern ERROR")
+- IGNORE the AI Transcriber UI panel - focus on actual work being shown
+- Read visible text in terminals, dashboards, browsers, IDEs
+- Extract complete command lines verbatim
 - Capture exact error messages word-for-word
 - Read metric values, timestamps, percentages exactly as shown
-- Extract URLs, file paths, and hostnames completely
-- Note any visible JSON, YAML, code snippets verbatim
+- Extract URLs, file paths, hostnames completely
+- Note visible JSON, YAML, code snippets verbatim
+- If screen is mostly just Google Meet participant tiles, say "No screen share visible"
 
 **TOOLS & APPLICATIONS:**
 - Identify every visible application/tool/dashboard
@@ -243,6 +264,13 @@ YOUR MISSION: Extract EVERY visible technical detail with extreme precision. Be 
 - Action items decided
 - Runbooks or documentation referenced
 
+STRICT RULES:
+- DO NOT document the AI Transcriber panel (purple panel with "Recording", "Screenshots", "Batches")
+- DO NOT make up narratives about "critical incidents" or "escalations"
+- DO NOT speculate about severity or impact
+- ONLY report what is literally visible on screen
+- If nothing interesting is visible, say "No significant technical activity"
+
 Be EXTREMELY LITERAL - if you see "Error rate: 15.7%" write exactly that, not "error rate increased".
 If you see a command, write it EXACTLY: \`aws ec2 describe-instances --region us-east-1 --instance-ids i-1234567890abcdef0\`
 
@@ -275,9 +303,15 @@ Format your response as:
 
 **📝 Summary:**
 [Concise technical summary of the work being performed]`
-    : `You are analyzing screenshots from a technical Google Meet call to document infrastructure work, debugging sessions, and technical activities.
+    : `You are analyzing screenshots from a Google Meet call to document technical work.
 
-FOCUS ON TECHNICAL DETAILS:
+STRICT RULES:
+- IGNORE the AI Transcriber panel (purple/blue panel on screen) - DO NOT document it
+- ONLY document actual work being shown (terminals, dashboards, code, browsers)
+- If nothing technical is visible, say "No significant technical activity visible"
+- Be factual - no speculation or narratives
+
+FOCUS ON:
 1. **Tools & Applications**: Identify ALL visible tools, dashboards, terminals, IDEs, browsers
    - Which AWS Console pages (EC2, RDS, CloudWatch, Lambda, etc.)
    - Which monitoring tools (Datadog, Grafana, New Relic, PagerDuty, etc.)
@@ -524,5 +558,110 @@ Format your response as:
     provider: 'openai',
     model: data.model
   };
+}
+
+// Generate meta-analysis summary from recent transcripts
+async function handleGenerateMetaSummary(transcripts, timeWindow, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['meetTranscriberConfig']);
+    const config = result.meetTranscriberConfig || DEFAULT_CONFIG;
+    
+    if (!config.enableMetaAnalysis) {
+      sendResponse({ success: false, error: 'Meta-analysis is disabled' });
+      return;
+    }
+    
+    console.log(`📊 Generating meta-summary for ${transcripts.length} transcripts (${timeWindow}min window)`);
+    
+    const metaPrompt = `You are summarizing technical meeting activity from recent transcript logs.
+
+TIME WINDOW: Last ${timeWindow} minutes
+
+STRICT RULES:
+- IGNORE anything about "AI Transcriber", "Batches", "Screenshots", "Recording status"
+- ONLY extract actual technical work performed
+- If nothing technical happened, say "No significant technical activity in this window"
+- Be FACTUAL - no speculation, no severity assessments, no narratives
+
+EXTRACT:
+- Commands executed (verbatim)
+- Metrics/values observed (exact numbers)
+- Resources accessed (AWS accounts, services, specific IDs)
+- Errors/logs investigated (actual error messages)
+- Changes made (deployments, configs, etc.)
+- Findings from investigations (what was discovered)
+
+FORMAT:
+**Last ${timeWindow} Minutes**
+
+🔧 **Actions & Findings:**
+• [HH:MM] - [Factual observation with specific details]
+• [HH:MM] - [Command/metric/resource/error - be specific]
+
+If nothing technical: "No significant technical activity in this window"
+
+Recent Transcripts:
+${transcripts.map((t, i) => `\n--- Batch ${i + 1} (${new Date(t.timestamp).toLocaleTimeString()}) ---\n${t.content}`).join('\n\n')}`;
+
+    let summary;
+    
+    if (config.provider === 'anthropic' && config.anthropicKey) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': config.anthropicKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: config.model || 'claude-haiku-4-5',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: metaPrompt
+          }]
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Anthropic API error: HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      summary = data.content?.[0]?.text || '';
+    } else if (config.provider === 'openai' && config.openaiKey) {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.openaiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.model || 'gpt-4o',
+          messages: [{
+            role: 'user',
+            content: metaPrompt
+          }],
+          max_completion_tokens: 2000
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`OpenAI API error: HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      summary = data.choices?.[0]?.message?.content || '';
+    } else {
+      throw new Error('No API key configured');
+    }
+    
+    console.log('✅ Meta-summary generated');
+    sendResponse({ success: true, summary });
+  } catch (error) {
+    console.error('❌ Error generating meta-summary:', error);
+    sendResponse({ success: false, error: error.message });
+  }
 }
 

@@ -149,6 +149,62 @@
         </p>
       </div>
 
+      <!-- Meta-Analysis Section -->
+      <div class="setting-group">
+        <label class="setting-label">
+          📊 Auto-Summary Generation
+          <span class="tooltip" title="Periodically generate executive summaries from live transcript">ⓘ</span>
+        </label>
+        <div class="toggle-container">
+          <label class="toggle-switch">
+            <input type="checkbox" id="meta-analysis-enabled" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label" id="meta-label">Enabled</span>
+        </div>
+        <p class="setting-help">
+          Automatically generates bullet-point summaries of recent activity
+        </p>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">
+          Summary Frequency
+          <span class="tooltip" title="Generate summary every N batches">ⓘ</span>
+        </label>
+        <div class="slider-container">
+          <input 
+            type="range" 
+            id="meta-interval" 
+            class="slider" 
+            min="3" 
+            max="10" 
+            step="1" 
+            value="5"
+          />
+          <span class="slider-value" id="meta-interval-value">Every 5 batches</span>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">
+          Summary Time Window
+          <span class="tooltip" title="How many minutes of transcript to include in summary">ⓘ</span>
+        </label>
+        <div class="slider-container">
+          <input 
+            type="range" 
+            id="meta-window" 
+            class="slider" 
+            min="3" 
+            max="15" 
+            step="1" 
+            value="5"
+          />
+          <span class="slider-value" id="meta-window-value">5 minutes</span>
+        </div>
+      </div>
+
       <!-- Status -->
       <div class="status-section">
         <div id="status-message" class="status-message"></div>
