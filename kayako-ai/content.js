@@ -2334,24 +2334,31 @@ OUTPUT REQUIREMENTS:
         
         // Append the template to the user's prompt so the AI fills it in
         if (escalationTemplate.template) {
-          userPromptWithTemplate = `${customPrompt}
+          userPromptWithTemplate = `CRITICAL INSTRUCTION - READ CAREFULLY:
 
-IMPORTANT: Fill in the following escalation template exactly as shown. Do NOT add extra sections, headers, or preambles.
+You are writing an INTERNAL ESCALATION NOTE to another team (${escalationTemplate.name}), NOT a customer response.
+DO NOT write "Dear [name]" or any customer-facing letter. This is an INTERNAL note for colleagues.
+
+User request: ${customPrompt}
+
+Fill in the escalation template below with information from the ticket context.
 
 FORMAT REQUIREMENTS:
-- Use HTML only, NOT Markdown. Use <strong>field name:</strong> for bold labels (NOT **bold**)
+- Use HTML only, NOT Markdown. Use <strong>field name:</strong> for bold labels
 - Each field must be on its own line - use <br> tags between lines
 - Keep the exact field names from the template
-- Fill in the values based on the ticket context
+- Fill in values based on ticket context; use "N/A" or "[to be determined]" for unknown fields
 
 --- TEMPLATE TO FILL ---
 ${escalationTemplate.template}
 --- END TEMPLATE ---
 
-Return ONLY the filled-in HTML template. Example format:
-<strong>Proposed Team:</strong> [value]<br>
-<strong>Affected students:</strong> [value]<br>
-...and so on for each field.`;
+Return ONLY the filled-in template. Example:
+<strong>Proposed Team:</strong> ${escalationTemplate.name}<br>
+<strong>Affected students:</strong> [value from context]<br>
+...continue for each field.
+
+DO NOT write a customer letter. DO NOT start with "Dear". This is internal documentation.`;
           console.log('📋 Template appended to prompt for AI to fill in');
         }
       }
