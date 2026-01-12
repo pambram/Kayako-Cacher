@@ -1098,7 +1098,17 @@ class KayakoAIEnhancer {
         // Extract URLs from the classification result
         const urlMatch = result.match(/URL_FETCH[:\s]+(.+)/i);
         const urlsString = urlMatch ? urlMatch[1] : '';
-        const urls = urlsString.split(',').map(u => u.trim()).filter(u => u.length > 0);
+        // Normalize URLs: lowercase the protocol and hostname, preserve path case
+        const urls = urlsString.split(',').map(u => {
+          const trimmed = u.trim();
+          try {
+            const parsed = new URL(trimmed);
+            // Reconstruct with lowercase protocol and hostname
+            return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${parsed.pathname}${parsed.search}${parsed.hash}`;
+          } catch {
+            return trimmed.toLowerCase(); // Fallback to simple lowercase
+          }
+        }).filter(u => u.length > 0 && u.startsWith('http'));
         console.log(`🏷️ Intent: URL_FETCH (${urls.length} URLs)`);
         return { intent: 'url_fetch', isEscalation: false, templateId: null, urls };
       } else {
@@ -2202,34 +2212,59 @@ What investigation did CS carry out:`,
       }
 
       // Enhanced prompt - let the model interpret user intent flexibly
-      let enhancedPrompt = `YOU ARE A GHOSTWRITER. You write messages that will be sent FROM the support agent TO the customer.
+      let enhancedPrompt = `YOU ARE A GHOSTWRITER. You write messages that will be sent FROM the support agent TO the TICKET REQUESTER.
 
-The support agent is giving you instructions about what to write. Your output will be SENT TO THE CUSTOMER, not to the agent.
+The support agent is giving you instructions about what to write. Your output will be SENT TO THE TICKET REQUESTER (the person who submitted the support ticket), not to the agent.
 
 AGENT'S INSTRUCTION: "${customPrompt}"
 
+CRITICAL DISTINCTION - WHO TO ADDRESS:
+${customerName ? `TICKET REQUESTER (address your message to THIS person): ${customerName}` : 'TICKET REQUESTER: The person who submitted this support ticket (use their name from the ticket header)'}
+
+⚠️ WARNING: The ticket content may mention OTHER PEOPLE (students, users, employees being discussed). DO NOT confuse them with the ticket requester!
+- Example: If Maryann submits a ticket about "Yaretzi's audio issue" → Address your message to Maryann, talk ABOUT Yaretzi as a third party.
+- The ticket requester is often a parent, teacher, or manager reporting an issue about someone else.
+- When referring to the person being helped (not the requester), use third-person: "their", "the student", "the user", etc.
+
 WHAT THIS MEANS:
-- If the agent says "I did X" → Write to customer: "We have done X for you..."
-- If the agent says "tell them Y" → Write to customer: "Dear Customer, Y..."
-- If the agent says "thanks" or "I relayed info" → Write to customer thanking THEM and confirming the action was taken on THEIR behalf
-${customerName ? `\nCUSTOMER NAME: ${customerName}` : ''}
+- If the agent says "I did X" → Write to requester: "We have done X for [student/user]..."
+- If the agent says "tell them Y" → Write to requester: "Dear [Requester Name], Y..."
+- If the agent says "respond about the student" → Write to requester ABOUT the student
 ${rawTemplate ? `
 TEMPLATE CURRENTLY IN EDITOR (for context):
 ---
 ${rawTemplate}
 ---
-IMPORTANT: Look at this template. If it already contains a signature/closing (like "Best regards, {{current_user.name}}"), DO NOT add your own signature. Just write the message body and stop before any closing.` : ''}
+CRITICAL - SIGNATURE HANDLING:
+The template above contains a signature block with "Best regards" and "{{current_user.name}}" template variables. These ARE the signature - they will be filled in automatically.
+DO NOT add ANY signature, closing, or sign-off to your response. Just write the message body and STOP before "Best regards" or any closing.
+Your response will be inserted BEFORE the existing signature in the template.` : ''}
 
 OUTPUT REQUIREMENTS:
-- Write a message TO THE CUSTOMER (not to the agent!)
-- Start with "Dear ${customerName || '[Customer Name]'},"
+- Write a message TO THE TICKET REQUESTER (${customerName || 'from the ticket header'})
+- Start with "Dear ${customerName || '[Requester Name]'},"
+- When discussing other people mentioned in the ticket, use third-person (their, the student, etc.)
 - Professional, helpful tone
-- If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.`;
+- If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.
+- DO NOT add any signature or closing (no "Best regards", no name sign-off) - the template already has one.`;
       
-      // If there's existing text, include it as context
+      // If there's existing text, include it as context - AGENT NOTES ARE PRIMARY SOURCE OF TRUTH
       let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${enhancedPrompt}\n\n[AGENT WORK NOTES - FOR CONTEXT ONLY]\nThese are the agent's private investigation notes and questions to themselves while researching this ticket. They are NOT messages from the customer. Do NOT address or answer these notes. Use them only as background information about what the agent has already investigated.\n\n${contextText}\n\n[END AGENT NOTES]`;
+        fullPrompt = `${enhancedPrompt}\n\n[AGENT WORK NOTES - PRIMARY SOURCE OF TRUTH]
+These are the agent's current notes about this ticket. They represent THE CURRENT STATE and what to communicate.
+
+CRITICAL: If these notes indicate a status (e.g., "resolved", "fixed", "completed", "issue closed"), that IS the current state to communicate to the customer. The agent's notes OVERRIDE any conflicting information from the historical timeline.
+
+Examples:
+- If agent notes say "Issue resolved" → communicate resolution to customer
+- If agent notes say "waiting for X" → communicate we're waiting
+- If agent notes contain a link → that link is evidence/reference to include
+
+Agent's notes:
+${contextText}
+
+[END AGENT NOTES]`;
       }
 
       // Get ticket context if enabled
@@ -2253,10 +2288,18 @@ OUTPUT REQUIREMENTS:
         }
       }
       
-      // Collect timeline images (from previous messages) and merge with editor images
-      const timelineImageDataUrls = await this.collectTimelineImagesAsDataUrls(timelineImages, 5);
-      const allContextImages = [...contextImages, ...timelineImageDataUrls];
-      console.log(`🖼️ Total images for AI: ${allContextImages.length} (${contextImages.length} from editor, ${timelineImageDataUrls.length} from timeline)`);
+      // Collect timeline images (from previous messages) - keep separate from editor images
+      const timelineImageResults = await this.collectTimelineImagesAsDataUrls(timelineImages, 5);
+      // Pass images as labeled objects so AI knows which are agent's vs timeline's
+      const labeledImages = [
+        ...contextImages.map((url, i) => ({ url, label: `AGENT'S SCREENSHOT ${i + 1} (from your investigation notes)` })),
+        ...timelineImageResults.map((img, i) => {
+          const typeLabel = img.isNote ? 'agent note' : 'public message';
+          const timeLabel = img.time ? ` at ${img.time}` : '';
+          return { url: img.url, label: `TIMELINE IMAGE ${i + 1} from ${img.author}${timeLabel} (${typeLabel})` };
+        })
+      ];
+      console.log(`🖼️ Total images for AI: ${labeledImages.length} (${contextImages.length} from editor, ${timelineImageResults.length} from timeline)`);
 
       // Append formatting guidance for limited HTML output and placeholders
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
@@ -2269,6 +2312,8 @@ OUTPUT REQUIREMENTS:
       let escalationTemplate = null;
       let userPromptWithTemplate = customPrompt;
       let prefetchedContext = '';
+      // Track which tools were used for UI indication
+      let toolsUsed = { urlFetch: false, webSearch: false, urlsFetched: [], searchQuery: '' };
       
       const classification = await this.classifyPromptAsEscalation(customPrompt);
       const intent = classification.intent || 'customer';
@@ -2301,6 +2346,8 @@ OUTPUT REQUIREMENTS:
         if (prefetchedContext.trim()) {
           fullPrompt += `\n\nAdditional context from URLs:\n${prefetchedContext}`;
           console.log(`✅ Added ${prefetchedContext.length} characters from URL fetch to context`);
+          toolsUsed.urlFetch = true;
+          toolsUsed.urlsFetched = classification.urls;
         }
       }
       
@@ -2324,6 +2371,8 @@ OUTPUT REQUIREMENTS:
         if (searchResult.trim()) {
           fullPrompt += `\n\nWeb search results:\n${searchResult}`;
           console.log(`✅ Added ${searchResult.length} characters from web search to context`);
+          toolsUsed.webSearch = true;
+          toolsUsed.searchQuery = customPrompt;
         }
       }
       
@@ -2360,7 +2409,21 @@ Return ONLY the filled-in template. Example:
 
 DO NOT write a customer letter. DO NOT start with "Dear". This is internal documentation.`;
           console.log('📋 Template appended to prompt for AI to fill in');
+          
+          // CRITICAL: Replace the customer-facing fullPrompt with an escalation-appropriate system prompt
+          // This prevents conflicting instructions (customer vs escalation)
+          fullPrompt = `You are helping a support agent fill out an internal escalation template.
+This is NOT a customer-facing message. This is an INTERNAL document for colleagues on another team.
+
+The agent has context about the ticket in their notes below. Use this information to fill out the template fields.
+
+${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''}`;
         }
+      }
+      
+      // Add ticket context to the escalation prompt if available
+      if (isEscalation && ticketContextText) {
+        fullPrompt += `[TICKET BACKGROUND - use for template fields]\n${ticketContextText}\n`;
       }
 
       // Debug visibility: log the assembled prompt and context summary
@@ -2369,8 +2432,8 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
           intent: intent,
           usingTicketContext: !!ticketContextText,
           editorImages: contextImages.length,
-          timelineImages: timelineImageDataUrls.length,
-          totalImages: allContextImages.length,
+          timelineImages: timelineImageResults.length,
+          totalImages: labeledImages.length,
           isEscalation: isEscalation,
           templateUsed: escalationTemplate?.name || 'none',
           prefetchedContext: prefetchedContext.length > 0,
@@ -2380,12 +2443,12 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
       } catch (_) {}
 
       // Send the user's prompt (possibly with template appended) as the primary instruction
-      let generatedText = await this.callAI(userPromptWithTemplate, fullPrompt, ticketContextText, allContextImages);
+      let generatedText = await this.callAI(userPromptWithTemplate, fullPrompt, ticketContextText, labeledImages);
       
       // If empty and we had images, retry with fewer images (token limit mitigation)
-      if ((!generatedText || generatedText.trim().length === 0) && allContextImages.length > 0) {
-        console.warn(`⚠️ Empty response with ${allContextImages.length} images; retrying with reduced images`);
-        const reducedImages = allContextImages.slice(0, Math.max(1, Math.floor(allContextImages.length / 2)));
+      if ((!generatedText || generatedText.trim().length === 0) && labeledImages.length > 0) {
+        console.warn(`⚠️ Empty response with ${labeledImages.length} images; retrying with reduced images`);
+        const reducedImages = labeledImages.slice(0, Math.max(1, Math.floor(labeledImages.length / 2)));
         generatedText = await this.callAI(userPromptWithTemplate, fullPrompt, ticketContextText, reducedImages);
       }
       
@@ -2405,7 +2468,7 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
         
         // For custom prompts, show preview with option to replace or append
         // Pass isEscalation flag and template info to determine which section to target
-        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, currentResponseText, isEscalation, escalationTemplate);
+        this.showCustomWritePreview(editorElement, textData, cleanGeneratedText, customPrompt, currentResponseText, isEscalation, escalationTemplate, toolsUsed);
       } else {
         this.showNotification('❌ No content was generated', 'error');
       }
@@ -2419,7 +2482,7 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
     }
   }
 
-  showCustomWritePreview(editorElement, originalTextData, generatedText, customPrompt, existingText, isEscalation = false, escalationTemplate = null) {
+  showCustomWritePreview(editorElement, originalTextData, generatedText, customPrompt, existingText, isEscalation = false, escalationTemplate = null, toolsUsed = {}) {
     // Remove any existing preview
     const existingPreview = document.querySelector('.kayako-ai-preview');
     if (existingPreview) {
@@ -2436,10 +2499,21 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
     const sectionBadge = originalTextData.hasTemplate 
       ? `<span class="ai-section-badge ${isEscalation ? 'escalation' : 'pr'}">${isEscalation ? `📋 → ${templateName}` : '💬 → PR Section'}</span>` 
       : '';
+    
+    // Build tool usage badges
+    let toolBadges = '';
+    if (toolsUsed.urlFetch && toolsUsed.urlsFetched?.length > 0) {
+      const urlCount = toolsUsed.urlsFetched.length;
+      const urlList = toolsUsed.urlsFetched.map(u => new URL(u).hostname).join(', ');
+      toolBadges += `<span class="ai-tool-badge url-fetch" title="Fetched: ${urlList}">🔗 ${urlCount} URL${urlCount > 1 ? 's' : ''} fetched</span>`;
+    }
+    if (toolsUsed.webSearch) {
+      toolBadges += `<span class="ai-tool-badge web-search" title="Web search performed">🔍 Web search</span>`;
+    }
 
     preview.innerHTML = `
       <div class="ai-preview-header">
-        <span class="ai-preview-title">✍️ Generated Content ${sectionBadge}</span>
+        <span class="ai-preview-title">✍️ Generated Content ${sectionBadge}${toolBadges}</span>
         <button class="ai-preview-close" type="button">×</button>
       </div>
       <div class="ai-preview-content">
@@ -2831,12 +2905,17 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
             const images = contentElement.querySelectorAll('img');
             if (images.length > 0) {
               hasImages = true;
+              // Get time for this message to include with images
+              const timeElement = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+              const msgTime = timeElement ? timeElement.textContent.trim() : '';
               images.forEach((img, imgIdx) => {
                 const src = img.getAttribute('src');
                 if (src) {
                   timelineImages.push({
                     src,
                     author,
+                    time: msgTime,
+                    isNote,
                     messageIndex: index,
                     imgIndex: imgIdx
                   });
@@ -2901,19 +2980,17 @@ DO NOT write a customer letter. DO NOT start with "Dear". This is internal docum
         return `${label} ${typeLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
       }).join('\n\n');
 
-      const text = `[TICKET CONVERSATION - ${messages.length} messages, CHRONOLOGICAL ORDER]
+      const text = `[TICKET CONVERSATION - HISTORICAL BACKGROUND]
+This is the ticket history (${messages.length} messages). Use this for BACKGROUND CONTEXT only.
+⚠️ IMPORTANT: If AGENT WORK NOTES indicate a different current state (e.g., "resolved", "fixed"), the agent notes are CORRECT and this history may be outdated.
 
-=== CURRENT STATE - FOCUS HERE ===
-These are the MOST RECENT messages. Your response should address THIS state of the conversation:
-
+=== MOST RECENT MESSAGES (for tone/context) ===
 ${currentExchangeLines}
 
-=== FULL HISTORY (oldest → newest, for background only) ===
+=== FULL HISTORY (oldest → newest) ===
 ${numberedMessages.join('\n\n')}
 
-[END TICKET CONTEXT]
-
----
+[END TICKET HISTORY]
 
 `;
       
@@ -2924,7 +3001,7 @@ ${numberedMessages.join('\n\n')}
     }
   }
   
-  // Convert timeline image URLs to data URLs for API consumption
+  // Convert timeline image URLs to data URLs for API consumption, preserving metadata
   async collectTimelineImagesAsDataUrls(timelineImages, maxImages = 5) {
     if (!timelineImages || timelineImages.length === 0) return [];
     
@@ -2932,7 +3009,7 @@ ${numberedMessages.join('\n\n')}
     const sortedImages = [...timelineImages].reverse().slice(0, maxImages);
     console.log(`🖼️ Processing ${sortedImages.length} timeline images (from ${timelineImages.length} total)`);
     
-    const dataUrls = [];
+    const results = [];
     for (const imgInfo of sortedImages) {
       try {
         const src = imgInfo.src;
@@ -2953,43 +3030,75 @@ ${numberedMessages.join('\n\n')}
         
         if (typeof dataUrl === 'string') {
           const compressed = await this.compressImageDataUrl(dataUrl);
-          dataUrls.push(compressed);
-          console.log(`🖼️ Timeline image from ${imgInfo.author}: ${Math.round(dataUrl.length/1024)}KB → ${Math.round(compressed.length/1024)}KB`);
+          // Return object with URL and metadata for labeling
+          results.push({
+            url: compressed,
+            author: imgInfo.author,
+            time: imgInfo.time || '',
+            isNote: imgInfo.isNote || false
+          });
+          console.log(`🖼️ Timeline image from ${imgInfo.author}${imgInfo.time ? ` (${imgInfo.time})` : ''}: ${Math.round(dataUrl.length/1024)}KB → ${Math.round(compressed.length/1024)}KB`);
         }
       } catch (e) {
         console.warn(`⚠️ Could not fetch timeline image from ${imgInfo.author}:`, e?.message || e);
       }
     }
     
-    console.log(`🖼️ Total timeline images loaded: ${dataUrls.length}`);
-    return dataUrls;
+    console.log(`🖼️ Total timeline images loaded: ${results.length}`);
+    return results;
   }
 
   // Extract customer name from the Kayako ticket page
   extractCustomerName() {
     try {
-      // Try requester name in sidebar (most reliable)
-      const requesterEl = document.querySelector('.ko-info-bar_requester-field-value_1p5g6r, [data-test="requester-name"], .ko-sidebar_requester__name_1irhz3');
-      if (requesterEl) {
-        const name = requesterEl.textContent?.trim();
-        if (name && !name.includes('@')) return name; // Not an email
+      // Try requester name in sidebar (most reliable) - multiple possible class patterns
+      const sidebarSelectors = [
+        '.ko-info-bar_requester-field-value_1p5g6r',
+        '[data-test="requester-name"]',
+        '.ko-sidebar_requester__name_1irhz3',
+        '[class*="requester-field-value"]',
+        '[class*="requester__name"]'
+      ];
+      for (const sel of sidebarSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const name = el.textContent?.trim();
+          if (name && !name.includes('@') && name.length > 1) return name;
+        }
       }
       
-      // Try ticket header area
-      const headerEl = document.querySelector('.ko-conversation-timeline_header_creator_1oksrd, .ko-ticket-header__requester-name');
-      if (headerEl) {
-        const name = headerEl.textContent?.trim();
-        if (name && !name.includes('@')) return name;
+      // Try ticket header area with more selectors
+      const headerSelectors = [
+        '.ko-conversation-timeline_header_creator_1oksrd',
+        '.ko-ticket-header__requester-name',
+        '[class*="header_creator"]',
+        '[class*="conversation-header"] [class*="creator"]',
+        '.ko-conversation-timeline_header_1oksrd [class*="creator"]'
+      ];
+      for (const sel of headerSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const name = el.textContent?.trim();
+          if (name && !name.includes('@') && name.length > 1) return name;
+        }
       }
       
-      // Try the first message author if it looks like a customer (not system/agent)
-      const firstMsgAuthor = document.querySelector('.message-or-note:first-child .ko-timeline-2_list_item__creator_1oksrd');
-      if (firstMsgAuthor) {
-        const name = firstMsgAuthor.textContent?.trim();
-        // Exclude common system/agent names
-        if (name && !name.includes('@') && !['Log Agent', 'ATLAS', 'System'].includes(name)) {
+      // Try the first PUBLIC message (not agent note) author
+      const publicMessages = document.querySelectorAll('.message-or-note:not([class*="note"]) [class*="creator"], [class*="timeline"] [class*="item"]:not([class*="note"]) [class*="creator"]');
+      for (const el of publicMessages) {
+        const name = el.textContent?.trim();
+        // Exclude common system/agent names and short strings
+        if (name && !name.includes('@') && name.length > 2 && 
+            !['Log Agent', 'ATLAS', 'System', 'Centralsupport-ai-acc', 'Kayako'].some(exc => name.includes(exc))) {
           return name;
         }
+      }
+      
+      // Last resort: look for any element that looks like it contains a name in the ticket info area
+      const infoAreaName = document.querySelector('[class*="info-bar"] [class*="value"]:first-of-type, [class*="sidebar"] [class*="requester"]');
+      if (infoAreaName) {
+        const name = infoAreaName.textContent?.trim();
+        if (name && !name.includes('@') && name.length > 1 && name.length < 50) return name;
       }
       
       return null;
@@ -3054,9 +3163,20 @@ ${numberedMessages.join('\n\n')}
       role: 'user'
     };
     if (images && images.length > 0) {
+      // Build multimodal content with labels for each image source
+      const imageContent = [];
+      for (const img of images) {
+        // Support both simple URLs (string) and labeled objects ({ url, label })
+        const url = typeof img === 'string' ? img : img.url;
+        const label = typeof img === 'object' && img.label ? img.label : null;
+        if (label) {
+          imageContent.push({ type: 'text', text: `\n[${label}]:` });
+        }
+        imageContent.push({ type: 'image_url', image_url: { url } });
+      }
       userMessage.content = [
         { type: 'text', text: userContent },
-        ...images.map((url) => ({ type: 'image_url', image_url: { url } }))
+        ...imageContent
       ];
     } else {
       userMessage.content = userContent;

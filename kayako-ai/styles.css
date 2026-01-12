@@ -201,6 +201,29 @@
   border: 1px solid #93c5fd;
 }
 
+/* Tool usage badges (URL fetch, web search) */
+.ai-tool-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+}
+
+.ai-tool-badge.url-fetch {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+.ai-tool-badge.web-search {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
 .ai-preview-close {
   background: none;
   border: none;

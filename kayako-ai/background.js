@@ -508,13 +508,13 @@ Classify into ONE of these categories:
 
 IMPORTANT Rules:
 - If request says "reply to customer", "draft response", "tell them we escalated" - that's CUSTOMER
-- ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template"
+- ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template" or similar
 - WEB_SEARCH is when user says "search for", "look up online", "find information about" 
 - URL_FETCH is when URLs are present AND user needs info from them (not just mentioning URLs)
 
 URLs found: ${urls.length > 0 ? urls.join(', ') : 'none'}
 
-If ESCALATION, which team template?
+If ESCALATION, match to the best template:
 ${templateList}
 - default: Use the on-screen template (no specific match)
 
@@ -597,17 +597,28 @@ async function handleFetchUrl(url, userPrompt, sendResponse) {
       return;
     }
     
-    console.log(`🔗 Fetching URL: ${url}`);
+    // Normalize URL (ensure lowercase protocol/hostname)
+    let normalizedUrl = url;
+    try {
+      const parsed = new URL(url);
+      normalizedUrl = `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch (e) {
+      console.warn('Could not parse URL, using as-is:', url);
+    }
     
-    // Fetch the URL content
-    const fetchResp = await fetch(url, {
+    console.log(`🔗 Fetching URL: ${normalizedUrl}`);
+    
+    // Fetch the URL content with browser-like headers
+    const fetchResp = await fetch(normalizedUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; KayakoAI/1.0)'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       }
     });
     
     if (!fetchResp.ok) {
-      throw new Error(`Failed to fetch URL: HTTP ${fetchResp.status}`);
+      throw new Error(`HTTP ${fetchResp.status} - The website may be blocking automated requests or requires login.`);
     }
     
     const contentType = fetchResp.headers.get('content-type') || '';
@@ -708,7 +719,12 @@ Extract and summarize ONLY the information relevant to answering the user's ques
     });
   } catch (error) {
     console.error('fetchUrl failed:', error);
-    sendResponse({ success: false, error: error.message });
+    // Provide more helpful error messages for common issues
+    let errorMsg = error.message;
+    if (error.message === 'Failed to fetch') {
+      errorMsg = 'Network error - the site may block automated requests, require JavaScript, or need login. Try web search instead.';
+    }
+    sendResponse({ success: false, error: errorMsg, url: url });
   }
 }
 
