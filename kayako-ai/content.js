@@ -2219,9 +2219,10 @@ The support agent is giving you instructions about what to write. Your output wi
 AGENT'S INSTRUCTION: "${customPrompt}"
 
 CRITICAL DISTINCTION - WHO TO ADDRESS:
-${customerName ? `TICKET REQUESTER (address your message to THIS person): ${customerName}` : 'TICKET REQUESTER: The person who submitted this support ticket (use their name from the ticket header)'}
+1. If the agent's instruction explicitly names a recipient (e.g., "tell Sergey...", "respond to Maria...", "write to John..."), use THAT name. If the agent is clearly addressing the ticket requester (but mispelled it or called them by a wrong but very similar name), use their name as well.
+2. Otherwise, address the ticket requester: ${customerName || '[from ticket header]'}
 
-⚠️ WARNING: The ticket content may mention OTHER PEOPLE (students, users, employees being discussed). DO NOT confuse them with the ticket requester!
+⚠️ WARNING: The ticket content may mention OTHER PEOPLE (students, users, employees being discussed). DO NOT confuse them with the intended recipient!
 - Example: If Maryann submits a ticket about "Yaretzi's audio issue" → Address your message to Maryann, talk ABOUT Yaretzi as a third party.
 - The ticket requester is often a parent, teacher, or manager reporting an issue about someone else.
 - When referring to the person being helped (not the requester), use third-person: "their", "the student", "the user", etc.
@@ -2241,8 +2242,8 @@ DO NOT add ANY signature, closing, or sign-off to your response. Just write the 
 Your response will be inserted BEFORE the existing signature in the template.` : ''}
 
 OUTPUT REQUIREMENTS:
-- Write a message TO THE TICKET REQUESTER (${customerName || 'from the ticket header'})
-- Start with "Dear ${customerName || '[Requester Name]'},"
+- Write a message TO THE RECIPIENT (either explicitly named in instruction, or the ticket requester)
+- Start with "Dear [First Name Only]," - use only the first name in the greeting
 - When discussing other people mentioned in the ticket, use third-person (their, the student, etc.)
 - Professional, helpful tone
 - If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.
