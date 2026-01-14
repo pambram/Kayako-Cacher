@@ -2252,20 +2252,21 @@ OUTPUT REQUIREMENTS:
       // If there's existing text, include it as context - AGENT NOTES ARE PRIMARY SOURCE OF TRUTH
       let fullPrompt = enhancedPrompt;
       if (contextText) {
-        fullPrompt = `${enhancedPrompt}\n\n[AGENT WORK NOTES - PRIMARY SOURCE OF TRUTH]
-These are the agent's current notes about this ticket. They represent THE CURRENT STATE and what to communicate.
+        fullPrompt = `${enhancedPrompt}\n\n
+╔══════════════════════════════════════════════════════════════════╗
+║  🚨 AGENT WORK NOTES - THIS IS THE CURRENT STATUS - READ FIRST! ║
+╚══════════════════════════════════════════════════════════════════╝
 
-CRITICAL: If these notes indicate a status (e.g., "resolved", "fixed", "completed", "issue closed"), that IS the current state to communicate to the customer. The agent's notes OVERRIDE any conflicting information from the historical timeline.
-
-Examples:
-- If agent notes say "Issue resolved" → communicate resolution to customer
-- If agent notes say "waiting for X" → communicate we're waiting
-- If agent notes contain a link → that link is evidence/reference to include
-
-Agent's notes:
 ${contextText}
 
-[END AGENT NOTES]`;
+INTERPRETATION GUIDE (common patterns):
+• "test reassigned" / "reassigned" → Issue is FIXED, test has been reassigned to student
+• "resolved" / "fixed" / "done" → Issue is RESOLVED, communicate success
+• "waiting for X" → We are waiting, communicate that
+• Any link → Evidence/reference of the fix, can mention it
+
+⚠️ THESE NOTES OVERRIDE THE TIMELINE BELOW. The timeline may show old "we're investigating" messages - IGNORE those if the notes above indicate resolution.
+`;
       }
 
       // Get ticket context if enabled
@@ -2305,6 +2306,11 @@ ${contextText}
       // Append formatting guidance for limited HTML output and placeholders
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
+      
+      // Final reminder about agent notes priority (placed after all context)
+      if (contextText) {
+        fullPrompt += `\n\n🔴 FINAL REMINDER: The AGENT WORK NOTES at the top say: "${contextText.slice(0, 200).replace(/\n/g, ' ').trim()}". Base your response on THIS, not on old timeline messages.`;
+      }
 
 
       // Run classification FIRST to determine intent and handle prefetching
