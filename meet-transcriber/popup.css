@@ -209,6 +209,31 @@ select.setting-input {
   transform: translateY(-1px);
 }
 
+.btn-action {
+  width: 100%;
+  background: #10b981;
+  color: white;
+}
+
+.btn-action:hover:not(:disabled) {
+  background: #059669;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.control-actions {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 2px solid #f3f4f6;
+}
+
+.control-actions h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 12px;
+}
+
 .info-section {
   margin-top: 24px;
   padding-top: 20px;

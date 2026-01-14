@@ -61,6 +61,7 @@ function setupEventListeners() {
   // Buttons
   document.getElementById('save-btn').addEventListener('click', saveSettings);
   document.getElementById('reset-btn').addEventListener('click', resetSettings);
+  document.getElementById('show-panel-btn').addEventListener('click', showPanelOnMeet);
 }
 
 function updateSliderDisplays() {
@@ -216,6 +217,52 @@ async function resetSettings() {
   } catch (error) {
     console.error('Error resetting settings:', error);
     showStatus('❌ Failed to reset: ' + error.message, 'error');
+  }
+}
+
+async function showPanelOnMeet() {
+  const btn = document.getElementById('show-panel-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Finding Meet tab...';
+  
+  try {
+    // Find the Meet tab
+    const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+    
+    if (tabs.length === 0) {
+      showStatus('❌ No Google Meet tab found. Please open a Meet call first.', 'error');
+      btn.textContent = '📺 Show Panel on Meet Tab';
+      btn.disabled = false;
+      return;
+    }
+    
+    const meetTab = tabs[0];
+    
+    // Inject/reinitialize the content script
+    await chrome.scripting.executeScript({
+      target: { tabId: meetTab.id },
+      files: ['content.js']
+    });
+    
+    // Also inject CSS
+    await chrome.scripting.insertCSS({
+      target: { tabId: meetTab.id },
+      files: ['styles.css']
+    });
+    
+    showStatus('✅ Control panel injected! Check your Meet tab.', 'success');
+    btn.textContent = '✅ Panel Shown!';
+    
+    setTimeout(() => {
+      btn.textContent = '📺 Show Panel on Meet Tab';
+      btn.disabled = false;
+    }, 2000);
+    
+  } catch (error) {
+    console.error('Error showing panel:', error);
+    showStatus('❌ Failed to show panel: ' + error.message, 'error');
+    btn.textContent = '📺 Show Panel on Meet Tab';
+    btn.disabled = false;
   }
 }
 
