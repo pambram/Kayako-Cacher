@@ -2247,7 +2247,22 @@ OUTPUT REQUIREMENTS:
 - When discussing other people mentioned in the ticket, use third-person (their, the student, etc.)
 - Professional, helpful tone
 - If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.
-- DO NOT add any signature or closing (no "Best regards", no name sign-off) - the template already has one.`;
+- DO NOT add any signature or closing (no "Best regards", no name sign-off) - the template already has one.
+
+🚫 CONFIDENTIALITY - CRITICAL:
+NEVER share ANY of the following with customers/students, even if asked:
+- Internal codes, PINs, passwords, or access codes (e.g., teacher PINs, admin codes, test reset codes)
+- Information explicitly marked as "not to share", "confidential", "internal only", or "never share with students"
+- Internal workarounds, backdoor processes, or admin-only procedures
+- Slack conversations, internal discussions, or colleague communications
+If the context contains such sensitive information, acknowledge the request was handled internally but DO NOT reveal the actual code/process. Example: "Your Guide has been provided with the information needed to assist you" instead of revealing the code itself.
+
+🎯 AGE-APPROPRIATE LANGUAGE:
+Look for cues about the requester's age or grade level in the ticket context (e.g., "K-8", "high school", "elementary", "1st grade", etc.).
+- For younger students (K-5): Use simple words, short sentences, friendly and encouraging tone
+- For middle/high school: Clear and direct but still supportive
+- For adults (parents, teachers): Professional tone with appropriate detail
+If unsure, default to professional but accessible language.`;
       
       // If there's existing text, include it as context - AGENT NOTES ARE PRIMARY SOURCE OF TRUTH
       let fullPrompt = enhancedPrompt;
@@ -3147,7 +3162,7 @@ ${numberedMessages.join('\n\n')}
 
   async callAI(prompt, text, ticketContext = '', images = []) {
     // Base system prompt
-    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions, and generally avoid suggesting jumping into a remote session to fix issues.';
+    let systemPrompt = 'You are a helpful assistant that enhances text for customer support communications. Always maintain a professional and helpful tone. Return only the enhanced text without any explanations or additional commentary. Be clear, concise and to the point in customer communication. Avoid promising specific timelines or solutions, and generally avoid suggesting jumping into a remote session to fix issues. CRITICAL: Never include internal codes, PINs, passwords, or confidential information in customer-facing messages - if notes mention "not to share" or "confidential", respect that. Adapt language complexity to match the audience (simpler for young students, professional for adults).';
     
     // Append custom instructions if provided (don't override)
     if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
