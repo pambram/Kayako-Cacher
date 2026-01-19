@@ -2944,7 +2944,7 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
           if (content && content.length > 10) { // Only include substantial messages
             messages.push({
               author,
-              content: content.substring(0, 500), // Limit length to manage tokens
+              content, // Full content - overall context is clamped later (MAX_CTX=8000)
               time,
               index,
               hasImages,
