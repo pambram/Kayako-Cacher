@@ -13,6 +13,9 @@ class MeetTranscriber {
     // Meta-analysis tracking
     this.transcriptLog = []; // Store all transcripts with timestamps
     this.batchCounter = 0; // Track number of batches processed
+    // Session tracking for auto-save
+    this.sessionId = `meet-${Date.now()}`;
+    this.meetUrl = window.location.href;
     this.init();
   }
 
@@ -108,6 +111,7 @@ class MeetTranscriber {
             <span>Live Transcript</span>
             <button class="copy-btn" title="Copy transcript">📋</button>
             <button class="download-btn" title="Download transcript">💾</button>
+            <button class="upload-s3-btn" title="Upload to S3">☁️</button>
           </div>
           <div class="output-content" id="transcript-output">
             <p class="placeholder">Start recording to see transcript...</p>
@@ -125,6 +129,7 @@ class MeetTranscriber {
     panel.querySelector('.clear-btn').addEventListener('click', () => this.clearTranscript());
     panel.querySelector('.copy-btn').addEventListener('click', () => this.copyTranscript());
     panel.querySelector('.download-btn').addEventListener('click', () => this.downloadTranscript());
+    panel.querySelector('.upload-s3-btn').addEventListener('click', () => this.uploadToS3());
     panel.querySelector('.transcriber-minimize').addEventListener('click', () => this.toggleMinimize());
     
     // Make panel draggable
@@ -334,6 +339,9 @@ class MeetTranscriber {
         
         console.log(`✅ Batch #${this.batchCounter} analyzed successfully`);
         
+        // Auto-save to Chrome storage after each batch
+        await this.autoSaveTranscript();
+        
         // Check if we should generate meta-summary
         if (this.config.enableMetaAnalysis && 
             this.batchCounter % this.config.metaAnalysisInterval === 0 &&
@@ -523,6 +531,95 @@ class MeetTranscriber {
     URL.revokeObjectURL(url);
     
     this.showNotification('💾 Transcript downloaded', 'success');
+  }
+
+  /** Auto-save transcript to Chrome storage after each batch */
+  async autoSaveTranscript() {
+    try {
+      const output = this.controlPanel.querySelector('#transcript-output');
+      const entries = output.querySelectorAll('.transcript-entry');
+      
+      if (entries.length === 0) return;
+      
+      // Build transcript text
+      let text = '';
+      entries.forEach(entry => {
+        const time = entry.querySelector('.entry-timestamp').textContent;
+        const content = entry.querySelector('.entry-content').textContent;
+        text += `[${time}]\n${content}\n\n`;
+      });
+      
+      // Get existing saved transcripts
+      const result = await chrome.storage.local.get(['meetTranscriptSessions']);
+      const sessions = result.meetTranscriptSessions || {};
+      
+      // Save/update current session
+      sessions[this.sessionId] = {
+        url: this.meetUrl,
+        startTime: sessions[this.sessionId]?.startTime || new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+        batchCount: this.batchCounter,
+        transcript: text
+      };
+      
+      // Keep only last 10 sessions to avoid storage bloat
+      const sessionIds = Object.keys(sessions).sort((a, b) => {
+        return new Date(sessions[b].lastUpdated) - new Date(sessions[a].lastUpdated);
+      });
+      if (sessionIds.length > 10) {
+        sessionIds.slice(10).forEach(id => delete sessions[id]);
+      }
+      
+      await chrome.storage.local.set({ meetTranscriptSessions: sessions });
+      console.log(`💾 Auto-saved transcript (batch #${this.batchCounter})`);
+    } catch (error) {
+      console.error('Error auto-saving transcript:', error);
+    }
+  }
+
+  /** Upload transcript to S3 and get presigned URL */
+  async uploadToS3() {
+    const output = this.controlPanel.querySelector('#transcript-output');
+    const entries = output.querySelectorAll('.transcript-entry');
+    
+    if (entries.length === 0) {
+      this.showNotification('⚠️ No transcript to upload', 'error');
+      return;
+    }
+    
+    // Build transcript text
+    let text = 'Google Meet AI Transcription\n============================\n\n';
+    text += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    entries.forEach(entry => {
+      const time = entry.querySelector('.entry-timestamp').textContent;
+      const content = entry.querySelector('.entry-content').textContent;
+      text += `[${time}]\n${content}\n\n`;
+    });
+    
+    this.showNotification('☁️ Uploading to S3...', 'info');
+    
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'uploadToS3',
+        transcript: text,
+        meetUrl: this.meetUrl
+      });
+      
+      if (response.success) {
+        // Copy presigned URL to clipboard
+        await navigator.clipboard.writeText(response.url);
+        this.showNotification('✅ Uploaded! Presigned URL copied to clipboard (7 days valid)', 'success');
+        console.log('☁️ S3 Upload successful:', response.key);
+        console.log('📎 Presigned URL:', response.url);
+      } else {
+        this.showNotification('❌ Upload failed: ' + response.error, 'error');
+        console.error('S3 upload failed:', response.error);
+      }
+    } catch (error) {
+      this.showNotification('❌ Upload error: ' + error.message, 'error');
+      console.error('S3 upload error:', error);
+    }
   }
 
   showNotification(message, type = 'info') {

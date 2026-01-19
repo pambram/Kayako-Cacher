@@ -361,3 +361,97 @@ optgroup[style*="display: none"] {
   display: none !important;
 }
 
+/* Saved Transcripts Section */
+.saved-transcripts-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 2px solid #f3f4f6;
+}
+
+.saved-transcripts-section h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.saved-transcripts-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 12px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.no-transcripts {
+  padding: 16px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.saved-transcript-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: white;
+}
+
+.saved-transcript-item:last-child {
+  border-bottom: none;
+}
+
+.saved-transcript-item:hover {
+  background: #f3f4f6;
+}
+
+.transcript-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.transcript-date {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.transcript-meet {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.transcript-batches {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.transcript-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-icon {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.btn-icon:hover {
+  background: #e5e7eb;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 12px;
+}

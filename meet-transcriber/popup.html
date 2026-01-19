@@ -53,6 +53,33 @@
         />
       </div>
 
+      <!-- AWS Credentials for S3 Upload -->
+      <div class="setting-group">
+        <label class="setting-label" for="aws-access-key">
+          AWS Access Key ID
+          <span class="tooltip" title="For S3 transcript upload feature">ⓘ</span>
+        </label>
+        <input 
+          type="password" 
+          id="aws-access-key" 
+          class="setting-input" 
+          placeholder="AKIA..." 
+        />
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label" for="aws-secret-key">
+          AWS Secret Access Key
+          <span class="tooltip" title="For S3 transcript upload feature">ⓘ</span>
+        </label>
+        <input 
+          type="password" 
+          id="aws-secret-key" 
+          class="setting-input" 
+          placeholder="Secret key..." 
+        />
+      </div>
+
       <!-- Model Selection -->
       <div class="setting-group">
         <label class="setting-label">
@@ -229,6 +256,18 @@
         <p class="setting-help">
           Click this if the floating control panel is not visible on your Meet tab
         </p>
+      </div>
+
+      <!-- Saved Transcripts Section -->
+      <div class="saved-transcripts-section">
+        <h3>📂 Saved Transcripts</h3>
+        <p class="setting-help">Transcripts are auto-saved after each batch analysis</p>
+        <div id="saved-transcripts-list" class="saved-transcripts-list">
+          <p class="no-transcripts">No saved transcripts yet</p>
+        </div>
+        <button id="clear-saved-btn" class="btn btn-secondary btn-small">
+          🗑️ Clear All Saved
+        </button>
       </div>
 
       <!-- Info Section -->

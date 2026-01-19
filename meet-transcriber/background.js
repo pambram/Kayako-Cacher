@@ -15,7 +15,12 @@ const DEFAULT_CONFIG = {
   // Meta-analysis settings
   enableMetaAnalysis: true, // Enable periodic summary generation
   metaAnalysisInterval: 5, // Generate summary every N batches
-  metaAnalysisWindow: 5 // Minutes of transcript to analyze
+  metaAnalysisWindow: 5, // Minutes of transcript to analyze
+  // S3 upload settings
+  awsAccessKeyId: '',
+  awsSecretAccessKey: '',
+  awsRegion: 'us-east-1',
+  s3Bucket: 'meet-transcriber-uploads-899084202472'
 };
 
 // Initialize extension on install
@@ -66,6 +71,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     case 'generateMetaSummary':
       handleGenerateMetaSummary(request.transcripts, request.timeWindow, sendResponse);
+      return true;
+    
+    case 'uploadToS3':
+      handleUploadToS3(request.transcript, request.meetUrl, sendResponse);
       return true;
       
     default:
@@ -665,3 +674,157 @@ ${transcripts.map((t, i) => `\n--- Batch ${i + 1} (${new Date(t.timestamp).toLoc
   }
 }
 
+/** Upload transcript to S3 and return presigned URL */
+async function handleUploadToS3(transcript, meetUrl, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['meetTranscriberConfig']);
+    const config = result.meetTranscriberConfig || DEFAULT_CONFIG;
+    
+    if (!config.awsAccessKeyId || !config.awsSecretAccessKey) {
+      throw new Error('AWS credentials not configured. Please add your AWS Access Key and Secret in settings.');
+    }
+    
+    const bucket = config.s3Bucket;
+    const region = config.awsRegion || 'us-east-1';
+    const meetCode = meetUrl ? meetUrl.split('/').pop().split('?')[0] : 'unknown';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const key = `transcripts/${timestamp}_${meetCode}.txt`;
+    
+    // Build the transcript content
+    const content = `Google Meet AI Transcription\n============================\n\nMeet URL: ${meetUrl || 'N/A'}\nUploaded: ${new Date().toISOString()}\n\n${transcript}`;
+    
+    // AWS Signature Version 4 signing
+    const host = `${bucket}.s3.${region}.amazonaws.com`;
+    const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const dateStamp = amzDate.slice(0, 8);
+    
+    // Create canonical request for PUT
+    const method = 'PUT';
+    const canonicalUri = '/' + key;
+    const canonicalQuerystring = '';
+    const contentType = 'text/plain';
+    
+    // Hash the payload
+    const payloadHash = await sha256(content);
+    
+    const canonicalHeaders = 
+      `content-type:${contentType}\n` +
+      `host:${host}\n` +
+      `x-amz-content-sha256:${payloadHash}\n` +
+      `x-amz-date:${amzDate}\n`;
+    
+    const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+    
+    const canonicalRequest = 
+      `${method}\n${canonicalUri}\n${canonicalQuerystring}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    
+    // Create string to sign
+    const algorithm = 'AWS4-HMAC-SHA256';
+    const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+    const canonicalRequestHash = await sha256(canonicalRequest);
+    const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${canonicalRequestHash}`;
+    
+    // Calculate signature
+    const signingKey = await getSignatureKey(config.awsSecretAccessKey, dateStamp, region, 's3');
+    const signature = await hmacHex(signingKey, stringToSign);
+    
+    // Build authorization header
+    const authorizationHeader = 
+      `${algorithm} Credential=${config.awsAccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    
+    // Upload to S3
+    const uploadUrl = `https://${host}/${key}`;
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        'x-amz-date': amzDate,
+        'x-amz-content-sha256': payloadHash,
+        'Authorization': authorizationHeader
+      },
+      body: content
+    });
+    
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      throw new Error(`S3 upload failed: ${uploadResponse.status} - ${errorText}`);
+    }
+    
+    console.log('✅ Uploaded to S3:', key);
+    
+    // Generate presigned URL for download (valid for 7 days)
+    const presignedUrl = await generatePresignedUrl(config, bucket, region, key, 7 * 24 * 60 * 60);
+    
+    sendResponse({ success: true, url: presignedUrl, key });
+  } catch (error) {
+    console.error('❌ Error uploading to S3:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+/** Generate a presigned URL for S3 object */
+async function generatePresignedUrl(config, bucket, region, key, expiresIn) {
+  const host = `${bucket}.s3.${region}.amazonaws.com`;
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const dateStamp = amzDate.slice(0, 8);
+  
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const credential = encodeURIComponent(`${config.awsAccessKeyId}/${credentialScope}`);
+  
+  const canonicalQuerystring = 
+    `X-Amz-Algorithm=AWS4-HMAC-SHA256` +
+    `&X-Amz-Credential=${credential}` +
+    `&X-Amz-Date=${amzDate}` +
+    `&X-Amz-Expires=${expiresIn}` +
+    `&X-Amz-SignedHeaders=host`;
+  
+  const canonicalHeaders = `host:${host}\n`;
+  const signedHeaders = 'host';
+  const payloadHash = 'UNSIGNED-PAYLOAD';
+  
+  const canonicalRequest = 
+    `GET\n/${key}\n${canonicalQuerystring}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+  
+  const canonicalRequestHash = await sha256(canonicalRequest);
+  const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${canonicalRequestHash}`;
+  
+  const signingKey = await getSignatureKey(config.awsSecretAccessKey, dateStamp, region, 's3');
+  const signature = await hmacHex(signingKey, stringToSign);
+  
+  return `https://${host}/${key}?${canonicalQuerystring}&X-Amz-Signature=${signature}`;
+}
+
+/** AWS Signature V4 helper: SHA256 hash */
+async function sha256(message) {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** AWS Signature V4 helper: HMAC-SHA256 */
+async function hmac(key, message) {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? new TextEncoder().encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(message));
+  return new Uint8Array(signature);
+}
+
+/** AWS Signature V4 helper: HMAC-SHA256 as hex string */
+async function hmacHex(key, message) {
+  const sig = await hmac(key, message);
+  return Array.from(sig).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** AWS Signature V4 helper: Derive signing key */
+async function getSignatureKey(secretKey, dateStamp, region, service) {
+  const kDate = await hmac('AWS4' + secretKey, dateStamp);
+  const kRegion = await hmac(kDate, region);
+  const kService = await hmac(kRegion, service);
+  const kSigning = await hmac(kService, 'aws4_request');
+  return kSigning;
+}

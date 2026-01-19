@@ -2,6 +2,7 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
+  await loadSavedTranscripts();
   setupEventListeners();
 });
 
@@ -24,6 +25,8 @@ async function loadSettings() {
       document.getElementById('meta-analysis-enabled').checked = config.enableMetaAnalysis !== false;
       document.getElementById('meta-interval').value = config.metaAnalysisInterval || 5;
       document.getElementById('meta-window').value = config.metaAnalysisWindow || 5;
+      document.getElementById('aws-access-key').value = config.awsAccessKeyId || '';
+      document.getElementById('aws-secret-key').value = config.awsSecretAccessKey || '';
       
       // Update slider displays
       updateSliderDisplays();
@@ -62,6 +65,7 @@ function setupEventListeners() {
   document.getElementById('save-btn').addEventListener('click', saveSettings);
   document.getElementById('reset-btn').addEventListener('click', resetSettings);
   document.getElementById('show-panel-btn').addEventListener('click', showPanelOnMeet);
+  document.getElementById('clear-saved-btn').addEventListener('click', clearSavedTranscripts);
 }
 
 function updateSliderDisplays() {
@@ -136,7 +140,11 @@ async function saveSettings() {
       maxTokens: 4000,
       enableMetaAnalysis: document.getElementById('meta-analysis-enabled').checked,
       metaAnalysisInterval: parseInt(document.getElementById('meta-interval').value),
-      metaAnalysisWindow: parseInt(document.getElementById('meta-window').value)
+      metaAnalysisWindow: parseInt(document.getElementById('meta-window').value),
+      awsAccessKeyId: document.getElementById('aws-access-key').value,
+      awsSecretAccessKey: document.getElementById('aws-secret-key').value,
+      awsRegion: 'us-east-1',
+      s3Bucket: 'meet-transcriber-uploads-899084202472'
     };
     
     // Validate that at least one API key is provided
@@ -277,3 +285,118 @@ function showStatus(message, type = 'info') {
   }, 5000);
 }
 
+/** Load and display saved transcripts from Chrome storage */
+async function loadSavedTranscripts() {
+  try {
+    const result = await chrome.storage.local.get(['meetTranscriptSessions']);
+    const sessions = result.meetTranscriptSessions || {};
+    const listEl = document.getElementById('saved-transcripts-list');
+    
+    const sessionIds = Object.keys(sessions).sort((a, b) => {
+      return new Date(sessions[b].lastUpdated) - new Date(sessions[a].lastUpdated);
+    });
+    
+    if (sessionIds.length === 0) {
+      listEl.innerHTML = '<p class="no-transcripts">No saved transcripts yet</p>';
+      return;
+    }
+    
+    listEl.innerHTML = sessionIds.map(id => {
+      const session = sessions[id];
+      const date = new Date(session.lastUpdated);
+      const dateStr = date.toLocaleDateString();
+      const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const meetCode = session.url.split('/').pop().split('?')[0] || 'unknown';
+      
+      return `
+        <div class="saved-transcript-item" data-session-id="${id}">
+          <div class="transcript-info">
+            <span class="transcript-date">${dateStr} ${timeStr}</span>
+            <span class="transcript-meet">Meet: ${meetCode}</span>
+            <span class="transcript-batches">${session.batchCount} batches</span>
+          </div>
+          <div class="transcript-actions">
+            <button class="btn-icon download-saved" title="Download">💾</button>
+            <button class="btn-icon copy-saved" title="Copy">📋</button>
+            <button class="btn-icon delete-saved" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    // Add event listeners for buttons
+    listEl.querySelectorAll('.download-saved').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
+        downloadSavedTranscript(sessionId, sessions[sessionId]);
+      });
+    });
+    
+    listEl.querySelectorAll('.copy-saved').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
+        copySavedTranscript(sessions[sessionId]);
+      });
+    });
+    
+    listEl.querySelectorAll('.delete-saved').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
+        deleteSavedTranscript(sessionId);
+      });
+    });
+    
+  } catch (error) {
+    console.error('Error loading saved transcripts:', error);
+  }
+}
+
+function downloadSavedTranscript(sessionId, session) {
+  const text = `Google Meet AI Transcription\n============================\n\nMeet URL: ${session.url}\nRecorded: ${session.startTime}\nLast Updated: ${session.lastUpdated}\nBatches: ${session.batchCount}\n\n${session.transcript}`;
+  
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `meet-transcript-${new Date(session.lastUpdated).toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  showStatus('💾 Transcript downloaded', 'success');
+}function copySavedTranscript(session) {
+  navigator.clipboard.writeText(session.transcript).then(() => {
+    showStatus('📋 Transcript copied to clipboard', 'success');
+  }).catch(error => {
+    showStatus('❌ Failed to copy', 'error');
+    console.error('Copy failed:', error);
+  });
+}
+
+async function deleteSavedTranscript(sessionId) {
+  try {
+    const result = await chrome.storage.local.get(['meetTranscriptSessions']);
+    const sessions = result.meetTranscriptSessions || {};
+    delete sessions[sessionId];
+    await chrome.storage.local.set({ meetTranscriptSessions: sessions });
+    await loadSavedTranscripts();
+    showStatus('🗑️ Transcript deleted', 'success');
+  } catch (error) {
+    console.error('Error deleting transcript:', error);
+    showStatus('❌ Failed to delete', 'error');
+  }
+}
+
+async function clearSavedTranscripts() {
+  if (!confirm('Are you sure you want to delete all saved transcripts?')) {
+    return;
+  }
+  
+  try {
+    await chrome.storage.local.remove(['meetTranscriptSessions']);
+    await loadSavedTranscripts();
+    showStatus('🗑️ All transcripts cleared', 'success');
+  } catch (error) {
+    console.error('Error clearing transcripts:', error);
+    showStatus('❌ Failed to clear', 'error');
+  }
+}
