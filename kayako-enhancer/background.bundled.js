@@ -1032,7 +1032,9 @@ async function fetchTicketPreview(domain, ticketId) {
     id: String(p?.id || ''),
     createdAt: extractPostCreatedAt(p),
     html: extractPostHtml(p) || '',
-    text: extractPostText(p) || ''
+    text: extractPostText(p) || '',
+    author: extractPostAuthor(p),
+    postType: extractPostType(p)
   }));
   try {
     mapped.sort((a,b) => {
@@ -1249,6 +1251,38 @@ function extractPostCreatedAt(post) {
     }
   } catch (_) {}
   return null;
+}
+
+function extractPostAuthor(post) {
+  if (!post) return '';
+  const lc = (s) => (s || '').toString().toLowerCase();
+  // Try common author/creator shapes
+  const sources = [post.creator, post.author, post.actor, post.created_by, post.user, post.sender, post.from];
+  for (const src of sources) {
+    if (!src) continue;
+    if (typeof src === 'string') return src;
+    const name = src.full_name || src.fullName || src.name || src.display_name || src.displayName || '';
+    if (name) return String(name);
+    const email = src.email || '';
+    if (email) return String(email);
+  }
+  // Flat fields
+  const flat = post.creator_name || post.author_name || post.from_name || post.sender_name || '';
+  if (flat) return String(flat);
+  return '';
+}
+
+function extractPostType(post) {
+  if (!post) return 'public';
+  const lc = (s) => (s || '').toString().toLowerCase();
+  const t = lc(post.type || post.post_type || post.category || '');
+  const vis = lc(post.visibility || '');
+  const ch = lc(post.channel || '');
+  if (post.is_internal === true || post.isInternal === true) return 'internal';
+  if (vis === 'internal' || ch === 'internal') return 'internal';
+  if (t.includes('note') || t.includes('internal')) return 'internal';
+  if (post.private === true) return 'internal';
+  return 'public';
 }
 
 function htmlToText(html) {

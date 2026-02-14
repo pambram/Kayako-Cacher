@@ -1827,6 +1827,7 @@ function setupAutoLinkSuggestionOnAutoAnchor(editor) {
 function scanEditorForAutoLinks(editor) {
     try {
         const anchors = editor.querySelectorAll('a[href]');
+        const uncheckedUrls = [];
         anchors.forEach(a => {
             try {
                 if (a.dataset.titleSuggestChecked === '1') return;
@@ -1835,11 +1836,16 @@ function scanEditorForAutoLinks(editor) {
                 if (!href) { a.dataset.titleSuggestChecked = '1'; return; }
                 if (isLikelyRawUrlText(text, href)) {
                     a.dataset.titleSuggestChecked = '1';
-                    // Give DOM a moment to settle, then suggest
-                    setTimeout(() => { trySuggestTitleReplace(editor, href, 1); }, 50);
+                    uncheckedUrls.push(href);
                 }
             } catch (_) {}
         });
+        
+        // Queue all unchecked URLs for sequential processing
+        if (uncheckedUrls.length > 0) {
+            console.log(`🔗 Auto-link scan found ${uncheckedUrls.length} raw URL(s), queueing for title suggestions`);
+            setTimeout(() => { queueTitleSuggestions(editor, uncheckedUrls); }, 50);
+        }
     } catch (_) {}
 }
 
@@ -4008,24 +4014,108 @@ function setupSearchHoverPreview() {
             const st = document.createElement('style');
             st.id = 'kayako-search-preview-style';
             st.textContent = `
-                .kayako-search-preview-bubble{position:absolute;z-index:10000;width:900px;max-width:85vw;max-height:70vh;background:#fff;border:1px solid #d0d5d8;border-radius:10px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:12px 14px;font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;display:flex;flex-direction:column}
-                .kayako-search-preview-actions{display:flex;gap:8px;align-items:center;margin-top:10px}
-                .kayako-search-preview-btn{background:#f1f3f5;color:#333;border:1px solid #d0d5d8;border-radius:6px;padding:6px 10px;cursor:pointer}
-                .kayako-search-preview-title{font-weight:600;margin:0 0 8px 0;font-size:13px}
-                .kayako-search-preview-content{flex:1 1 auto;overflow:auto;border:1px solid #eef1f3;border-radius:6px;padding:10px;background:#fafbfc;max-height:60vh;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-					.kayako-search-preview-content{white-space:normal; line-height:1.35}
-                .kayako-search-preview-content :is(h1,h2,h3){font-size:15px;margin:8px 0}
+                /* ── Preview bubble shell ── */
+                .kayako-search-preview-bubble{
+                    position:absolute;z-index:10000;width:920px;max-width:86vw;max-height:72vh;
+                    background:#fff;border:1px solid #c8cdd0;border-radius:12px;
+                    box-shadow:0 16px 48px rgba(0,0,0,.2);
+                    padding:0;font:13.5px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                    color:#1f2328;display:flex;flex-direction:column;overflow:hidden;
+                }
+
+                /* ── Title header ── */
+                .kayako-search-preview-title{
+                    display:flex;align-items:center;gap:10px;
+                    padding:12px 16px;margin:0;
+                    background:linear-gradient(135deg,#f8f9fa,#eef1f4);
+                    border-bottom:1px solid #dde1e5;
+                    font-size:14px;font-weight:600;flex-shrink:0;
+                }
+                .spv-ticket-id{
+                    display:inline-block;background:#0969da;color:#fff;
+                    font-size:12px;font-weight:700;padding:2px 8px;border-radius:12px;
+                    white-space:nowrap;flex-shrink:0;
+                }
+
+                /* ── Scrollable content area ── */
+                .kayako-search-preview-content{
+                    flex:1 1 auto;overflow:auto;padding:12px 16px;
+                    max-height:calc(72vh - 52px);
+                    overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+                    display:flex;flex-direction:column;gap:10px;
+                    line-height:1.5;white-space:normal;word-break:break-word;
+                }
+                .kayako-search-preview-content img{max-width:100%;height:auto;border-radius:4px}
+                .kayako-search-preview-content :is(h1,h2,h3,h4,h5){font-size:14px;margin:6px 0 4px}
                 .kayako-search-preview-content p{margin:6px 0}
-                .kayako-search-preview-content a{color:#0969da;text-decoration:underline;}
-					.kayako-search-term-highlight{background:#fff3a3;padding:0 .08em;border-radius:2px}
-					/* Row highlight while a preview is open for that row */
-					.kayako-preview-row-highlight,
-					.kayako-preview-row-highlight > td,
-					.kayako-preview-row-highlight [role="gridcell"]{
-						background: rgba(255,246,173,.45) !important;
-						transition: background-color .12s ease;
-					}
-					.kayako-preview-row-highlight{outline: 2px solid rgba(255,196,0,.35)}
+                .kayako-search-preview-content a{color:#0969da;text-decoration:underline}
+                .kayako-search-preview-content ul,.kayako-search-preview-content ol{margin:4px 0;padding-left:20px}
+
+                /* ── Post cards ── */
+                .spv-card{
+                    border:1px solid #e1e5e9;border-radius:8px;padding:10px 12px;
+                    background:#fff;transition:border-color .15s;
+                }
+                .spv-card--internal{
+                    border-left:3px solid #d4a012;background:#fffef5;
+                }
+                .spv-card--public{
+                    border-left:3px solid #0969da;background:#fafcff;
+                }
+
+                /* Card header: author + badge + date */
+                .spv-card-header{
+                    display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;
+                }
+                .spv-card-author{font-weight:600;font-size:12.5px;color:#1f2328}
+                .spv-badge{
+                    display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;
+                    letter-spacing:.03em;padding:1px 6px;border-radius:10px;white-space:nowrap;
+                }
+                .spv-badge--public{background:#dbeafe;color:#1d4ed8}
+                .spv-badge--internal{background:#fef3c7;color:#92400e}
+                .spv-card-date{
+                    margin-left:auto;font-size:11.5px;color:#656d76;white-space:nowrap;
+                }
+
+                /* Card body */
+                .spv-card-body{font-size:13px;line-height:1.55;color:#333}
+                .spv-card-body br+br{display:block;content:'';margin-top:4px}
+
+                /* ── Loading skeleton ── */
+                .spv-skeleton{display:flex;flex-direction:column;gap:12px;padding:16px}
+                .spv-skeleton-line{
+                    height:12px;border-radius:6px;
+                    background:linear-gradient(90deg,#eee 25%,#f5f5f5 50%,#eee 75%);
+                    background-size:200% 100%;animation:spvShimmer 1.4s ease-in-out infinite;
+                }
+                .spv-skeleton-line:nth-child(1){width:70%}
+                .spv-skeleton-line:nth-child(2){width:100%}
+                .spv-skeleton-line:nth-child(3){width:85%}
+                .spv-skeleton-line:nth-child(4){width:60%}
+                @keyframes spvShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+                /* ── Scroll-to-latest pill ── */
+                .spv-scroll-latest{
+                    position:sticky;bottom:0;align-self:flex-end;
+                    background:#0969da;color:#fff;font-size:11px;font-weight:600;
+                    padding:4px 10px;border-radius:12px;cursor:pointer;
+                    box-shadow:0 2px 8px rgba(0,0,0,.15);margin-top:4px;
+                    opacity:.85;transition:opacity .15s;
+                }
+                .spv-scroll-latest:hover{opacity:1}
+
+                /* ── Search term highlight ── */
+                .kayako-search-term-highlight{background:#fff3a3;padding:0 .08em;border-radius:2px}
+
+                /* ── Row highlight while preview is open ── */
+                .kayako-preview-row-highlight,
+                .kayako-preview-row-highlight > td,
+                .kayako-preview-row-highlight [role="gridcell"]{
+                    background:rgba(255,246,173,.45) !important;
+                    transition:background-color .12s ease;
+                }
+                .kayako-preview-row-highlight{outline:2px solid rgba(255,196,0,.35)}
             `;
             document.head.appendChild(st);
         };
@@ -4066,7 +4156,7 @@ function setupSearchHoverPreview() {
             ensureStyles();
             const bubble = document.createElement('div');
             bubble.className = 'kayako-search-preview-bubble';
-            bubble.textContent = 'Loading preview…';
+            bubble.innerHTML = '<div class="spv-skeleton"><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div></div>';
             // Keep bubble alive while hovering over it
             bubble.addEventListener('mouseenter', () => {
                 isBubbleHovered = true;
@@ -4175,10 +4265,10 @@ function setupSearchHoverPreview() {
                 const subject = subjectEl ? (subjectEl.textContent || '').trim() : '';
                 const titleDiv = document.createElement('div');
                 titleDiv.className = 'kayako-search-preview-title';
-                titleDiv.textContent = subject ? `#${id} • ${subject}` : `#${id}`;
+                titleDiv.innerHTML = `<span class="spv-ticket-id">#${escapeHtml(id)}</span> ${escapeHtml(subject || 'Ticket')}`;
                 const contentDiv = document.createElement('div');
                 contentDiv.className = 'kayako-search-preview-content';
-                contentDiv.textContent = 'Fetching latest post…';
+                contentDiv.innerHTML = '<div class="spv-skeleton"><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div><div class="spv-skeleton-line"></div></div>';
                 bubble.innerHTML = '';
                 bubble.appendChild(titleDiv);
                 bubble.appendChild(contentDiv);
@@ -4189,6 +4279,7 @@ function setupSearchHoverPreview() {
                 if (cache[id] && cache[id].html && Date.now() - cache[id].ts < 10 * 60 * 1000) {
 					const html0 = sanitizeHtml(cache[id].html);
 					contentDiv.innerHTML = applySearchHighlight(html0);
+					addScrollToLatestPill(contentDiv);
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                 }
 
@@ -4207,6 +4298,7 @@ function setupSearchHoverPreview() {
                     }
 					const html1 = sanitizeHtml(cache[id].html);
 					contentDiv.innerHTML = applySearchHighlight(html1);
+					addScrollToLatestPill(contentDiv);
 					setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                     keepAliveUntil = Date.now() + 600;
                 });
@@ -4361,22 +4453,58 @@ function setupSearchHoverPreview() {
     } catch (_) {}
 }
 
+function addScrollToLatestPill(contentDiv) {
+    try {
+        // Only add if content is tall enough to scroll
+        if (!contentDiv) return;
+        setTimeout(() => {
+            if (contentDiv.scrollHeight <= contentDiv.clientHeight + 40) return;
+            // Don't add if already present
+            if (contentDiv.querySelector('.spv-scroll-latest')) return;
+            const pill = document.createElement('div');
+            pill.className = 'spv-scroll-latest';
+            pill.textContent = 'Scroll to latest';
+            pill.addEventListener('click', () => {
+                contentDiv.scrollTo({ top: contentDiv.scrollHeight, behavior: 'smooth' });
+                setTimeout(() => { try { pill.remove(); } catch(_) {} }, 600);
+            });
+            // Prevent the pill from triggering editor blur
+            pill.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+            contentDiv.appendChild(pill);
+        }, 50);
+    } catch(_) {}
+}
+
 function renderPostsHtml(posts) {
     try {
         const fmt = (d) => {
             try { return new Date(d).toLocaleString(); } catch (_) { return d || ''; }
         };
         const parts = posts.map(p => {
-            const date = p.createdAt ? `<div style="color:#57606a;font-size:12px;margin:6px 0 4px 0;">${escapeHtml(fmt(p.createdAt))}</div>` : '';
-			let body = '';
-			if (p.html) {
-				// If html looks like plain text (no tags), convert newlines to <br>
-				const hasTag = /<\\s*\\w+[^>]*>/.test(String(p.html));
-				body = hasTag ? String(p.html) : `<div>${escapeHtml(String(p.html)).replace(/\\n/g,'<br>')}</div>`;
-			} else {
-				body = `<div>${escapeHtml(p.text || '').replace(/\\n/g,'<br>')}</div>`;
-			}
-            return `<div style="border-top:1px solid #eef1f3;padding-top:6px;margin-top:6px;">${date}${body}</div>`;
+            const isInternal = (p.postType === 'internal');
+            const typeClass = isInternal ? 'spv-card--internal' : 'spv-card--public';
+            const badgeLabel = isInternal ? 'Internal Note' : 'Public';
+            const badgeClass = isInternal ? 'spv-badge--internal' : 'spv-badge--public';
+            const author = escapeHtml(p.author || 'Unknown');
+            const dateStr = p.createdAt ? escapeHtml(fmt(p.createdAt)) : '';
+
+            // Build header line: author + badge + date
+            const header = `<div class="spv-card-header">`
+                + `<span class="spv-card-author">${author}</span>`
+                + `<span class="spv-badge ${badgeClass}">${badgeLabel}</span>`
+                + (dateStr ? `<span class="spv-card-date">${dateStr}</span>` : '')
+                + `</div>`;
+
+            // Build body
+            let body = '';
+            if (p.html) {
+                const hasTag = /<\s*\w+[^>]*>/.test(String(p.html));
+                body = hasTag ? String(p.html) : `<div>${escapeHtml(String(p.html)).replace(/\n/g,'<br>')}</div>`;
+            } else {
+                body = `<div>${escapeHtml(p.text || '').replace(/\n/g,'<br>')}</div>`;
+            }
+
+            return `<div class="spv-card ${typeClass}">${header}<div class="spv-card-body">${body}</div></div>`;
         });
         return parts.join('');
     } catch (_) { return ''; }
@@ -4385,8 +4513,39 @@ function renderPostsHtml(posts) {
 // Basic HTML sanitizer for preview content
 function sanitizeHtml(html) {
     try {
+        // Pre-clean: strip literal "<br>" text that leaked from API (not actual tags)
+        let cleaned = String(html || '');
+        // Replace literal text "< br >" / "<br>" / "<br/>" that appear as visible text (not tags)
+        // These show up when the API double-encodes HTML entities
+        cleaned = cleaned.replace(/&lt;\s*br\s*\/?\s*&gt;/gi, '<br>');
+        cleaned = cleaned.replace(/&lt;\s*\/?\s*p\s*&gt;/gi, '<br>');
+        cleaned = cleaned.replace(/&lt;\s*div\s*&gt;/gi, '<br>');
+        cleaned = cleaned.replace(/&lt;\s*\/div\s*&gt;/gi, '');
+
         const wrapper = document.createElement('div');
-        wrapper.innerHTML = String(html || '');
+        wrapper.innerHTML = cleaned;
+
+        // Collapse excessive consecutive <br> elements (3+ in a row -> 2)
+        try {
+            const brs = wrapper.querySelectorAll('br');
+            let consecutive = 0;
+            let prevSibling = null;
+            brs.forEach(br => {
+                const prev = br.previousSibling;
+                if (prev && prev.nodeName && prev.nodeName.toLowerCase() === 'br') {
+                    consecutive++;
+                } else if (prev && prev.nodeType === 3 && !(prev.textContent || '').trim()) {
+                    // whitespace text node between <br>s
+                    const pp = prev.previousSibling;
+                    if (pp && pp.nodeName && pp.nodeName.toLowerCase() === 'br') consecutive++;
+                    else consecutive = 0;
+                } else {
+                    consecutive = 0;
+                }
+                if (consecutive >= 2) { try { br.remove(); } catch(_) {} }
+            });
+        } catch (_) {}
+
         const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_ELEMENT, null);
         const toRemove = [];
         while (walker.nextNode()) {
@@ -4400,6 +4559,11 @@ function sanitizeHtml(html) {
             if (tag === 'a') {
                 el.setAttribute('target','_blank');
                 el.setAttribute('rel','noopener noreferrer nofollow');
+            }
+            // Constrain images
+            if (tag === 'img') {
+                el.style.maxWidth = '100%';
+                el.style.height = 'auto';
             }
         }
         toRemove.forEach(n => n.remove());
