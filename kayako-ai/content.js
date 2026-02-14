@@ -846,6 +846,42 @@ class KayakoAIEnhancer {
     }
   }
 
+  // Extract content from the escalation section (between "Also fill the following if you are proposing an escalation:" and "Additional Context" or end of === delimiters)
+  extractEscalationSectionContent(fullText) {
+    try {
+      const text = fullText || '';
+      const startRe = /Also\s+fill\s+the\s+following\s+if\s+you\s+are\s+proposing\s+an\s+escalation:?/i;
+      const startMatch = startRe.exec(text);
+      if (!startMatch) {
+        return '';
+      }
+      
+      let after = text.slice(startMatch.index + startMatch[0].length);
+      
+      // Find end: either "Additional Context" or a line of === or end of text
+      const endRe = /(?:Additional\s*Context(?:\?|:)?|^={3,}\s*$)/im;
+      const endMatch = endRe.exec(after);
+      if (endMatch) {
+        after = after.slice(0, endMatch.index);
+      }
+      
+      // Clean up: remove leading/trailing whitespace and empty lines
+      const lines = after.split(/\r?\n/);
+      // Remove leading empty lines
+      while (lines.length && /^\s*$/.test(lines[0])) {
+        lines.shift();
+      }
+      // Remove trailing empty lines
+      while (lines.length && /^\s*$/.test(lines[lines.length - 1])) {
+        lines.pop();
+      }
+      
+      return lines.join('\n').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
 
   setEditorText(editorElement, textData, newText) {
     // Normalize placeholders then restore links/images in the enhanced text
@@ -1209,9 +1245,27 @@ What investigation did CS carry out:`,
   // Replace content in the escalation section of the template (between escalation header and next delimiter/section)
   replaceEscalationSection(editorElement, newTextHTML) {
     try {
+      // Verify editor element is still valid and in DOM
+      if (!editorElement || !document.body.contains(editorElement)) {
+        console.warn('⚠️ Editor element is not in DOM, re-finding...');
+        editorElement = document.querySelector('[contenteditable="true"]') || 
+                        document.querySelector('.ProseMirror') ||
+                        document.querySelector('.tox-edit-area__iframe')?.contentDocument?.body;
+        if (!editorElement) {
+          console.error('❌ Could not re-find editor element');
+          return false;
+        }
+        console.log('✅ Re-found editor element');
+      }
+      
       const startRe = /Also\s+fill\s+the\s+following\s+if\s+you\s+are\s+proposing\s+an\s+escalation:?/i;
       const endRe = /^={3,}\s*$/; // Delimiter line of === 
       const additionalContextRe = /Additional\s*Context(?:\?|:)?/i;
+      
+      // Debug: log editor text content length
+      const editorText = editorElement.textContent || '';
+      console.log('📝 replaceEscalationSection: editor has', editorText.length, 'chars');
+      console.log('🔍 Looking for escalation marker in first 500 chars:', editorText.substring(0, 500));
       
       const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null, false);
       let startNode = null, startOffset = 0;
@@ -1228,6 +1282,7 @@ What investigation did CS carry out:`,
             startNode = node;
             startOffset = m.index + m[0].length;
             foundStart = true;
+            console.log('✅ Found escalation start marker');
           }
         } else {
           // After finding start, look for end markers
@@ -1235,6 +1290,7 @@ What investigation did CS carry out:`,
           if (endRe.test(val.trim())) {
             endNode = node;
             endOffset = 0; // End before the delimiter
+            console.log('✅ Found end marker (=== delimiter)');
             break;
           }
           // Check for Additional Context section
@@ -1242,13 +1298,18 @@ What investigation did CS carry out:`,
           if (acMatch) {
             endNode = node;
             endOffset = acMatch.index; // End before "Additional Context"
+            console.log('✅ Found end marker (Additional Context)');
             break;
           }
         }
       }
       
       if (!startNode) {
-        console.warn('⚠️ Could not find escalation section marker');
+        console.warn('⚠️ Could not find escalation section marker in editor text');
+        // Try direct text search as fallback
+        if (editorText.match(startRe)) {
+          console.warn('⚠️ Marker exists in text but TreeWalker did not find it');
+        }
         return false;
       }
       
@@ -1546,22 +1607,36 @@ What investigation did CS carry out:`,
     }
   }
 
-  // Decide how to inject AI output: keep allowed HTML as-is; otherwise
-  // convert plaintext bullets to lists or map newlines to <br>
+  // Decide how to inject AI output: convert newlines to proper HTML line breaks
   normalizeHTMLForInsert(html) {
-    const hasTags = /<(p|ul|ol|li|strong|em|a|img)\b/i.test(html || '');
-    if (!hasTags) {
-      const listified = this.convertPlaintextListToHTML(html || '');
+    let text = (html || '').trim();
+    
+    // Always convert newlines to HTML, even if HTML tags are present
+    // Double newlines become paragraph breaks, single newlines become <br>
+    const hasBlockTags = /<(p|div|ul|ol|li)\b/i.test(text);
+    
+    if (!hasBlockTags) {
+      // No block-level tags - we need to add structure
+      const listified = this.convertPlaintextListToHTML(text);
       if (listified) return listified;
-      // Wrap paragraphs separated by blank lines in <p>, keep single newlines as <br>
-      const text = (html || '');
+      
+      // Split by double newlines into paragraphs
       const paragraphs = text.split(/\r?\n\s*\r?\n/);
       const wrapped = paragraphs
-        .map(p => `<p>${this.escapeHTML(p).replace(/\n/g, '<br>')}</p>`)
+        .map(p => {
+          // Convert single newlines within paragraph to <br>
+          const withBreaks = p.replace(/\r?\n/g, '<br>');
+          return `<p>${withBreaks}</p>`;
+        })
         .join('');
       return this.stabilizeHTMLForEditor(wrapped);
     }
-    return this.stabilizeHTMLForEditor(html || '');
+    
+    // Has block tags but may still have raw newlines - convert them
+    text = text.replace(/\r?\n\r?\n/g, '</p><p>');  // Double newline = new paragraph
+    text = text.replace(/\r?\n/g, '<br>');          // Single newline = line break
+    
+    return this.stabilizeHTMLForEditor(text);
   }
 
   // Convert plaintext lines starting with -, *, •, or 1. into simple lists (markup only; keep text as-is)
@@ -2082,6 +2157,8 @@ What investigation did CS carry out:`,
   }
 
   async handleHoneIn(instructions, editorElement, preCapturedRange = null, anchorEl = null) {
+    console.log(`🔍 Processing hone-in prompt: ${instructions}`);
+    
     if (this.isProcessing) {
       this.showNotification('⏳ Already processing, please wait...', 'warning');
       return;
@@ -2242,8 +2319,11 @@ DO NOT add ANY signature, closing, or sign-off to your response. Just write the 
 Your response will be inserted BEFORE the existing signature in the template.` : ''}
 
 OUTPUT REQUIREMENTS:
+- For bold text use <strong>text</strong> (NOT markdown **)
+- For line breaks, just use actual newlines (press Enter). Do NOT use <br> tags.
+- Structure your response with blank lines between paragraphs and sections
 - Write a message TO THE RECIPIENT (either explicitly named in instruction, or the ticket requester)
-- Start with "Dear [First Name Only]," - use only the first name in the greeting
+- Start with "Dear [First Name Only]," followed by a blank line, then the body
 - When discussing other people mentioned in the ticket, use third-person (their, the student, etc.)
 - Professional, helpful tone
 - If there are relevant PUBLIC links in the context (like documentation, KB articles, Microsoft links), include them in your response. Do NOT include internal links (Jira, GitHub issues, internal tools) that would reveal internal processes.
@@ -2274,13 +2354,19 @@ If unsure, default to professional but accessible language.`;
 
 ${contextText}
 
+🖼️ IMPORTANT: If the agent included screenshots (labeled "AGENT'S SCREENSHOT"), these are CRITICAL CONTEXT:
+- Screenshots often contain Slack messages, GitHub comments, or internal updates about the CURRENT status
+- Pay close attention to temporal words in screenshots: "tomorrow", "next week", "will be back", "ETA", etc.
+- If a screenshot says something will be fixed "tomorrow" or in the future, the issue is NOT YET RESOLVED
+
 INTERPRETATION GUIDE (common patterns):
 • "test reassigned" / "reassigned" → Issue is FIXED, test has been reassigned to student
 • "resolved" / "fixed" / "done" → Issue is RESOLVED, communicate success
-• "waiting for X" → We are waiting, communicate that
-• Any link → Evidence/reference of the fix, can mention it
+• "waiting for X" / "tomorrow" / "will be back" → Issue is IN PROGRESS, NOT resolved yet
+• "ETA: [date]" / "should get back [time]" → Issue is scheduled, set expectations accordingly
+• Any link → Evidence/reference, can mention it
 
-⚠️ THESE NOTES OVERRIDE THE TIMELINE BELOW. The timeline may show old "we're investigating" messages - IGNORE those if the notes above indicate resolution.
+⚠️ AGENT NOTES AND SCREENSHOTS OVERRIDE THE TIMELINE BELOW. The timeline may show old messages - IGNORE those if the notes/screenshots indicate a different current state.
 `;
       }
 
@@ -2309,7 +2395,7 @@ INTERPRETATION GUIDE (common patterns):
       const timelineImageResults = await this.collectTimelineImagesAsDataUrls(timelineImages, 5);
       // Pass images as labeled objects so AI knows which are agent's vs timeline's
       const labeledImages = [
-        ...contextImages.map((url, i) => ({ url, label: `AGENT'S SCREENSHOT ${i + 1} (from your investigation notes)` })),
+        ...contextImages.map((url, i) => ({ url, label: `🚨 AGENT'S SCREENSHOT ${i + 1} - PRIMARY SOURCE OF TRUTH - READ CAREFULLY for current status, ETAs, and temporal info` })),
         ...timelineImageResults.map((img, i) => {
           const typeLabel = img.isNote ? 'agent note' : 'public message';
           const timeLabel = img.time ? ` at ${img.time}` : '';
@@ -2403,6 +2489,12 @@ INTERPRETATION GUIDE (common patterns):
         escalationTemplate = await this.getEscalationTemplate(templateId);
         console.log(`🏷️ Escalation detected! Using template: ${escalationTemplate.name}`);
         
+        // Extract existing escalation content (if any) so AI can see what's already there
+        const existingEscalationContent = this.extractEscalationSectionContent(textData.fullText || '');
+        if (existingEscalationContent) {
+          console.log(`📋 Existing escalation content found (${existingEscalationContent.length} chars): "${existingEscalationContent.slice(0, 150)}..."`);
+        }
+        
         // Append the template to the user's prompt so the AI fills it in
         if (escalationTemplate.template) {
           userPromptWithTemplate = `CRITICAL INSTRUCTION - READ CAREFULLY:
@@ -2411,8 +2503,14 @@ You are writing an INTERNAL ESCALATION NOTE to another team (${escalationTemplat
 DO NOT write "Dear [name]" or any customer-facing letter. This is an INTERNAL note for colleagues.
 
 User request: ${customPrompt}
-
-Fill in the escalation template below with information from the ticket context.
+${existingEscalationContent ? `
+EXISTING ESCALATION CONTENT (from current editor - use this as reference/starting point):
+---
+${existingEscalationContent}
+---
+The user may want you to modify, convert, or expand this existing content. Pay attention to their request.
+` : ''}
+Fill in the escalation template below with information from the ticket context${existingEscalationContent ? ' and the existing escalation content above' : ''}.
 
 FORMAT REQUIREMENTS:
 - Use HTML only, NOT Markdown. Use <strong>field name:</strong> for bold labels
@@ -2790,40 +2888,32 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
         editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
       }
     } else if (action === 'replace') {
-      // Replace existing content - ALWAYS check for template first
-      console.log('🔧 Help me write REPLACE: Checking for template...');
+      // Replace existing content - use template info from prompt time (originalTextData)
+      // NOTE: We use originalTextData.hasTemplate instead of re-extracting because the
+      // editor state may have changed (focus, DOM) between prompt and replacement.
+      console.log('🔧 Help me write REPLACE: isEscalation=', isEscalation, 'originalHasTemplate=', originalTextData.hasTemplate);
       
-      // Re-extract text to check for template (since custom prompts might not have detected it)
-      const currentTextData = this.getEditorText(editorElement);
+      const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
+      const textWithRestored = this.restoreImagesInText(
+        this.restoreLinksInText(normalized, originalTextData.linkMap),
+        originalTextData.imgMap
+      );
+      const htmlContent = this.normalizeHTMLForInsert(textWithRestored);
       
-      if (currentTextData.hasTemplate) {
-        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
-        const textWithRestored = this.restoreImagesInText(
-          this.restoreLinksInText(normalized, originalTextData.linkMap),
-          originalTextData.imgMap
-        );
-        const htmlContent = this.normalizeHTMLForInsert(textWithRestored);
-        
-        // For escalations, use escalation section; otherwise use PR section
-        if (isEscalation) {
-          console.log('🎯 Template detected! Using escalation section for replacement');
-          const inserted = this.replaceEscalationSection(editorElement, htmlContent);
-          if (!inserted) {
-            console.warn('⚠️ Escalation section not found, falling back to PR section');
-            this.setEditorText(editorElement, currentTextData, generatedText);
-          }
-        } else {
-          console.log('🎯 Template detected! Using surgical replacement within PR section');
-          this.setEditorText(editorElement, currentTextData, generatedText);
+      // Prioritize isEscalation flag (determined at prompt time) over hasTemplate
+      if (isEscalation) {
+        console.log('🎯 Escalation mode: Using escalation section for replacement');
+        const inserted = this.replaceEscalationSection(editorElement, htmlContent);
+        if (!inserted) {
+          console.warn('⚠️ Escalation section not found, replacing full content');
+          editorElement.innerHTML = htmlContent;
         }
+      } else if (originalTextData.hasTemplate) {
+        console.log('🎯 Template detected! Using surgical replacement within PR section');
+        this.setEditorText(editorElement, originalTextData, generatedText);
       } else {
         console.log('📝 No template detected, replacing full content');
-        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
-        const textWithRestored = this.restoreImagesInText(
-          this.restoreLinksInText(normalized, originalTextData.linkMap),
-          originalTextData.imgMap
-        );
-        editorElement.innerHTML = this.normalizeHTMLForInsert(textWithRestored);
+        editorElement.innerHTML = htmlContent;
       }
     } else if (action === 'append') {
       // Append at cursor position, not at the end
@@ -2915,7 +3005,10 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
           const author = authorElement ? authorElement.textContent.trim() : 'Unknown';
           
           // Detect system/automated messages
-          const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis', 'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'System', 'Automation'].includes(author);
+          const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 
+            'Lachesis', 'Phronesis', 'centralsupport-ai-acc', 
+            'Centralsupport-ai-acc', 'System', 'Automation', 'AI-CS Integration',
+            'Wise Old Man'].includes(author);
           
           // Extract content
           const contentElement = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
@@ -3257,8 +3350,9 @@ ${numberedMessages.join('\n\n')}
       }
     }
     if (!result?.success) {
-      try { console.error('AI request failed', { model, error: result?.error }); } catch (_) {}
-      throw new Error(result?.error || 'AI request failed');
+      const errorMsg = typeof result?.error === 'string' ? result.error : JSON.stringify(result?.error || 'Unknown error');
+      console.error(`❌ AI request failed (${model}):`, errorMsg);
+      throw new Error(errorMsg || 'AI request failed');
     }
     const data = result.data || {};
     const out = data.choices?.[0]?.message?.content?.trim() || '';

@@ -495,36 +495,49 @@ async function handleClassifyPrompt(prompt, sendResponse) {
     // Build template options for classification
     const templateList = templates.map(t => `- ${t.id}: ${t.name}`).join('\n');
     
-    const classificationPrompt = `Classify this support agent request and detect if special actions are needed:
+    const classificationPrompt = `Classify this support agent request:
 
 Request: "${prompt}"
 
-Classify into ONE of these categories:
+Categories:
+1. CUSTOMER = Writing a message that will be sent TO the customer
+2. ESCALATION = Creating/filling an INTERNAL escalation DOCUMENT (a structured form with fields like "Proposed Team:", "Steps to reproduce:", etc.)
+3. WEB_SEARCH = User explicitly asks to "search the web", "look up online", "google this"
+4. URL_FETCH = Contains URLs and user wants info extracted FROM those URLs
 
-1. CUSTOMER = Writing a reply TO the customer (even if the reply MENTIONS an escalation)
-2. ESCALATION = Actually WRITING/FILLING OUT an escalation document/template to send to an internal team
-3. WEB_SEARCH = User explicitly asks to "search", "look up", "find information online", "search the internet/web"
-4. URL_FETCH = Contains URLs and needs information FROM those URLs to answer
+CRITICAL: ESCALATION vs CUSTOMER distinction
+ESCALATION is ONLY when the agent wants to CREATE/FILL an internal escalation DOCUMENT.
+CUSTOMER is when the agent is composing ANY message to send to the customer.
 
-IMPORTANT Rules:
-- If request says "reply to customer", "draft response", "tell them we escalated" - that's CUSTOMER
-- ESCALATION is ONLY when explicitly asking to "write an escalation", "fill the escalation template" or similar
-- WEB_SEARCH is when user says "search for", "look up online", "find information about" 
-- URL_FETCH is when URLs are present AND user needs info from them (not just mentioning URLs)
+Mentioning a team name (Engineering, Academics, etc.) does NOT mean ESCALATION.
+The key question: Is the agent creating a DOCUMENT for internal teams, or writing a MESSAGE to the customer?
+
+CUSTOMER examples (message TO customer, even if mentioning teams):
+- "I've asked our Engineering team to provide dates" = CUSTOMER (telling customer what was done)
+- "eng won't join a meeting but will access the server" = CUSTOMER (informing customer what to expect)
+- "tell the customer we've engaged engineering" = CUSTOMER
+- "we've escalated to academics and they'll review" = CUSTOMER (informing)
+- "the engineering team found no issues in logs" = CUSTOMER
+- "coordinate with the customer about the access" = CUSTOMER
+- "let them know engineering needs remote access" = CUSTOMER
+- "answer Maria, engineering is looking into it" = CUSTOMER
+
+ESCALATION examples (creating an INTERNAL document, NOT a customer message):
+- "escalate to academics" = ESCALATION (command to create escalation doc)
+- "create escalation for engineering" = ESCALATION
+- "fill the escalation template" = ESCALATION
+- "write up the escalation" = ESCALATION
+- "prepare escalation document" = ESCALATION
 
 URLs found: ${urls.length > 0 ? urls.join(', ') : 'none'}
 
-If ESCALATION, match to the best template:
+If ESCALATION, match to best template:
 ${templateList}
-- default: Use the on-screen template (no specific match)
+- default: Use on-screen template
 
-Reply format:
-- "CUSTOMER" 
-- "ESCALATION:template-id"
-- "WEB_SEARCH"
-- "URL_FETCH:url1,url2" (comma-separated URLs)
+Reply format: "CUSTOMER", "ESCALATION:template-id", "WEB_SEARCH", or "URL_FETCH:url1,url2"
 
-Reply with ONLY ONE of the above formats:`;
+Reply with ONLY the classification:`;
 
     let responseText = '';
     
