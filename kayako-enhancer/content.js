@@ -4016,7 +4016,7 @@ function setupSearchHoverPreview() {
             st.textContent = `
                 /* ── Preview bubble shell ── */
                 .kayako-search-preview-bubble{
-                    position:absolute;z-index:10000;width:920px;max-width:86vw;max-height:72vh;
+                    position:fixed;z-index:10000;width:920px;max-width:86vw;max-height:72vh;
                     background:#fff;border:1px solid #c8cdd0;border-radius:12px;
                     box-shadow:0 16px 48px rgba(0,0,0,.2);
                     padding:0;font:13.5px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -4104,6 +4104,14 @@ function setupSearchHoverPreview() {
                     opacity:.85;transition:opacity .15s;
                 }
                 .spv-scroll-latest:hover{opacity:1}
+                .spv-scroll-top{
+                    position:sticky;top:0;align-self:flex-end;
+                    background:#57606a;color:#fff;font-size:11px;font-weight:600;
+                    padding:4px 10px;border-radius:12px;cursor:pointer;
+                    box-shadow:0 2px 8px rgba(0,0,0,.15);margin-bottom:4px;
+                    opacity:.85;transition:opacity .15s;
+                }
+                .spv-scroll-top:hover{opacity:1}
 
                 /* ── Search term highlight ── */
                 .kayako-search-term-highlight{background:#fff3a3;padding:0 .08em;border-radius:2px}
@@ -4168,7 +4176,7 @@ function setupSearchHoverPreview() {
                 hideTimerId = setTimeout(() => { if (!isBubbleHovered && !currentRowHover) hideBubbleWithSuppress(); }, 140);
             });
 				document.body.appendChild(bubble);
-			fixedLeft = null; fixedTop = null;
+			fixedLeft = null; fixedTop = null; placementFrozen = false;
 					// Capture the mouse anchor right when bubble is created
 					anchorMouse = { x: lastMouse.x, y: lastMouse.y };
 			positionBubbleNearRow(bubble, row);
@@ -4180,69 +4188,51 @@ function setupSearchHoverPreview() {
 
 		const positionBubbleNearRow = (bubble, row, force) => {
             try {
-                // If a fixed position is already chosen, reuse it to avoid flicker/movement
-				if (fixedLeft != null && fixedTop != null && !force) {
+                // If frozen after a content-load reposition, don't move again
+                if (fixedLeft != null && fixedTop != null && !force) {
                     bubble.style.left = fixedLeft + 'px';
                     bubble.style.top = fixedTop + 'px';
                     return;
                 }
-				// If we've already stabilized after a forced reposition, do not force again
-				if (force && placementFrozen) {
-					return;
-				}
-				// Use the initial mouse anchor for forced repositions to avoid jumps if the mouse moved
-				const pointerX = (force && anchorMouse) ? anchorMouse.x : lastMouse.x;
-				const pointerY = (force && anchorMouse) ? anchorMouse.y : lastMouse.y;
-                const br = bubble.getBoundingClientRect();
+                if (force && placementFrozen) {
+                    return;
+                }
+                // Always use the anchor mouse (captured at open time) for stable placement
+                const pointerX = anchorMouse ? anchorMouse.x : lastMouse.x;
+                const pointerY = anchorMouse ? anchorMouse.y : lastMouse.y;
+
+                // Measure actual bubble size; use a reasonable minimum if not yet laid out
+                let br = bubble.getBoundingClientRect();
+                const bw = Math.max(br.width, 400);
+                const bh = Math.max(br.height, 200);
+
                 const padding = 12;
-                const gapX = 28; // horizontal clearance from pointer
-                const gapY = 24; // vertical clearance from pointer
-                const vw = document.documentElement.clientWidth;
-                const vh = document.documentElement.clientHeight;
+                const gapX = 28;
+                const gapY = 24;
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
 
-                // Decide side relative to the pointer, not the row
-				const availRight = vw - (pointerX + gapX) - padding;
-				const availLeft = (pointerX - gapX) - padding;
-                const placeRight = (availRight >= br.width) || (availRight >= availLeft);
-                let left = placeRight
-					? pointerX + gapX
-					: pointerX - gapX - br.width;
+                // Horizontal: fully left or right of pointer
+                const spaceRight = vw - pointerX - gapX - padding;
+                const spaceLeft = pointerX - gapX - padding;
+                const placeRight = (spaceRight >= bw) || (spaceRight >= spaceLeft);
+                let left = placeRight ? (pointerX + gapX) : (pointerX - gapX - bw);
 
-				// Vertical placement relative to pointer
-				const availBelow = vh - (pointerY + gapY) - padding;
-				const availAbove = (pointerY - gapY) - padding;
-				const fitsBelow = availBelow >= br.height;
-				const fitsAbove = availAbove >= br.height;
-				// Prefer the side that fully fits; if neither fits, prefer above to avoid bottom cutoff
-				let placeBelow;
-				if (fitsBelow && !fitsAbove) {
-					placeBelow = true;
-				} else if (!fitsBelow && fitsAbove) {
-					placeBelow = false;
-				} else if (fitsBelow && fitsAbove) {
-					placeBelow = (availBelow >= availAbove);
-				} else {
-					placeBelow = false; // neither fits fully → bias to above near bottom rows
-				}
-			// Aggressive bottom placement: if there's not AMPLE space below, choose above
-			if (availBelow < (br.height + 80)) {
-				placeBelow = false;
-			}
-			let top = placeBelow
-				? pointerY + gapY
-				: pointerY - gapY - br.height;
+                // Vertical: prefer below, but if not enough room, place above
+                const spaceBelow = vh - pointerY - gapY - padding;
+                const placeBelow = (spaceBelow >= bh);
+                let top = placeBelow ? (pointerY + gapY) : (pointerY - gapY - bh);
 
-                // Clamp within viewport
-                const finalLeft = Math.max(padding, Math.min(left, vw - br.width - padding));
-                const finalTop = Math.max(padding, Math.min(top, vh - br.height - padding));
+                // Clamp within viewport (position:fixed, so 0..vw/vh)
+                const finalLeft = Math.max(padding, Math.min(left, vw - bw - padding));
+                const finalTop = Math.max(padding, Math.min(top, vh - bh - padding));
                 bubble.style.left = finalLeft + 'px';
                 bubble.style.top = finalTop + 'px';
 
-				// Freeze this placement to prevent subsequent reflows from moving it
                 fixedLeft = finalLeft;
                 fixedTop = finalTop;
                 keepAliveUntil = Date.now() + 500;
-				if (force) placementFrozen = true;
+                if (force) placementFrozen = true;
             } catch (_) {}
         };
 
@@ -4280,6 +4270,7 @@ function setupSearchHoverPreview() {
 					const html0 = sanitizeHtml(cache[id].html);
 					contentDiv.innerHTML = applySearchHighlight(html0);
 					addScrollToLatestPill(contentDiv);
+                    placementFrozen = false; fixedLeft = null; fixedTop = null;
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                 }
 
@@ -4288,6 +4279,16 @@ function setupSearchHoverPreview() {
                     const err = chrome.runtime?.lastError;
                     if (err) { contentDiv.textContent = 'Preview unavailable'; return; }
                     if (!resp || !resp.success) { contentDiv.textContent = 'Preview unavailable'; return; }
+                    // Debug: log raw post sample and first mapped post in page console
+                    try {
+                        if (resp.preview?._debugRawSample) {
+                            console.log('[Preview Debug] Raw post[0] keys:', Object.keys(resp.preview._debugRawSample));
+                            console.log('[Preview Debug] Raw post[0]:', JSON.stringify(resp.preview._debugRawSample, null, 2).slice(0, 3000));
+                        }
+                        if (resp.preview?.posts?.[0]) {
+                            console.log('[Preview Debug] Mapped post[0]:', JSON.stringify(resp.preview.posts[0]));
+                        }
+                    } catch(_) {}
                     const posts = (resp.preview && Array.isArray(resp.preview.posts)) ? resp.preview.posts : [];
                     if (posts.length) {
                         cache[id] = { html: renderPostsHtml(posts), snippet: '', ts: Date.now() };
@@ -4299,6 +4300,7 @@ function setupSearchHoverPreview() {
 					const html1 = sanitizeHtml(cache[id].html);
 					contentDiv.innerHTML = applySearchHighlight(html1);
 					addScrollToLatestPill(contentDiv);
+                    placementFrozen = false; fixedLeft = null; fixedTop = null;
 					setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                     keepAliveUntil = Date.now() + 600;
                 });
@@ -4455,22 +4457,45 @@ function setupSearchHoverPreview() {
 
 function addScrollToLatestPill(contentDiv) {
     try {
-        // Only add if content is tall enough to scroll
         if (!contentDiv) return;
         setTimeout(() => {
             if (contentDiv.scrollHeight <= contentDiv.clientHeight + 40) return;
-            // Don't add if already present
-            if (contentDiv.querySelector('.spv-scroll-latest')) return;
-            const pill = document.createElement('div');
-            pill.className = 'spv-scroll-latest';
-            pill.textContent = 'Scroll to latest';
-            pill.addEventListener('click', () => {
+            // Remove old pills
+            try { contentDiv.querySelectorAll('.spv-scroll-latest,.spv-scroll-top').forEach(e => e.remove()); } catch(_) {}
+
+            // "Scroll to latest" pill
+            const pillDown = document.createElement('div');
+            pillDown.className = 'spv-scroll-latest';
+            pillDown.textContent = 'Scroll to latest';
+            pillDown.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+            pillDown.addEventListener('click', () => {
                 contentDiv.scrollTo({ top: contentDiv.scrollHeight, behavior: 'smooth' });
-                setTimeout(() => { try { pill.remove(); } catch(_) {} }, 600);
             });
-            // Prevent the pill from triggering editor blur
-            pill.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
-            contentDiv.appendChild(pill);
+            contentDiv.appendChild(pillDown);
+
+            // Show/hide pills based on scroll position
+            const onScroll = () => {
+                try {
+                    const atBottom = (contentDiv.scrollTop + contentDiv.clientHeight >= contentDiv.scrollHeight - 30);
+                    const atTop = (contentDiv.scrollTop <= 30);
+                    pillDown.style.display = atBottom ? 'none' : '';
+                    // Create "Back to top" pill lazily
+                    let pillUp = contentDiv.querySelector('.spv-scroll-top');
+                    if (atBottom && !atTop && !pillUp) {
+                        pillUp = document.createElement('div');
+                        pillUp.className = 'spv-scroll-top';
+                        pillUp.textContent = 'Back to top';
+                        pillUp.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+                        pillUp.addEventListener('click', () => {
+                            contentDiv.scrollTo({ top: 0, behavior: 'smooth' });
+                        });
+                        contentDiv.appendChild(pillUp);
+                    }
+                    if (pillUp) pillUp.style.display = atBottom ? '' : 'none';
+                    if (atTop && pillUp) { try { pillUp.remove(); } catch(_) {} }
+                } catch(_) {}
+            };
+            contentDiv.addEventListener('scroll', onScroll, { passive: true });
         }, 50);
     } catch(_) {}
 }

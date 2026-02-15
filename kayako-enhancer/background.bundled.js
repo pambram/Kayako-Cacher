@@ -994,6 +994,16 @@ async function fetchTicketPreview(domain, ticketId) {
 
   let combined = Array.isArray(pagePosts) ? pagePosts.slice() : [];
 
+  // Debug: log first raw post shape so we can see field names
+  try {
+    if (combined.length > 0) {
+      const sample = combined[0];
+      const keys = Object.keys(sample || {});
+      console.log('[SW] preview raw post keys:', keys);
+      console.log('[SW] preview raw post[0] sample:', JSON.stringify(sample, null, 2).slice(0, 2000));
+    }
+  } catch(_) {}
+
   // If there are remaining posts and a next URL, fetch all remaining in one go
   if (nextUrl && total && limit && total > limit) {
     const remaining = Math.max(0, total - limit);
@@ -1027,15 +1037,33 @@ async function fetchTicketPreview(domain, ticketId) {
   const snippet = extractPostText(selected) || '';
   const html = extractPostHtml(selected) || '';
 
+  // Resolve all unique creator IDs to names in parallel
+  const creatorIds = new Set();
+  for (const p of combined) {
+    const cid = extractCreatorId(p);
+    if (cid) creatorIds.add(cid);
+  }
+  // Batch resolve (parallel, cached)
+  const resolvePromises = [];
+  for (const cid of creatorIds) {
+    resolvePromises.push(resolveUserName(domain, cid));
+  }
+  try { await Promise.all(resolvePromises); } catch(_) {}
+
   // Map and sort earliest→latest
-  const mapped = (combined || []).map(p => ({
-    id: String(p?.id || ''),
-    createdAt: extractPostCreatedAt(p),
-    html: extractPostHtml(p) || '',
-    text: extractPostText(p) || '',
-    author: extractPostAuthor(p),
-    postType: extractPostType(p)
-  }));
+  const mapped = (combined || []).map(p => {
+    const cid = extractCreatorId(p);
+    const authorName = cid ? (_userNameCache[`${domain}:${cid}`] || '') : '';
+    return {
+      id: String(p?.id || ''),
+      createdAt: extractPostCreatedAt(p),
+      html: extractPostHtml(p) || '',
+      text: extractPostText(p) || '',
+      author: authorName,
+      postType: extractPostType(p),
+      isRequester: !!p?.is_requester
+    };
+  });
   try {
     mapped.sort((a,b) => {
       const ta = Date.parse(a.createdAt || '') || 0;
@@ -1046,12 +1074,22 @@ async function fetchTicketPreview(domain, ticketId) {
     });
   } catch (_) {}
   try { console.log('[SW] preview total mapped posts:', mapped.length); } catch(_) {}
+
+  // Include a raw sample for debugging author/type extraction in the page console
+  let _debugRawSample = null;
+  try {
+    if (combined.length > 0) {
+      _debugRawSample = JSON.parse(JSON.stringify(combined[0]));
+    }
+  } catch(_) {}
+
   return {
     ticketId: String(ticketId),
     lastPostId: latestId || 0,
     snippet: snippet.slice(0, 1000),
     html: html,
     posts: mapped,
+    _debugRawSample: _debugRawSample,
     fetchedAt: Date.now(),
   };
 }
@@ -1253,35 +1291,58 @@ function extractPostCreatedAt(post) {
   return null;
 }
 
-function extractPostAuthor(post) {
-  if (!post) return '';
-  const lc = (s) => (s || '').toString().toLowerCase();
-  // Try common author/creator shapes
-  const sources = [post.creator, post.author, post.actor, post.created_by, post.user, post.sender, post.from];
-  for (const src of sources) {
-    if (!src) continue;
-    if (typeof src === 'string') return src;
-    const name = src.full_name || src.fullName || src.name || src.display_name || src.displayName || '';
-    if (name) return String(name);
-    const email = src.email || '';
-    if (email) return String(email);
+// Kayako posts only have creator: {id, resource_type:"user"} -- we need to resolve IDs
+// Cache resolved user names in memory for the session
+const _userNameCache = Object.create(null);
+
+async function resolveUserName(domain, userId) {
+  if (!userId) return '';
+  const key = `${domain}:${userId}`;
+  if (_userNameCache[key]) return _userNameCache[key];
+  try {
+    const res = await fetch(`https://${domain}/api/v1/users/${userId}`, {
+      credentials: 'include', headers: { 'Accept': 'application/json' }
+    });
+    if (!res.ok) { _userNameCache[key] = ''; return ''; }
+    const json = await res.json();
+    const user = json?.data || json;
+    const name = user?.full_name || user?.fullname || user?.name || user?.email || user?.primary_email || '';
+    _userNameCache[key] = String(name);
+    return _userNameCache[key];
+  } catch (_) {
+    _userNameCache[key] = '';
+    return '';
   }
-  // Flat fields
-  const flat = post.creator_name || post.author_name || post.from_name || post.sender_name || '';
-  if (flat) return String(flat);
-  return '';
+}
+
+function extractCreatorId(post) {
+  if (!post) return null;
+  // Kayako shape: creator: {id: 1457, resource_type: "user"}
+  if (post.creator && typeof post.creator === 'object' && post.creator.id) return post.creator.id;
+  if (post.creator_id) return post.creator_id;
+  if (post.person && typeof post.person === 'object' && post.person.id) return post.person.id;
+  if (post.user && typeof post.user === 'object' && post.user.id) return post.user.id;
+  return null;
 }
 
 function extractPostType(post) {
   if (!post) return 'public';
   const lc = (s) => (s || '').toString().toLowerCase();
-  const t = lc(post.type || post.post_type || post.category || '');
-  const vis = lc(post.visibility || '');
-  const ch = lc(post.channel || '');
+  // PRIMARY: Kayako's original.resource_type is the definitive field
+  // "note" = internal note, "case_message" = public message
+  if (post.original && typeof post.original === 'object') {
+    const rt = lc(post.original.resource_type || '');
+    if (rt === 'note' || rt === 'notes' || rt === 'internal_note') return 'internal';
+    if (rt === 'case_message' || rt === 'message') return 'public';
+  }
+  // SECONDARY: destination_medium "NOTE" = internal (though often "MAIL" for both)
+  const dm = lc(post.destination_medium || '');
+  if (dm === 'note' || dm === 'notes' || dm === 'internal') return 'internal';
+  // TERTIARY: other fields
   if (post.is_internal === true || post.isInternal === true) return 'internal';
-  if (vis === 'internal' || ch === 'internal') return 'internal';
-  if (t.includes('note') || t.includes('internal')) return 'internal';
   if (post.private === true) return 'internal';
+  const t = lc(post.type || post.post_type || post.category || '');
+  if (t.includes('note') || t.includes('internal')) return 'internal';
   return 'public';
 }
 
