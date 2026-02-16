@@ -3840,6 +3840,580 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Track if extension context is valid
 let extensionContextValid = true;
 
+// --- NEW BUTTON SPLIT DROPDOWN WITH PRE-FILL ---
+
+/** Capture Brand, Form, and Product from the current ticket's sidebar/header. */
+function captureCurrentTicketContext() {
+    const ctx = {};
+    try {
+        // Brand: shown next to "Change Brand" in the header area
+        const brandEl = document.querySelector('[class*="ko-case-header_brand__title"], [class*="brand__title"], [class*="case-header"] [class*="brand"]');
+        if (brandEl) ctx.brand = (brandEl.textContent || '').trim();
+        // Fallback: look for text near "Change Brand"
+        if (!ctx.brand) {
+            document.querySelectorAll('[class*="case-header"] span, [class*="case-header"] div').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t && t !== 'Change Brand' && el.closest('[class*="brand"]')) {
+                    if (!ctx.brand) ctx.brand = t;
+                }
+            });
+        }
+
+        // Sidebar fields: Form and Product are label/value pairs in the right sidebar
+        const sidebar = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+        if (sidebar) {
+            const fieldContainers = sidebar.querySelectorAll('[class*="ko-case-properties"]  [class*="field"], [class*="properties"] [class*="field"], [class*="ko-case-properties"] > div');
+            // Also try a broader approach: find all label-like elements
+            const labels = sidebar.querySelectorAll('[class*="label"], [class*="title"], [class*="header"]');
+            labels.forEach(lbl => {
+                const labelText = (lbl.textContent || '').trim().toLowerCase();
+                // Find the sibling or parent's value element
+                const parent = lbl.closest('[class*="field"], [class*="property"], [class*="row"]') || lbl.parentElement;
+                if (!parent) return;
+                const valueEl = parent.querySelector('[class*="value"], [class*="content"], [class*="trigger"], [class*="selected"]');
+                const valueText = valueEl ? (valueEl.textContent || '').trim() : '';
+                if (!valueText || valueText === '-') return;
+
+                if (labelText.includes('form') && !ctx.form) ctx.form = valueText;
+                if (labelText.includes('product') && !ctx.product) ctx.product = valueText;
+            });
+        }
+
+        // Broader fallback: scan all sidebar text for "Form" / "Product" labels
+        if (!ctx.form || !ctx.product) {
+            const sidebarAll = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+            if (sidebarAll) {
+                const allText = sidebarAll.innerText || '';
+                const lines = allText.split('\n').map(l => l.trim()).filter(Boolean);
+                for (let i = 0; i < lines.length; i++) {
+                    if (!ctx.form && /^form$/i.test(lines[i]) && lines[i + 1]) ctx.form = lines[i + 1];
+                    if (!ctx.product && /^product$/i.test(lines[i]) && lines[i + 1]) ctx.product = lines[i + 1];
+                }
+            }
+        }
+    } catch (e) {
+        console.error('⚡ Error capturing ticket context:', e);
+    }
+    console.log('⚡ Captured ticket context:', ctx);
+    return ctx;
+}
+
+/** Set up the split "New" button enhancement. */
+function setupNewButtonEnhancement() {
+    try {
+        // Find the green "+ New" Ember dropdown trigger by its class pattern
+        const newBtn = document.querySelector('[class*="ko-agent-dropdown__trigger_"]');
+        if (!newBtn) return;
+        // Verify it's actually the "New" button by checking for the label text
+        const label = newBtn.querySelector('[class*="dropdown-trigger-label"]');
+        if (!label || !/^\s*New\s*$/i.test(label.textContent || '')) return;
+        // Don't re-enhance
+        if (newBtn.dataset.kayakoPrefillEnhanced === '1') return;
+        newBtn.dataset.kayakoPrefillEnhanced = '1';
+
+        // Inject styles once
+        if (!document.getElementById('kayako-prefill-new-style')) {
+            const st = document.createElement('style');
+            st.id = 'kayako-prefill-new-style';
+            st.textContent = `
+                .kayako-prefill-arrow {
+                    display:inline-flex; align-items:center; justify-content:center;
+                    width:22px; height:34px; background:#00b894; color:#fff;
+                    border-left:1px solid rgba(255,255,255,.3); cursor:pointer;
+                    border-radius:0 4px 4px 0; font-size:11px; user-select:none;
+                    transition:background .15s; vertical-align:middle;
+                    position:relative; top:0; margin-left:-2px;
+                }
+                .kayako-prefill-arrow:hover { background:#00a884; }
+                .kayako-prefill-dropdown {
+                    display:none; position:absolute; top:100%; left:0; margin-top:4px;
+                    background:#fff; border:1px solid #d0d5d8; border-radius:6px;
+                    box-shadow:0 4px 16px rgba(0,0,0,.15); z-index:10000;
+                    min-width:180px; padding:4px 0; font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                }
+                .kayako-prefill-dropdown.open { display:block; }
+                .kayako-prefill-option {
+                    padding:8px 14px; cursor:pointer; color:#1f2328; white-space:nowrap;
+                    transition:background .1s;
+                }
+                .kayako-prefill-option:hover { background:#f1f3f5; }
+                .kayako-prefill-anchor {
+                    display:inline-flex; align-items:center; position:relative;
+                }
+            `;
+            document.head.appendChild(st);
+        }
+
+        // Clip the right border-radius of the original button's visual container
+        const iconSquare = newBtn.querySelector('[class*="ko-agent-dropdown__iconSquare"]');
+        if (iconSquare) {
+            iconSquare.style.borderTopRightRadius = '0';
+            iconSquare.style.borderBottomRightRadius = '0';
+        }
+
+        // Create an anchor span as sibling right after the New button (don't wrap/move it)
+        const anchor = document.createElement('span');
+        anchor.className = 'kayako-prefill-anchor';
+
+        // Arrow trigger
+        const arrow = document.createElement('span');
+        arrow.className = 'kayako-prefill-arrow';
+        arrow.innerHTML = '&#9662;'; // ▾
+        arrow.title = 'New with pre-filled fields';
+        anchor.appendChild(arrow);
+
+        // Dropdown menu
+        const dropdown = document.createElement('div');
+        dropdown.className = 'kayako-prefill-dropdown';
+        const option = document.createElement('div');
+        option.className = 'kayako-prefill-option';
+        option.textContent = '\u{1F4CB} New (pre-filled)';
+        dropdown.appendChild(option);
+        anchor.appendChild(dropdown);
+
+        // Insert right after the New button (as a sibling, not wrapping)
+        newBtn.insertAdjacentElement('afterend', anchor);
+
+        // Toggle dropdown on arrow click
+        arrow.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            dropdown.classList.toggle('open');
+        });
+
+        // Close dropdown on outside click
+        document.addEventListener('click', (e) => {
+            if (!anchor.contains(e.target)) dropdown.classList.remove('open');
+        }, true);
+
+        // Pre-filled new ticket action
+        option.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            dropdown.classList.remove('open');
+            triggerPrefillNewConversation();
+        });
+
+        console.log('⚡ New button enhancement attached');
+    } catch (e) {
+        console.error('⚡ Error setting up New button enhancement:', e);
+    }
+}
+
+/** Orchestrate: capture context, store it, click New, click Conversation. */
+function triggerPrefillNewConversation() {
+    try {
+        // 1. Capture context from current ticket
+        const ctx = captureCurrentTicketContext();
+        const prefillData = {
+            brand: ctx.brand || '',
+            form: ctx.form || '',
+            product: ctx.product || '',
+            requester: 'pablo.ambram@trilogy.com',
+            priority: 'Normal',
+            assignee: 'L1 Agent',
+            timestamp: Date.now()
+        };
+
+        // 2. Save to storage
+        chrome.storage.local.set({ newTicketPrefill: prefillData }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('⚡ Failed to save prefill data:', chrome.runtime.lastError);
+                return;
+            }
+            console.log('⚡ Prefill data saved:', prefillData);
+
+            // 3. Click the original "+ New" Ember dropdown trigger
+            const newBtn = document.querySelector('[class*="ko-agent-dropdown__trigger_"]');
+            if (newBtn) {
+                newBtn.click();
+                // 4. Wait for the type popover to appear and click "Conversation"
+                waitAndClickConversation();
+            }
+        });
+    } catch (e) {
+        console.error('⚡ Error triggering prefill new conversation:', e);
+    }
+}
+
+/** Poll for the type-selection popover and click "Conversation". */
+function waitAndClickConversation(attempts = 0) {
+    if (attempts > 30) {
+        console.warn('⚡ Timed out waiting for Conversation option in New popover');
+        return;
+    }
+    setTimeout(() => {
+        try {
+            // Ember renders dropdown content in ember-basic-dropdown-content elements
+            const dropdownContents = document.querySelectorAll('.ember-basic-dropdown-content');
+            for (const dc of dropdownContents) {
+                // Skip hidden/placeholder ones
+                if (dc.style.display === 'none' || dc.classList.contains('ember-basic-dropdown-content-placeholder')) continue;
+                // Look for "Conversation" text inside this dropdown
+                const links = dc.querySelectorAll('a, button, [role="button"], [role="menuitem"], [role="option"], div[class*="option"], li');
+                for (const el of links) {
+                    if (/^\s*Conversation\s*$/i.test(el.textContent || '')) {
+                        console.log('⚡ Clicking Conversation option in Ember dropdown');
+                        el.click();
+                        return;
+                    }
+                }
+                // Also check spans/divs that might be the clickable label
+                const spans = dc.querySelectorAll('span, div');
+                for (const el of spans) {
+                    if (/^\s*Conversation\s*$/i.test(el.textContent || '') && el.offsetHeight > 0) {
+                        // Click the nearest parent that looks like a link/button
+                        const clickTarget = el.closest('a, [role="button"], [role="menuitem"]') || el.parentElement;
+                        if (clickTarget) {
+                            console.log('⚡ Clicking Conversation label parent');
+                            clickTarget.click();
+                            return;
+                        }
+                    }
+                }
+            }
+            // Retry
+            waitAndClickConversation(attempts + 1);
+        } catch (_) {
+            waitAndClickConversation(attempts + 1);
+        }
+    }, 150);
+}
+
+/** Detect new conversation page and auto-fill fields from stored prefill data. */
+function checkAndApplyPrefill() {
+    try {
+        if (!window.location.href.match(/\/agent\/conversations\/new\//)) return;
+        if (window.__kayakoPrefillApplied) return;
+
+        chrome.storage.local.get(['newTicketPrefill'], (data) => {
+            if (chrome.runtime.lastError || !data || !data.newTicketPrefill) return;
+            const prefill = data.newTicketPrefill;
+            // Expire stale prefill data (older than 30 seconds)
+            if (Date.now() - prefill.timestamp > 30000) {
+                chrome.storage.local.remove('newTicketPrefill');
+                return;
+            }
+            // Only apply once
+            if (window.__kayakoPrefillApplied) return;
+            window.__kayakoPrefillApplied = true;
+
+            console.log('⚡ Applying prefill data on new conversation:', prefill);
+            applyPrefillFields(prefill);
+        });
+    } catch (_) {}
+}
+
+/** Sequentially fill each field with delays for Ember to settle. */
+async function applyPrefillFields(prefill) {
+    try {
+        showQuickNotification('⚡ Pre-filling new ticket...', 'info');
+
+        // Wait for the page to stabilize
+        await sleep(1500);
+
+        // Fill Brand (the "Change Brand" area at the top of the conversation header)
+        if (prefill.brand) {
+            await fillBrandField(prefill.brand);
+            await sleep(600);
+        }
+
+        // Fill Form
+        if (prefill.form) {
+            await fillSidebarDropdown('Form', prefill.form);
+            await sleep(600);
+        }
+
+        // Fill Product
+        if (prefill.product) {
+            await fillSidebarDropdown('Product', prefill.product);
+            await sleep(600);
+        }
+
+        // Fill Priority
+        if (prefill.priority) {
+            await fillSidebarDropdown('Priority', prefill.priority);
+            await sleep(600);
+        }
+
+        // Fill Assignee
+        if (prefill.assignee) {
+            await fillSidebarDropdown('Assignee', prefill.assignee);
+            await sleep(600);
+        }
+
+        // Fill Requester (in the header area, typically an email input)
+        if (prefill.requester) {
+            await fillRequesterField(prefill.requester);
+            await sleep(600);
+        }
+
+        // Click "Notes" tab to default to internal note
+        await clickNotesTab();
+
+        // Clean up
+        chrome.storage.local.remove('newTicketPrefill');
+        showQuickNotification('⚡ Ticket pre-filled successfully!', 'success');
+        console.log('⚡ Prefill complete');
+    } catch (e) {
+        console.error('⚡ Error applying prefill fields:', e);
+        showQuickNotification('⚡ Prefill partially applied: ' + e.message, 'error');
+    }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/** Click a Kayako Ember dropdown by field label and select a value. */
+async function fillSidebarDropdown(labelText, value) {
+    try {
+        const sidebar = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+        if (!sidebar) { console.warn('⚡ Sidebar not found for', labelText); return; }
+
+        // Find the field by label text
+        let fieldContainer = null;
+        const allLabels = sidebar.querySelectorAll('[class*="label"], [class*="title"], [class*="header"], span, div');
+        for (const lbl of allLabels) {
+            const t = (lbl.textContent || '').trim();
+            if (t.toLowerCase() === labelText.toLowerCase()) {
+                fieldContainer = lbl.closest('[class*="field"], [class*="property"], [class*="row"]') || lbl.parentElement;
+                break;
+            }
+        }
+        if (!fieldContainer) {
+            // Fallback: search by innerText lines
+            const lines = (sidebar.innerText || '').split('\n').map(l => l.trim());
+            const idx = lines.findIndex(l => l.toLowerCase() === labelText.toLowerCase());
+            if (idx >= 0) {
+                // Try to find a clickable trigger near that position
+                const allTriggers = sidebar.querySelectorAll('[class*="trigger"], [class*="select"], [role="button"]');
+                // Use the trigger whose text content is closest to the value area
+                for (const trig of allTriggers) {
+                    const rect = trig.getBoundingClientRect();
+                    if (rect.height > 0) {
+                        fieldContainer = trig.closest('[class*="field"], [class*="property"], [class*="row"]') || trig.parentElement;
+                        if (fieldContainer && fieldContainer.textContent.toLowerCase().includes(labelText.toLowerCase())) break;
+                        fieldContainer = null;
+                    }
+                }
+            }
+        }
+        if (!fieldContainer) { console.warn('⚡ Could not find field container for:', labelText); return; }
+
+        // Click the dropdown trigger to open it
+        const trigger = fieldContainer.querySelector('[class*="trigger"], [role="button"], [class*="select"], .ember-basic-dropdown-trigger, .ember-power-select-trigger') || fieldContainer;
+        trigger.click();
+        await sleep(400);
+
+        // Try to type in search input if available
+        const searchInput = document.querySelector('.ember-power-select-search-input, .ember-basic-dropdown-content input[type="search"], .ember-basic-dropdown-content input[type="text"], .ember-basic-dropdown-content input');
+        if (searchInput) {
+            searchInput.value = '';
+            searchInput.focus();
+            // Use native input setter to trigger Ember bindings
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(searchInput, value);
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(400);
+        }
+
+        // Find and click the matching option
+        const options = document.querySelectorAll('.ember-power-select-option, .ember-basic-dropdown-content [role="option"], .ember-basic-dropdown-content li');
+        let matched = false;
+        for (const opt of options) {
+            const optText = (opt.textContent || '').trim();
+            if (optText.toLowerCase() === value.toLowerCase() || optText.toLowerCase().includes(value.toLowerCase())) {
+                opt.click();
+                matched = true;
+                console.log(`⚡ Selected "${optText}" for ${labelText}`);
+                break;
+            }
+        }
+        if (!matched) {
+            console.warn(`⚡ No matching option found for ${labelText}: "${value}"`);
+            // Close any open dropdown by pressing Escape
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }
+    } catch (e) {
+        console.error(`⚡ Error filling ${labelText}:`, e);
+    }
+}
+
+/** Fill the Brand field via the "Change Brand" button in the conversation header. */
+async function fillBrandField(brandName) {
+    try {
+        // Look for "Change Brand" link/button or the brand area
+        let brandTrigger = null;
+        const headerArea = document.querySelector('[class*="ko-case-header"], [class*="case-header"], [class*="conversation-header"]');
+        if (headerArea) {
+            // Find the "Change Brand" text or brand selector
+            const links = headerArea.querySelectorAll('a, button, [role="button"], span[class*="brand"], div[class*="brand"]');
+            for (const el of links) {
+                if (/change\s*brand/i.test(el.textContent || '') || el.querySelector('[class*="brand"]')) {
+                    brandTrigger = el;
+                    break;
+                }
+            }
+        }
+        // Broader fallback
+        if (!brandTrigger) {
+            document.querySelectorAll('a, button, [role="button"], span, div').forEach(el => {
+                if (!brandTrigger && /change\s*brand/i.test((el.textContent || '').trim()) && el.textContent.trim().length < 30) {
+                    brandTrigger = el;
+                }
+            });
+        }
+        if (!brandTrigger) {
+            // On new conversation, brand might be a dropdown in the header; try direct trigger
+            const trigger = document.querySelector('[class*="brand"] [class*="trigger"], [class*="brand"] .ember-power-select-trigger, [class*="brand"] .ember-basic-dropdown-trigger');
+            if (trigger) brandTrigger = trigger;
+        }
+        if (!brandTrigger) { console.warn('⚡ Brand trigger not found'); return; }
+
+        brandTrigger.click();
+        await sleep(400);
+
+        // Search and select the brand
+        const searchInput = document.querySelector('.ember-power-select-search-input, .ember-basic-dropdown-content input[type="search"], .ember-basic-dropdown-content input[type="text"], .ember-basic-dropdown-content input');
+        if (searchInput) {
+            searchInput.focus();
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(searchInput, brandName);
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(400);
+        }
+
+        const options = document.querySelectorAll('.ember-power-select-option, .ember-basic-dropdown-content [role="option"], .ember-basic-dropdown-content li');
+        let matched = false;
+        for (const opt of options) {
+            const optText = (opt.textContent || '').trim();
+            if (optText.toLowerCase() === brandName.toLowerCase() || optText.toLowerCase().includes(brandName.toLowerCase())) {
+                opt.click();
+                matched = true;
+                console.log(`⚡ Selected brand: "${optText}"`);
+                break;
+            }
+        }
+        if (!matched) {
+            console.warn(`⚡ No matching brand found for: "${brandName}"`);
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }
+    } catch (e) {
+        console.error('⚡ Error filling brand:', e);
+    }
+}
+
+/** Fill the requester field (email input in the header). */
+async function fillRequesterField(email) {
+    try {
+        // The requester field on new conversations is typically an input or a power-select
+        // Look for requester-related inputs
+        let requesterInput = document.querySelector('[class*="requester"] input, [class*="requester"] .ember-power-select-trigger, [placeholder*="requester" i], [placeholder*="email" i], [aria-label*="requester" i]');
+        if (!requesterInput) {
+            // Try to find by label
+            const allLabels = document.querySelectorAll('label, [class*="label"], span');
+            for (const lbl of allLabels) {
+                if (/requester/i.test(lbl.textContent || '')) {
+                    const parent = lbl.closest('[class*="field"], [class*="row"]') || lbl.parentElement;
+                    if (parent) {
+                        requesterInput = parent.querySelector('input, .ember-power-select-trigger, [contenteditable]');
+                        break;
+                    }
+                }
+            }
+        }
+        // Broader: look for the main email-like input at the top of new conversation
+        if (!requesterInput) {
+            const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])');
+            for (const inp of inputs) {
+                const ph = (inp.placeholder || '').toLowerCase();
+                if (ph.includes('email') || ph.includes('requester') || ph.includes('search') || ph.includes('name')) {
+                    requesterInput = inp;
+                    break;
+                }
+            }
+        }
+        if (!requesterInput) {
+            // On Kayako new conversation, the CC/requester area uses contenteditable or ember-power-select
+            requesterInput = document.querySelector('.ember-power-select-trigger-multiple-input, [class*="requester"] input');
+        }
+        if (!requesterInput) { console.warn('⚡ Requester input not found'); return; }
+
+        if (requesterInput.tagName === 'INPUT' || requesterInput.tagName === 'TEXTAREA') {
+            requesterInput.focus();
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(requesterInput, email);
+            requesterInput.dispatchEvent(new Event('input', { bubbles: true }));
+            requesterInput.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(500);
+
+            // Select from autocomplete if it appears
+            const options = document.querySelectorAll('.ember-power-select-option, [role="option"]');
+            for (const opt of options) {
+                if ((opt.textContent || '').toLowerCase().includes(email.toLowerCase())) {
+                    opt.click();
+                    console.log('⚡ Selected requester:', email);
+                    return;
+                }
+            }
+            // If no autocomplete, press Enter to confirm
+            requesterInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        } else {
+            // It's likely a trigger/ember element; click to open and type
+            requesterInput.click();
+            await sleep(300);
+            const searchInput = document.querySelector('.ember-power-select-search-input, .ember-basic-dropdown-content input');
+            if (searchInput) {
+                searchInput.focus();
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(searchInput, email);
+                searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                await sleep(500);
+                const options = document.querySelectorAll('.ember-power-select-option, [role="option"]');
+                for (const opt of options) {
+                    if ((opt.textContent || '').toLowerCase().includes(email.toLowerCase())) {
+                        opt.click();
+                        console.log('⚡ Selected requester:', email);
+                        return;
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('⚡ Error filling requester:', e);
+    }
+}
+
+/** Click the "Notes" tab to default to internal note mode. */
+async function clickNotesTab() {
+    try {
+        // The Notes tab is near the editor area; look for it by text
+        const tabs = document.querySelectorAll('[class*="channel"], [class*="tab"], [role="tab"], label, span, div');
+        for (const tab of tabs) {
+            const t = (tab.textContent || '').trim();
+            if (t === 'Notes' && tab.offsetHeight > 0) {
+                tab.click();
+                console.log('⚡ Clicked Notes tab');
+                return;
+            }
+        }
+        // Fallback: look for radio/input labeled Notes
+        const radios = document.querySelectorAll('input[type="radio"]');
+        for (const radio of radios) {
+            const label = radio.closest('label') || document.querySelector(`label[for="${radio.id}"]`);
+            if (label && /^Notes$/i.test((label.textContent || '').trim())) {
+                radio.click();
+                console.log('⚡ Clicked Notes radio');
+                return;
+            }
+        }
+        console.warn('⚡ Notes tab not found');
+    } catch (e) {
+        console.error('⚡ Error clicking Notes tab:', e);
+    }
+}
+
 // Use a single MutationObserver to handle all dynamic changes
 const observer = new MutationObserver(() => {
     // Skip if extension context is invalidated to avoid spam errors
@@ -3864,6 +4438,10 @@ const observer = new MutationObserver(() => {
         setupSidebarControls();
         // Setup auto-sizing for any new editors
         setupEditorAutoSizing();
+        // Enhance the "+ New" button with pre-fill dropdown
+        setupNewButtonEnhancement();
+        // Check if we need to auto-fill a new conversation
+        checkAndApplyPrefill();
     } catch (error) {
         if (error.message.includes('Extension context invalidated')) {
             extensionContextValid = false;
@@ -3899,6 +4477,10 @@ try { if (typeof setupInlineTranslation === 'function') { setupInlineTranslation
 try { setupSearchHoverPreview(); } catch (_) {}
 // Auto‑paste QC template if enabled
 try { setupQCMacroAutoPaste(); } catch (_) {}
+// Enhance the "+ New" button with pre-fill dropdown
+try { setupNewButtonEnhancement(); } catch (_) {}
+// Check if we need to auto-fill a new conversation
+try { checkAndApplyPrefill(); } catch (_) {}
 
 // Apply saved visibility states on load
 try {
