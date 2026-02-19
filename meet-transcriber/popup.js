@@ -25,8 +25,6 @@ async function loadSettings() {
       document.getElementById('meta-analysis-enabled').checked = config.enableMetaAnalysis !== false;
       document.getElementById('meta-interval').value = config.metaAnalysisInterval || 5;
       document.getElementById('meta-window').value = config.metaAnalysisWindow || 5;
-      document.getElementById('aws-access-key').value = config.awsAccessKeyId || '';
-      document.getElementById('aws-secret-key').value = config.awsSecretAccessKey || '';
       
       // Update slider displays
       updateSliderDisplays();
@@ -141,10 +139,6 @@ async function saveSettings() {
       enableMetaAnalysis: document.getElementById('meta-analysis-enabled').checked,
       metaAnalysisInterval: parseInt(document.getElementById('meta-interval').value),
       metaAnalysisWindow: parseInt(document.getElementById('meta-window').value),
-      awsAccessKeyId: document.getElementById('aws-access-key').value,
-      awsSecretAccessKey: document.getElementById('aws-secret-key').value,
-      awsRegion: 'us-east-1',
-      s3Bucket: 'meet-transcriber-uploads-899084202472'
     };
     
     // Validate that at least one API key is provided

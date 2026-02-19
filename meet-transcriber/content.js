@@ -112,10 +112,12 @@ class MeetTranscriber {
             <button class="copy-btn" title="Copy transcript">📋</button>
             <button class="download-btn" title="Download transcript">💾</button>
             <button class="upload-s3-btn" title="Upload to S3">☁️</button>
+            <button class="import-btn" title="Continue from file">📂</button>
           </div>
           <div class="output-content" id="transcript-output">
             <p class="placeholder">Start recording to see transcript...</p>
           </div>
+          <input type="file" id="import-file-input" accept=".txt" style="display:none" />
         </div>
       </div>
     `;
@@ -130,6 +132,8 @@ class MeetTranscriber {
     panel.querySelector('.copy-btn').addEventListener('click', () => this.copyTranscript());
     panel.querySelector('.download-btn').addEventListener('click', () => this.downloadTranscript());
     panel.querySelector('.upload-s3-btn').addEventListener('click', () => this.uploadToS3());
+    panel.querySelector('.import-btn').addEventListener('click', () => this.showImportOptions());
+    panel.querySelector('#import-file-input').addEventListener('change', (e) => this.importFromFile(e));
     panel.querySelector('.transcriber-minimize').addEventListener('click', () => this.toggleMinimize());
     
     // Make panel draggable
@@ -620,6 +624,174 @@ class MeetTranscriber {
       this.showNotification('❌ Upload error: ' + error.message, 'error');
       console.error('S3 upload error:', error);
     }
+  }
+
+  /** Show import options - from file or from saved session */
+  async showImportOptions() {
+    // Check for saved sessions first
+    const result = await chrome.storage.local.get(['meetTranscriptSessions']);
+    const sessions = result.meetTranscriptSessions || {};
+    const sessionList = Object.entries(sessions).sort((a, b) => 
+      new Date(b[1].lastUpdated) - new Date(a[1].lastUpdated)
+    );
+    
+    // Create a simple modal/dropdown for options
+    const existingModal = document.getElementById('import-modal');
+    if (existingModal) existingModal.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'import-modal';
+    modal.className = 'import-modal';
+    modal.innerHTML = `
+      <div class="import-modal-content">
+        <div class="import-modal-header">
+          <span>📂 Continue Transcript</span>
+          <button class="import-modal-close">×</button>
+        </div>
+        <div class="import-modal-body">
+          <button class="import-option import-from-file">
+            <span class="import-icon">📄</span>
+            <span>Import from .txt file</span>
+          </button>
+          ${sessionList.length > 0 ? `
+            <div class="import-divider">Or continue from saved session:</div>
+            <div class="saved-sessions-list">
+              ${sessionList.slice(0, 5).map(([id, session]) => `
+                <button class="import-option import-session" data-session-id="${id}">
+                  <span class="import-icon">💾</span>
+                  <div class="session-info">
+                    <span class="session-time">${new Date(session.lastUpdated).toLocaleString()}</span>
+                    <span class="session-details">${session.batchCount || 0} batches • ${session.url?.split('/').pop() || 'Unknown'}</span>
+                  </div>
+                </button>
+              `).join('')}
+            </div>
+          ` : '<div class="no-sessions">No saved sessions found</div>'}
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Event listeners
+    modal.querySelector('.import-modal-close').addEventListener('click', () => modal.remove());
+    modal.querySelector('.import-from-file').addEventListener('click', () => {
+      modal.remove();
+      this.controlPanel.querySelector('#import-file-input').click();
+    });
+    modal.querySelectorAll('.import-session').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sessionId = btn.dataset.sessionId;
+        this.importFromSession(sessionId, sessions[sessionId]);
+        modal.remove();
+      });
+    });
+    
+    // Close on outside click
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.remove();
+    });
+  }
+
+  /** Import transcript from a saved session */
+  async importFromSession(sessionId, session) {
+    if (!session?.transcript) {
+      this.showNotification('⚠️ Session has no transcript data', 'error');
+      return;
+    }
+    
+    // Parse the transcript and load it
+    this.loadTranscriptText(session.transcript, `session ${sessionId}`);
+    this.batchCounter = session.batchCount || 0;
+    this.controlPanel.querySelector('#batch-count').textContent = this.batchCounter;
+    
+    this.showNotification(`✅ Loaded ${this.batchCounter} batches from saved session`, 'success');
+  }
+
+  /** Import transcript from a text file */
+  importFromFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      this.loadTranscriptText(text, file.name);
+      this.showNotification(`✅ Imported transcript from ${file.name}`, 'success');
+    };
+    reader.onerror = () => {
+      this.showNotification('❌ Failed to read file', 'error');
+    };
+    reader.readAsText(file);
+    
+    // Reset input so same file can be selected again
+    event.target.value = '';
+  }
+
+  /** Load transcript text into the panel */
+  loadTranscriptText(text, source) {
+    const output = this.controlPanel.querySelector('#transcript-output');
+    
+    // Clear placeholder if present
+    const placeholder = output.querySelector('.placeholder');
+    if (placeholder) placeholder.remove();
+    
+    // Parse the text - look for [timestamp] patterns
+    const entries = [];
+    const lines = text.split('\n');
+    let currentEntry = null;
+    let batchCount = 0;
+    
+    for (const line of lines) {
+      const timestampMatch = line.match(/^\[([^\]]+)\]$/);
+      if (timestampMatch) {
+        if (currentEntry) {
+          entries.push(currentEntry);
+        }
+        currentEntry = { timestamp: timestampMatch[1], content: '' };
+        batchCount++;
+      } else if (currentEntry && line.trim()) {
+        currentEntry.content += (currentEntry.content ? '\n' : '') + line;
+      }
+    }
+    if (currentEntry && currentEntry.content) {
+      entries.push(currentEntry);
+    }
+    
+    // If no structured entries found, just add the whole text as one entry
+    if (entries.length === 0 && text.trim()) {
+      entries.push({
+        timestamp: 'Imported',
+        content: text.trim()
+      });
+      batchCount = 1;
+    }
+    
+    // Add entries to the panel
+    entries.forEach(entry => {
+      const entryDiv = document.createElement('div');
+      entryDiv.className = 'transcript-entry imported-entry';
+      entryDiv.innerHTML = `
+        <div class="entry-timestamp">${entry.timestamp}</div>
+        <div class="entry-content">${entry.content}</div>
+      `;
+      output.appendChild(entryDiv);
+      
+      // Also add to transcriptLog for meta-analysis
+      this.transcriptLog.push({
+        timestamp: Date.now(),
+        content: entry.content
+      });
+    });
+    
+    // Update batch counter
+    this.batchCounter = Math.max(this.batchCounter, batchCount);
+    this.controlPanel.querySelector('#batch-count').textContent = this.batchCounter;
+    
+    // Scroll to bottom
+    output.scrollTop = output.scrollHeight;
+    
+    console.log(`📂 Imported ${entries.length} entries from ${source}`);
   }
 
   showNotification(message, type = 'info') {
