@@ -3888,34 +3888,80 @@ function captureCurrentTicketContext() {
         }
 
         // Capture the first post/note's actual message body from the timeline.
-        // The message body is rendered inside a .fr-view div within a timeline post/note.
-        // We must avoid capturing SVG icons, author info, translation badges, or attachment metadata.
+        // Multiple strategies since Kayako renders differently depending on post type.
         let firstMessageBody = null;
-        // Strategy 1: find .fr-view elements inside the timeline (Froala renders message content)
+        // Strategy 1: .fr-view inside the timeline (Froala-rendered content)
         const frViews = document.querySelectorAll('[class*="ko-timeline-2"] .fr-view');
         if (frViews.length) firstMessageBody = frViews[0];
-        // Strategy 2: look for elements with specific note/post body classes
+        // Strategy 2: look for __body_ elements inside post/note items (non-Froala rendered)
         if (!firstMessageBody) {
-            firstMessageBody = document.querySelector('[class*="ko-timeline-2_list_post__body"] .fr-view, [class*="ko-timeline-2_list_item__note"] .fr-view');
+            const bodyEls = document.querySelectorAll('[class*="ko-timeline-2_list_post__body"], [class*="ko-timeline-2_list_item__body"]');
+            for (const el of bodyEls) {
+                // Prefer .fr-view inside body, otherwise use body itself
+                const fv = el.querySelector('.fr-view');
+                if (fv) { firstMessageBody = fv; break; }
+                if (el.textContent.trim().length > 5) { firstMessageBody = el; break; }
+            }
         }
-        if (firstMessageBody) {
+        // Strategy 3: extract plain text from the first timeline post via innerText
+        // and build simple HTML (avoids SVGs, icons, etc.)
+        if (!firstMessageBody) {
+            const timeline = document.querySelector('[class*="ko-timeline-2__container"]');
+            if (timeline) {
+                // Find message-or-note blocks (these wrap individual posts)
+                const posts = timeline.querySelectorAll('[class*="message-or-note"], [class*="ko-timeline-2_list_post"]');
+                for (const post of posts) {
+                    // Skip event/system entries (those without substantial text)
+                    const text = (post.innerText || '').trim();
+                    // Filter: must have >20 chars and not be just metadata
+                    if (text.length > 20 && !/^(called the Endpoint|changed the|set the tags|logged in)/.test(text)) {
+                        // Extract just the body portion: skip author line, date, etc.
+                        // Find content containers that are NOT headers/metadata
+                        const contentEl = post.querySelector('[class*="__content_"], [class*="__body_"]');
+                        if (contentEl) {
+                            // Use textContent to avoid SVG/icon contamination, wrap lines in paragraphs
+                            const cleanText = (contentEl.innerText || contentEl.textContent || '').trim();
+                            if (cleanText.length > 5) {
+                                ctx.firstMessageHtml = cleanText.split('\n').filter(l => l.trim()).map(l => `<p>${l}</p>`).join('');
+                                console.log('⚡ Captured first message via innerText:', cleanText.substring(0, 100));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (firstMessageBody && !ctx.firstMessageHtml) {
             ctx.firstMessageHtml = firstMessageBody.innerHTML;
             console.log('⚡ Captured first message body:', ctx.firstMessageHtml.substring(0, 100));
-        } else {
-            console.warn('⚡ Could not find first message .fr-view in timeline');
+        }
+        if (!ctx.firstMessageHtml) {
+            console.warn('⚡ Could not capture first message content from timeline');
         }
 
-        // Capture attachments — find all download links in the timeline area
+        // Capture attachments — find all download links on the page
         const attachments = [];
         const seenUrls = new Set();
         document.querySelectorAll('a[href*="/attachments/"][href*="/download"]').forEach(link => {
             const url = link.href;
             if (seenUrls.has(url)) return;
             seenUrls.add(url);
-            // Find the filename from a nearby name element or the URL
+            // Find filename: check nearby elements with name-related classes (hyphen and underscore variants)
             const container = link.closest('[class*="attachment"]');
-            const nameEl = container ? container.querySelector('[class*="name-element"], [class*="__name_"], [class*="__name "]') : null;
-            const name = nameEl ? nameEl.textContent.trim() : url.split('/').pop() || 'attachment';
+            let name = '';
+            if (container) {
+                const nameEl = container.querySelector('span[class*="name-element"], span[class*="name_element"], [class*="__name-element"], [class*="__name_"]');
+                if (nameEl) name = nameEl.textContent.trim();
+            }
+            // Fallback: parse filename from URL path (segment before /download)
+            if (!name) {
+                const urlParts = url.split('/');
+                const dlIdx = urlParts.lastIndexOf('download');
+                // URL pattern: .../attachments/{id}/url/{filename} or .../attachments/{id}/download
+                // The filename might not be in the URL, so use the attachment id
+                if (dlIdx > 1) name = 'attachment_' + urlParts[dlIdx - 1];
+                else name = 'attachment';
+            }
             attachments.push({ url, name });
         });
         if (attachments.length) {
@@ -4536,21 +4582,6 @@ async function fillEditorContent(html) {
 /** Download attachments from the original ticket and upload them to the new conversation. */
 async function transferAttachments(attachments) {
     try {
-        // Find the file input in the editor FOOTER (the paperclip/clip icon area), not the toolbar image input.
-        // The footer clip icon has class ko-text-editor__clip-icon_ and contains the file input.
-        const clipIcon = document.querySelector('[class*="ko-text-editor__clip-icon"]');
-        const fileInput = clipIcon ? clipIcon.querySelector('input[type="file"]') : null;
-        if (!fileInput) {
-            // Fallback: find any file input inside the editor footer
-            const footer = document.querySelector('[class*="ko-text-editor__footer"]');
-            const fallbackInput = footer ? footer.querySelector('input[type="file"]') : null;
-            if (!fallbackInput) {
-                console.warn('⚡ File input not found for attachment upload');
-                return;
-            }
-        }
-        const targetInput = fileInput || document.querySelector('[class*="ko-text-editor__footer"] input[type="file"]');
-
         const files = [];
         for (const att of attachments) {
             try {
@@ -4560,10 +4591,17 @@ async function transferAttachments(attachments) {
                     console.warn(`⚡ Failed to download ${att.name}: HTTP ${response.status} ${response.statusText}`);
                     continue;
                 }
+                // Try to get real filename from Content-Disposition header
+                let realName = att.name;
+                const cd = response.headers.get('content-disposition');
+                if (cd) {
+                    const match = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                    if (match && match[1]) realName = match[1].replace(/['"]/g, '').trim();
+                }
                 const blob = await response.blob();
-                const file = new File([blob], att.name, { type: blob.type || 'application/octet-stream' });
+                const file = new File([blob], realName, { type: blob.type || 'application/octet-stream' });
                 files.push(file);
-                console.log(`⚡ Downloaded attachment: ${att.name} (${blob.size} bytes, type: ${blob.type})`);
+                console.log(`⚡ Downloaded attachment: ${realName} (${blob.size} bytes, type: ${blob.type})`);
             } catch (e) {
                 console.error(`⚡ Error downloading attachment ${att.name}:`, e);
             }
@@ -4574,20 +4612,39 @@ async function transferAttachments(attachments) {
             return;
         }
 
-        // Use DataTransfer to set the files on the file input and trigger change
+        // Find ALL file inputs in the editor area (footer clip icon + toolbar image upload)
+        const allFileInputs = document.querySelectorAll('[class*="ko-text-editor"] input[type="file"]');
+        console.log(`⚡ Found ${allFileInputs.length} file input(s) in editor`);
+
+        // Try each file input until one is accepted by Kayako
         const dt = new DataTransfer();
         for (const f of files) dt.items.add(f);
-        targetInput.files = dt.files;
-        targetInput.dispatchEvent(new Event('change', { bubbles: true }));
-        console.log(`⚡ Attached ${files.length} file(s) via file input`);
 
-        // Wait and verify the attachment appeared in the UI
-        await sleep(1000);
-        const attachmentIndicator = document.querySelector('[class*="ko-text-editor__attachment"], [class*="attachment-preview"], [class*="file-preview"]');
-        if (attachmentIndicator) {
-            console.log('⚡ Attachment indicator visible in editor');
+        for (const targetInput of allFileInputs) {
+            targetInput.files = dt.files;
+            // Fire multiple event types to maximize compatibility with Ember/jQuery
+            targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+            targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+            // Also try jQuery-style trigger if available
+            try {
+                if (window.jQuery) window.jQuery(targetInput).trigger('change');
+            } catch (_) {}
+            console.log(`⚡ Set files on input: ${targetInput.id || targetInput.className}`);
+        }
+
+        // Wait and verify
+        await sleep(1500);
+        // Check for any new attachment indicator in the editor area
+        const editorContainer = document.querySelector('[class*="ko-text-editor__container"]');
+        const hasAttachment = editorContainer && (
+            editorContainer.querySelector('[class*="attachment"], [class*="file-name"], [class*="file-preview"]') ||
+            editorContainer.textContent.includes(files[0].name)
+        );
+        if (hasAttachment) {
+            console.log('⚡ Attachment appears in editor');
         } else {
-            console.warn('⚡ Attachment indicator not visible — upload may not have been picked up by Kayako');
+            console.warn('⚡ Attachment may not have been picked up — Kayako might need manual attachment');
+            showQuickNotification('⚠️ Attachment downloaded but may need manual upload', 'info');
         }
     } catch (e) {
         console.error('⚡ Error transferring attachments:', e);
