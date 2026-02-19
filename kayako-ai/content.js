@@ -62,7 +62,7 @@ class KayakoAIEnhancer {
         openaiKey: config.openaiKey || '',
         anthropicKey: config.anthropicKey || '',
         apiKey: config.apiKey || config.openaiKey || config.anthropicKey || '',
-        model: config.model || 'gpt-5-mini',
+        model: config.model || 'gpt-5.2',
         enabled: config.enabled !== false,
         useTicketContext: config.useTicketContext || false,
         systemPrompt: config.systemPrompt || '',
@@ -3262,17 +3262,53 @@ ${numberedMessages.join('\n\n')}
       systemPrompt += '\n\nAdditional instructions: ' + this.config.systemPrompt.trim();
     }
     
-    const model = this.config.model || 'gpt-5-mini';
+    const model = this.config.model || 'gpt-5.2';
     
-    // Clamp overly large inputs to avoid silently empty outputs
-    const clamp = (s, max) => (s && s.length > max) ? (s.slice(0, max) + '\n…[truncated]') : (s || '');
-    const MAX_TEXT = 8000; // characters
-    const MAX_CTX = 8000;
+    // Use configurable context limit (default 60k chars ≈ 15k tokens)
+    const configuredLimit = this.config?.maxContextChars || 60000;
+    const MAX_TEXT = Math.max(configuredLimit, 20000);
+    const MAX_CTX = configuredLimit;
+
+    // Track truncation for user warning
+    let truncationInfo = { textTruncated: false, ctxTruncated: false, textOriginal: 0, ctxOriginal: 0, limit: configuredLimit };
+
+    const clamp = (s, max, label) => {
+      if (!s) return '';
+      if (s.length > max) {
+        if (label === 'context') {
+          truncationInfo.ctxTruncated = true;
+          truncationInfo.ctxOriginal = s.length;
+        } else {
+          truncationInfo.textTruncated = true;
+          truncationInfo.textOriginal = s.length;
+        }
+        console.warn(`⚠️ ${label} truncated: ${s.length.toLocaleString()} chars → ${max.toLocaleString()} chars (limit: ${max.toLocaleString()})`);
+        return s.slice(0, max) + `\n…[truncated from ${s.length.toLocaleString()} to ${max.toLocaleString()} chars]`;
+      }
+      return s;
+    };
+
     // Build user content with the user's instruction first, then details, then context
     let userContent = '';
     if (prompt) userContent += `${prompt}`;
-    if (text) userContent += `\n\nDetails:\n${clamp(text, MAX_TEXT)}`;
-    if (ticketContext) userContent += `\n\nTicket context:\n${clamp(ticketContext, MAX_CTX)}`;
+    if (text) userContent += `\n\nDetails:\n${clamp(text, MAX_TEXT, 'details')}`;
+    if (ticketContext) userContent += `\n\nTicket context:\n${clamp(ticketContext, MAX_CTX, 'context')}`;
+
+    // Warn the user if truncation occurred
+    if (truncationInfo.ctxTruncated || truncationInfo.textTruncated) {
+      const parts = [];
+      if (truncationInfo.ctxTruncated) {
+        parts.push(`Ticket history (${truncationInfo.ctxOriginal.toLocaleString()} chars) exceeded the ${truncationInfo.limit.toLocaleString()}-char limit`);
+      }
+      if (truncationInfo.textTruncated) {
+        parts.push(`Prompt details (${truncationInfo.textOriginal.toLocaleString()} chars) exceeded the ${MAX_TEXT.toLocaleString()}-char limit`);
+      }
+      this.showNotification(
+        `⚠️ Context truncated: ${parts.join('; ')}. Some ticket messages may be missing. Increase "Context Size Limit" in extension settings for full history.`,
+        'warning'
+      );
+      console.warn('⚠️ Truncation details:', truncationInfo);
+    }
     
     const userMessage = {
       role: 'user'

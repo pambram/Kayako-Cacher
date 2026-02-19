@@ -6,11 +6,13 @@ const DEFAULT_CONFIG = {
   openaiKey: '',
   anthropicKey: '',
   apiKey: '', // Kept for backward compatibility
-  model: 'gpt-5-mini',
+  model: 'gpt-5.2',
   enabled: true,
   useTicketContext: false,
   systemPrompt: '',
   temperature: 0.7,
+  // Context truncation limits (in characters; ~4 chars ≈ 1 token)
+  maxContextChars: 60000,
   // Experimental features
   tavilyKey: '',
   enableUrlFetch: false,
@@ -338,7 +340,7 @@ async function handleOpenAIChat(requestBody, sendResponse) {
     if (!config.apiKey) {
       throw new Error('API key is required');
     }
-    const model = requestBody?.model || config.model || 'gpt-5-mini';
+    const model = requestBody?.model || config.model || 'gpt-5.2';
     const body = {
       model,
       messages: requestBody?.messages || [],
@@ -435,14 +437,20 @@ async function handleAnthropicChat(requestBody, sendResponse) {
       body.system = systemPrompt;
     }
 
+    const headers = {
+      'x-api-key': apiKey,
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    };
+    if (model.includes('sonnet-4-6') || model.includes('opus-4-6')) {
+      headers['anthropic-beta'] = 'context-1m-2025-08-07';
+      console.log('📐 1M context beta enabled for', model);
+    }
+
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers,
       body: JSON.stringify(body)
     });
 
@@ -900,7 +908,7 @@ async function handleTestConnection(config, sendResponse) {
       throw new Error('API key is required');
     }
     
-    const model = config.model || 'gpt-5-mini';
+    const model = config.model || 'gpt-5.2';
     const requestBody = {
       model: model,
       messages: [

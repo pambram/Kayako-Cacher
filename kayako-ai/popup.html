@@ -47,9 +47,7 @@
           <select id="model">
             <!-- OpenAI models -->
             <optgroup label="OpenAI" id="openaiModels">
-              <option value="gpt-5-nano">GPT-5 Nano (Fastest, most cost-efficient)</option>
-              <option value="gpt-5-mini">GPT-5 Mini (Fast, Cost-effective)</option>
-              <option value="gpt-5.1">GPT-5 (Best Quality)</option>
+              <option value="gpt-5.2">GPT-5.2 (Latest, Best Quality)</option>
             </optgroup>
             <!-- Claude models -->
             <optgroup label="Claude" id="claudeModels" style="display: none;">
@@ -92,6 +90,21 @@
           </label>
           <small class="help-text">
             <strong>ℹ️ Info:</strong> This provides conversation history to the AI for more accurate responses, but uses more tokens and takes longer to process.
+          </small>
+        </div>
+
+        <div class="form-group" id="contextLimitGroup">
+          <label for="maxContextChars">Context Size Limit</label>
+          <select id="maxContextChars">
+            <option value="20000">Small (20k chars / ~5k tokens) - Faster, cheaper</option>
+            <option value="40000">Medium (40k chars / ~10k tokens)</option>
+            <option value="60000">Large (60k chars / ~15k tokens) - Recommended</option>
+            <option value="100000">Extra Large (100k chars / ~25k tokens)</option>
+            <option value="200000">Very Large (200k chars / ~50k tokens) - Full history</option>
+            <option value="500000">Maximum (500k chars / ~125k tokens) - Opus/Sonnet 4.6 with 1M context</option>
+          </select>
+          <small class="help-text">
+            Max characters of ticket history sent to the AI. Larger = more accurate but slower/costlier. A warning will appear if context is truncated.
           </small>
         </div>
 

@@ -201,11 +201,14 @@ class PopupManager {
     document.getElementById('provider').value = provider;
     document.getElementById('openaiKey').value = this.config.openaiKey || '';
     document.getElementById('anthropicKey').value = this.config.anthropicKey || '';
-    document.getElementById('model').value = this.config.model || 'gpt-5-mini';
+    document.getElementById('model').value = this.config.model || 'gpt-5.2';
     document.getElementById('useTicketContext').checked = this.config.useTicketContext === true;
     document.getElementById('systemPrompt').value = this.config.systemPrompt || '';
     document.getElementById('temperature').value = this.config.temperature || '0.7';
     
+    // Context size limit
+    document.getElementById('maxContextChars').value = this.config.maxContextChars || '60000';
+
     // Update experimental features
     document.getElementById('tavilyKey').value = this.config.tavilyKey || '';
     document.getElementById('enableUrlFetch').checked = this.config.enableUrlFetch === true;
@@ -223,7 +226,7 @@ class PopupManager {
     }
 
     // Show/hide temperature control based on current model
-    this.toggleTemperatureVisibility(this.config.model || 'gpt-5-mini');
+    this.toggleTemperatureVisibility(this.config.model || 'gpt-5.2');
   }
 
   toggleProviderFields(provider) {
@@ -556,6 +559,8 @@ class PopupManager {
         useTicketContext: document.getElementById('useTicketContext').checked,
         systemPrompt: document.getElementById('systemPrompt').value.trim(),
         temperature: parseFloat(document.getElementById('temperature').value),
+        // Context size limit
+        maxContextChars: parseInt(document.getElementById('maxContextChars').value) || 60000,
         // Experimental features
         tavilyKey: document.getElementById('tavilyKey').value.trim(),
         enableUrlFetch: document.getElementById('enableUrlFetch').checked,
