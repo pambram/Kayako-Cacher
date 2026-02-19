@@ -3887,10 +3887,42 @@ function captureCurrentTicketContext() {
             if (activeTab) ctx.subject = (activeTab.textContent || '').trim();
         }
 
-        // Capture the first public post's HTML content from the timeline
-        const firstPost = document.querySelector('[class*="ko-timeline-2_list_item__post"] [class*="ko-timeline-2_list_item__content"], [class*="ko-timeline-2_list_post__post"] [class*="content"]');
-        if (firstPost) {
-            ctx.firstMessageHtml = firstPost.innerHTML;
+        // Capture the first post/note's actual message body from the timeline.
+        // The message body is rendered inside a .fr-view div within a timeline post/note.
+        // We must avoid capturing SVG icons, author info, translation badges, or attachment metadata.
+        let firstMessageBody = null;
+        // Strategy 1: find .fr-view elements inside the timeline (Froala renders message content)
+        const frViews = document.querySelectorAll('[class*="ko-timeline-2"] .fr-view');
+        if (frViews.length) firstMessageBody = frViews[0];
+        // Strategy 2: look for elements with specific note/post body classes
+        if (!firstMessageBody) {
+            firstMessageBody = document.querySelector('[class*="ko-timeline-2_list_post__body"] .fr-view, [class*="ko-timeline-2_list_item__note"] .fr-view');
+        }
+        if (firstMessageBody) {
+            ctx.firstMessageHtml = firstMessageBody.innerHTML;
+            console.log('⚡ Captured first message body:', ctx.firstMessageHtml.substring(0, 100));
+        } else {
+            console.warn('⚡ Could not find first message .fr-view in timeline');
+        }
+
+        // Capture attachments — find all download links in the timeline area
+        const attachments = [];
+        const seenUrls = new Set();
+        document.querySelectorAll('a[href*="/attachments/"][href*="/download"]').forEach(link => {
+            const url = link.href;
+            if (seenUrls.has(url)) return;
+            seenUrls.add(url);
+            // Find the filename from a nearby name element or the URL
+            const container = link.closest('[class*="attachment"]');
+            const nameEl = container ? container.querySelector('[class*="name-element"], [class*="__name_"], [class*="__name "]') : null;
+            const name = nameEl ? nameEl.textContent.trim() : url.split('/').pop() || 'attachment';
+            attachments.push({ url, name });
+        });
+        if (attachments.length) {
+            ctx.attachments = attachments;
+            console.log('⚡ Captured attachments:', attachments.map(a => a.name));
+        } else {
+            console.log('⚡ No attachments found on this ticket');
         }
     } catch (e) {
         console.error('⚡ Error capturing ticket context:', e);
@@ -4035,6 +4067,7 @@ function triggerPrefillNewConversation() {
             assignee: 'L1 Agent',
             subject: ctx.subject || '',
             firstMessageHtml: ctx.firstMessageHtml || '',
+            attachments: ctx.attachments || [],
             timestamp: Date.now()
         };
 
@@ -4181,6 +4214,16 @@ async function applyPrefillFields(prefill) {
             await fillEditorContent(prefill.firstMessageHtml);
         }
 
+        // Transfer attachments from the original ticket
+        if (prefill.attachments && prefill.attachments.length) {
+            await transferAttachments(prefill.attachments);
+        }
+
+        // Post-fill verification: check Assignee didn't revert to (Unassigned)
+        if (prefill.assignee) {
+            await verifyAndRetryAssignee(prefill.assignee);
+        }
+
         // Clean up
         chrome.storage.local.remove('newTicketPrefill');
         showQuickNotification('⚡ Ticket pre-filled successfully!', 'success');
@@ -4203,6 +4246,23 @@ function emberType(input, value) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     // Also fire keyup to trigger Ember observers that listen to keyup
     input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+}
+
+/** Collect all visible power-select options from open dropdown content elements. */
+function collectVisibleOptions() {
+    const results = [];
+    const allDC = document.querySelectorAll('[id^="ember-basic-dropdown-content-"]:not(.ember-basic-dropdown-content-placeholder)');
+    for (const dc of allDC) {
+        if (dc.style.display === 'none' || !dc.offsetHeight) continue;
+        dc.querySelectorAll('.ember-power-select-option, [role="option"]').forEach(opt => {
+            if (opt.offsetHeight) results.push(opt);
+        });
+    }
+    // Also include global power-select options not inside a dropdown-content wrapper
+    document.querySelectorAll('.ember-power-select-option').forEach(opt => {
+        if (opt.offsetHeight && !results.includes(opt)) results.push(opt);
+    });
+    return results;
 }
 
 async function fillSidebarDropdown(labelText, value) {
@@ -4246,36 +4306,27 @@ async function fillSidebarDropdown(labelText, value) {
             }
         }
 
-        // Poll for matching options (they may take time to render after search)
+        // Poll for matching options (they may take time to render after search).
+        // Prefer exact match over partial/contains match.
         let matched = false;
         for (let attempt = 0; attempt < 8 && !matched; attempt++) {
-            // Search in all visible dropdown content elements
-            const visibleDC = document.querySelectorAll('[id^="ember-basic-dropdown-content-"]:not(.ember-basic-dropdown-content-placeholder)');
-            for (const dc of visibleDC) {
-                if (dc.style.display === 'none' || !dc.offsetHeight) continue;
-                const options = dc.querySelectorAll('.ember-power-select-option, [role="option"]');
-                for (const opt of options) {
-                    if (!opt.offsetHeight) continue;
-                    const optText = (opt.textContent || '').trim();
-                    if (optText.toLowerCase() === value.toLowerCase() || optText.toLowerCase().includes(value.toLowerCase())) {
-                        emberClick(opt);
-                        matched = true;
-                        console.log(`⚡ Selected "${optText}" for ${labelText}`);
-                        break;
-                    }
+            const visibleOpts = collectVisibleOptions();
+            // First pass: exact match
+            for (const opt of visibleOpts) {
+                if (opt.textContent.trim().toLowerCase() === value.toLowerCase()) {
+                    emberClick(opt);
+                    matched = true;
+                    console.log(`⚡ Selected "${opt.textContent.trim()}" (exact) for ${labelText}`);
+                    break;
                 }
-                if (matched) break;
             }
-            // Also check globally (some dropdowns render at document root)
+            // Second pass: contains match (only if no exact match)
             if (!matched) {
-                const globalOpts = document.querySelectorAll('.ember-power-select-option');
-                for (const opt of globalOpts) {
-                    if (!opt.offsetHeight) continue;
-                    const optText = (opt.textContent || '').trim();
-                    if (optText.toLowerCase() === value.toLowerCase() || optText.toLowerCase().includes(value.toLowerCase())) {
+                for (const opt of visibleOpts) {
+                    if (opt.textContent.trim().toLowerCase().includes(value.toLowerCase())) {
                         emberClick(opt);
                         matched = true;
-                        console.log(`⚡ Selected "${optText}" (global) for ${labelText}`);
+                        console.log(`⚡ Selected "${opt.textContent.trim()}" (partial) for ${labelText}`);
                         break;
                     }
                 }
@@ -4337,21 +4388,24 @@ async function fillBrandField(brandName) {
             }
         }
 
-        // Find and click the matching option in visible dropdown content
+        // Find and click the matching option (exact match first, then partial)
         let matched = false;
-        for (const dc of allDC) {
-            if (dc.style.display === 'none' || !dc.offsetHeight) continue;
-            const options = dc.querySelectorAll('.ember-power-select-option, [role="option"]');
-            for (const opt of options) {
-                const optText = (opt.textContent || '').trim();
-                if (optText.toLowerCase() === brandName.toLowerCase() || optText.toLowerCase().includes(brandName.toLowerCase())) {
-                    emberClick(opt);
-                    matched = true;
-                    console.log(`⚡ Selected brand: "${optText}"`);
+        const visibleOpts = collectVisibleOptions();
+        for (const opt of visibleOpts) {
+            if (opt.textContent.trim().toLowerCase() === brandName.toLowerCase()) {
+                emberClick(opt); matched = true;
+                console.log(`⚡ Selected brand: "${opt.textContent.trim()}" (exact)`);
+                break;
+            }
+        }
+        if (!matched) {
+            for (const opt of visibleOpts) {
+                if (opt.textContent.trim().toLowerCase().includes(brandName.toLowerCase())) {
+                    emberClick(opt); matched = true;
+                    console.log(`⚡ Selected brand: "${opt.textContent.trim()}" (partial)`);
                     break;
                 }
             }
-            if (matched) break;
         }
         if (!matched) {
             console.warn(`⚡ No matching brand found for: "${brandName}"`);
@@ -4458,18 +4512,115 @@ async function fillSubjectField(subject) {
 /** Paste HTML content into the Froala editor on the new conversation page. */
 async function fillEditorContent(html) {
     try {
-        const editor = document.querySelector('.fr-element.fr-view[contenteditable="true"]');
-        if (editor) {
-            editor.focus();
-            editor.innerHTML = html;
-            editor.dispatchEvent(new Event('input', { bubbles: true }));
-            editor.dispatchEvent(new Event('fr-change', { bubbles: true }));
-            console.log('⚡ Set editor content from original ticket');
-        } else {
+        // Find the Froala editor — it may or may not have contenteditable=true initially
+        let editor = document.querySelector('.fr-element.fr-view');
+        if (!editor) {
             console.warn('⚡ Editor element not found');
+            return;
         }
+        // Click/focus to activate the editor if needed
+        emberClick(editor);
+        await sleep(300);
+        editor.focus();
+        // Re-query in case a new element appeared after activation
+        editor = document.querySelector('.fr-element.fr-view[contenteditable="true"]') || editor;
+        editor.innerHTML = html;
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+        editor.dispatchEvent(new Event('fr-change', { bubbles: true }));
+        console.log('⚡ Set editor content from original ticket');
     } catch (e) {
         console.error('⚡ Error filling editor:', e);
+    }
+}
+
+/** Download attachments from the original ticket and upload them to the new conversation. */
+async function transferAttachments(attachments) {
+    try {
+        // Find the file input in the editor FOOTER (the paperclip/clip icon area), not the toolbar image input.
+        // The footer clip icon has class ko-text-editor__clip-icon_ and contains the file input.
+        const clipIcon = document.querySelector('[class*="ko-text-editor__clip-icon"]');
+        const fileInput = clipIcon ? clipIcon.querySelector('input[type="file"]') : null;
+        if (!fileInput) {
+            // Fallback: find any file input inside the editor footer
+            const footer = document.querySelector('[class*="ko-text-editor__footer"]');
+            const fallbackInput = footer ? footer.querySelector('input[type="file"]') : null;
+            if (!fallbackInput) {
+                console.warn('⚡ File input not found for attachment upload');
+                return;
+            }
+        }
+        const targetInput = fileInput || document.querySelector('[class*="ko-text-editor__footer"] input[type="file"]');
+
+        const files = [];
+        for (const att of attachments) {
+            try {
+                console.log(`⚡ Downloading attachment: ${att.name} from ${att.url}`);
+                const response = await fetch(att.url, { credentials: 'include' });
+                if (!response.ok) {
+                    console.warn(`⚡ Failed to download ${att.name}: HTTP ${response.status} ${response.statusText}`);
+                    continue;
+                }
+                const blob = await response.blob();
+                const file = new File([blob], att.name, { type: blob.type || 'application/octet-stream' });
+                files.push(file);
+                console.log(`⚡ Downloaded attachment: ${att.name} (${blob.size} bytes, type: ${blob.type})`);
+            } catch (e) {
+                console.error(`⚡ Error downloading attachment ${att.name}:`, e);
+            }
+        }
+
+        if (files.length === 0) {
+            console.warn('⚡ No attachments were downloaded successfully');
+            return;
+        }
+
+        // Use DataTransfer to set the files on the file input and trigger change
+        const dt = new DataTransfer();
+        for (const f of files) dt.items.add(f);
+        targetInput.files = dt.files;
+        targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log(`⚡ Attached ${files.length} file(s) via file input`);
+
+        // Wait and verify the attachment appeared in the UI
+        await sleep(1000);
+        const attachmentIndicator = document.querySelector('[class*="ko-text-editor__attachment"], [class*="attachment-preview"], [class*="file-preview"]');
+        if (attachmentIndicator) {
+            console.log('⚡ Attachment indicator visible in editor');
+        } else {
+            console.warn('⚡ Attachment indicator not visible — upload may not have been picked up by Kayako');
+        }
+    } catch (e) {
+        console.error('⚡ Error transferring attachments:', e);
+    }
+}
+
+/** Verify assignee was set correctly; retry if it reverted to (Unassigned). */
+async function verifyAndRetryAssignee(expectedValue) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await sleep(1500);
+        try {
+            const sidebar = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+            if (!sidebar) break;
+            const triggers = sidebar.querySelectorAll('.ember-power-select-trigger, .ember-basic-dropdown-trigger');
+            for (const trig of triggers) {
+                const headerEl = trig.querySelector('[class*="__header_"]');
+                if (!headerEl || headerEl.textContent.trim().toLowerCase() !== 'assignee') continue;
+                const placeholderEl = trig.querySelector('[class*="__placeholder_"]');
+                const currentValue = placeholderEl ? (placeholderEl.getAttribute('title') || placeholderEl.textContent || '').trim() : '';
+                if (currentValue.toLowerCase().includes(expectedValue.toLowerCase())) {
+                    console.log(`⚡ Assignee verified: "${currentValue}"`);
+                    return;
+                }
+                if (/unassigned/i.test(currentValue) || currentValue === '-' || !currentValue) {
+                    console.log(`⚡ Assignee is "${currentValue}", retrying (attempt ${attempt + 1})...`);
+                    await fillSidebarDropdown('Assignee', expectedValue);
+                    break;
+                }
+                // Some other value; might be correct in a different format
+                console.log(`⚡ Assignee shows "${currentValue}", expected "${expectedValue}"`);
+                return;
+            }
+        } catch (_) {}
     }
 }
 
