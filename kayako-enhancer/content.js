@@ -4168,19 +4168,21 @@ function waitAndClickConversation(attempts = 0) {
 function checkAndApplyPrefill() {
     try {
         if (!window.location.href.match(/\/agent\/conversations\/new\//)) return;
-        if (window.__kayakoPrefillApplied) return;
+        // Track which URL we already applied to (allows reuse on a different new conversation)
+        const currentUrl = window.location.href;
+        if (window.__kayakoPrefillAppliedUrl === currentUrl) return;
 
         chrome.storage.local.get(['newTicketPrefill'], (data) => {
             if (chrome.runtime.lastError || !data || !data.newTicketPrefill) return;
             const prefill = data.newTicketPrefill;
-            // Expire stale prefill data (older than 30 seconds)
-            if (Date.now() - prefill.timestamp > 30000) {
+            // Expire stale prefill data (older than 60 seconds)
+            if (Date.now() - prefill.timestamp > 60000) {
                 chrome.storage.local.remove('newTicketPrefill');
                 return;
             }
-            // Only apply once
-            if (window.__kayakoPrefillApplied) return;
-            window.__kayakoPrefillApplied = true;
+            // Only apply once per URL
+            if (window.__kayakoPrefillAppliedUrl === currentUrl) return;
+            window.__kayakoPrefillAppliedUrl = currentUrl;
 
             console.log('⚡ Applying prefill data on new conversation:', prefill);
             applyPrefillFields(prefill);
