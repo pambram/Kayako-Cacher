@@ -213,6 +213,7 @@ class PopupManager {
     document.getElementById('tavilyKey').value = this.config.tavilyKey || '';
     document.getElementById('enableUrlFetch').checked = this.config.enableUrlFetch === true;
     document.getElementById('enableWebSearch').checked = this.config.enableWebSearch === true;
+    document.getElementById('threeSixtyRulesUrl').value = this.config.threeSixtyRulesUrl || '';
 
     // Show/hide provider-specific fields
     this.toggleProviderFields(provider);
@@ -564,7 +565,8 @@ class PopupManager {
         // Experimental features
         tavilyKey: document.getElementById('tavilyKey').value.trim(),
         enableUrlFetch: document.getElementById('enableUrlFetch').checked,
-        enableWebSearch: document.getElementById('enableWebSearch').checked
+        enableWebSearch: document.getElementById('enableWebSearch').checked,
+        threeSixtyRulesUrl: document.getElementById('threeSixtyRulesUrl').value.trim()
       };
 
       const response = await chrome.runtime.sendMessage({

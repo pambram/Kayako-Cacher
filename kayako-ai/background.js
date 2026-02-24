@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
   tavilyKey: '',
   enableUrlFetch: false,
   enableWebSearch: false,
+  threeSixtyRulesUrl: '',
   // Escalation templates library - default template is extracted from screen
   escalationTemplates: [
     {

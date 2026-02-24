@@ -156,17 +156,18 @@ class KayakoAIEnhancer {
 
     // Create AI button group styled for Kayako
     const aiButtonGroup = this.createKayakoAIButton(editorWrapper);
+    const chatButtonGroup = this.createTicketChatButton(editorWrapper);
     
     // Find a good place to insert the button - look for existing button groups
     const buttonGroups = kayakoHeader.querySelectorAll('.ko-text-editor__group_1p5g6r');
     if (buttonGroups.length > 0) {
       // Add to the last button group
       const lastGroup = buttonGroups[buttonGroups.length - 1];
-      // console.log('🔧 Adding AI button to last Kayako button group');
       lastGroup.appendChild(aiButtonGroup);
+      lastGroup.appendChild(chatButtonGroup);
     } else {
-      // console.log('🔧 Adding AI button to end of Kayako header');
       kayakoHeader.appendChild(aiButtonGroup);
+      kayakoHeader.appendChild(chatButtonGroup);
     }
     // Removed quick Beautify icon to avoid duplication; Beautify is in AI dropdown only
     
@@ -354,6 +355,27 @@ class KayakoAIEnhancer {
     buttonWrapper.appendChild(dropdownButton);
     buttonWrapper.appendChild(dropdownMenu);
 
+    return buttonWrapper;
+  }
+
+  createTicketChatButton(editorElement) {
+    const buttonWrapper = document.createElement('div');
+    buttonWrapper.className = 'ko-text-editor__item_1p5g6r ko-text-editor__itemWrap_1p5g6r kayako-ai-wrapper';
+
+    const chatButton = document.createElement('button');
+    chatButton.type = 'button';
+    chatButton.className = 'kayako-ai-chat-btn';
+    chatButton.title = 'Chat with Ticket';
+    chatButton.innerHTML = '💬';
+    chatButton.setAttribute('aria-label', 'Chat with Ticket');
+
+    chatButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleTicketChatPanel();
+    });
+
+    buttonWrapper.appendChild(chatButton);
     return buttonWrapper;
   }
 
@@ -2767,7 +2789,7 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
     let isDragging = false;
     let startX, startY, initialX, initialY;
 
-    const header = modal.querySelector('.ai-preview-header, .ai-custom-prompt-header');
+    const header = modal.querySelector('.ai-preview-header, .ai-custom-prompt-header, .kayako-ai-chat-header');
     if (!header) return;
 
     header.style.cursor = 'move';
@@ -3538,6 +3560,434 @@ ${numberedMessages.join('\n\n')}
     } catch (_) {
       return null;
     }
+  }
+
+  // ============================================
+  // Ticket Chat Panel
+  // ============================================
+
+  toggleTicketChatPanel() {
+    if (this.ticketChatPanel && this.ticketChatPanel.parentNode) {
+      if (this.ticketChatPanel.classList.contains('minimized')) {
+        this.ticketChatPanel.classList.remove('minimized');
+      } else {
+        this.ticketChatPanel.remove();
+        this.ticketChatPanel = null;
+      }
+      return;
+    }
+    this.createTicketChatPanel();
+  }
+
+  createTicketChatPanel() {
+    if (this.ticketChatPanel && this.ticketChatPanel.parentNode) {
+      this.ticketChatPanel.remove();
+    }
+
+    // Initialize state if not already
+    if (!this.ticketChatHistory) this.ticketChatHistory = [];
+    if (!this.ticketChatContext) this.ticketChatContext = '';
+
+    const panel = document.createElement('div');
+    panel.className = 'kayako-ai-chat-panel';
+
+    panel.innerHTML = `
+      <div class="kayako-ai-chat-header">
+        <span class="kayako-ai-chat-header-title">Chat with Ticket</span>
+        <button class="kayako-ai-chat-header-btn kayako-ai-chat-360-btn" data-action="360" title="Perform 360 analysis">360</button>
+        <button class="kayako-ai-chat-header-btn" data-action="refresh" title="Refresh context">&#x21bb;</button>
+        <button class="kayako-ai-chat-header-btn" data-action="minimize" title="Minimize">&#x2014;</button>
+        <button class="kayako-ai-chat-header-btn" data-action="close" title="Close">&times;</button>
+      </div>
+      <div class="kayako-ai-chat-context-status">Gathering ticket context...</div>
+      <div class="kayako-ai-chat-messages"></div>
+      <div class="kayako-ai-chat-quick-buttons">
+        <div class="kayako-ai-chat-quick-static">
+          <button class="kayako-ai-chat-quick-btn" data-q="What is this ticket about? Give me a brief summary.">What is this about?</button>
+          <button class="kayako-ai-chat-quick-btn" data-q="What is the current blocker or pending action on this ticket?">Current blocker?</button>
+        </div>
+        <div class="kayako-ai-chat-quick-dynamic">
+          <span class="kayako-ai-chat-quick-loading">Analyzing ticket...</span>
+        </div>
+      </div>
+      <div class="kayako-ai-chat-input-area">
+        <textarea class="kayako-ai-chat-input" placeholder="Ask about this ticket..." rows="1"></textarea>
+        <button class="kayako-ai-chat-send-btn" title="Send">&#x27A4;</button>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+    this.ticketChatPanel = panel;
+
+    // Wire up header buttons
+    panel.querySelector('[data-action="close"]').addEventListener('click', () => {
+      panel.remove();
+      this.ticketChatPanel = null;
+    });
+    panel.querySelector('[data-action="minimize"]').addEventListener('click', () => {
+      panel.classList.toggle('minimized');
+    });
+    panel.querySelector('[data-action="refresh"]').addEventListener('click', () => {
+      this.gatherTicketChatContext();
+    });
+    panel.querySelector('[data-action="360"]').addEventListener('click', () => {
+      this.performTicket360();
+    });
+
+    // Wire up static quick question buttons
+    panel.querySelectorAll('.kayako-ai-chat-quick-static .kayako-ai-chat-quick-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const q = btn.getAttribute('data-q');
+        if (q) this.sendTicketChatMessage(q);
+      });
+    });
+
+    // Wire up input area
+    const input = panel.querySelector('.kayako-ai-chat-input');
+    const sendBtn = panel.querySelector('.kayako-ai-chat-send-btn');
+
+    sendBtn.addEventListener('click', () => {
+      const msg = input.value.trim();
+      if (msg) {
+        this.sendTicketChatMessage(msg);
+        input.value = '';
+        input.style.height = 'auto';
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendBtn.click();
+      }
+    });
+
+    // Auto-resize textarea
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 80) + 'px';
+    });
+
+    // Make draggable
+    this.makeDraggable(panel);
+
+    // Restore chat history if we have any
+    if (this.ticketChatHistory.length > 0) {
+      this.renderChatHistory();
+    }
+
+    // Gather context
+    this.gatherTicketChatContext();
+  }
+
+  async gatherTicketChatContext() {
+    const statusEl = this.ticketChatPanel?.querySelector('.kayako-ai-chat-context-status');
+    if (statusEl) statusEl.textContent = 'Gathering ticket context...';
+
+    try {
+      console.log('💬 Gathering ticket chat context...');
+
+      // Main timeline
+      const mainContext = this.extractTicketContext();
+      const mainText = mainContext?.text || '';
+      const mainMsgCount = (mainText.match(/\[#\d+ of \d+\]/g) || []).length ||
+                           (mainText.match(/\[MOST RECENT\]/g) || []).length + (mainText.match(/\[2nd most recent\]/g) || []).length;
+
+      // Side conversations
+      const sideText = this.extractSideConversations();
+
+      // Customer name
+      const customerName = this.extractCustomerName() || 'Unknown';
+
+      this.ticketChatContext = `You are analyzing a support ticket for the agent.\n\nCustomer: ${customerName}\n\n${mainText}`;
+      if (sideText) {
+        this.ticketChatContext += `\n\n${sideText}`;
+      }
+
+      const sideLabel = sideText ? ' + side conversations' : '';
+      if (statusEl) {
+        statusEl.textContent = `Context loaded: ${mainMsgCount || 'multiple'} messages${sideLabel} (${(this.ticketChatContext.length / 1000).toFixed(0)}k chars)`;
+      }
+      console.log(`💬 Chat context ready: ${this.ticketChatContext.length} chars`);
+
+      // Generate dynamic suggestions in the background
+      this.generateDynamicSuggestions();
+    } catch (error) {
+      console.error('💬 Failed to gather chat context:', error);
+      if (statusEl) statusEl.textContent = 'Failed to load context. Click refresh to retry.';
+    }
+  }
+
+  extractSideConversations() {
+    try {
+      const sidePanel = document.querySelector('.side-conversations-panel__side-panel_4k6b2r');
+      if (!sidePanel) {
+        console.log('💬 No side conversation panel found in DOM');
+        return '';
+      }
+
+      const isOpen = sidePanel.classList.contains('side-conversations-panel__open_4k6b2r');
+
+      // Find messages inside the side panel
+      const messageItems = sidePanel.querySelectorAll(
+        '.ko-timeline-2_list_item__post_1oksrd, .ko-timeline-2_list_item__note_1oksrd, ' +
+        '[class*="timeline"] [class*="list_item__post"], [class*="timeline"] [class*="list_item__note"]'
+      );
+
+      if (messageItems.length === 0) {
+        if (!isOpen) {
+          return '[SIDE CONVERSATIONS]\nSide conversation panel is closed. Open it and refresh context to include side conversation messages.\n[END SIDE CONVERSATIONS]';
+        }
+        return '';
+      }
+
+      const messages = [];
+      messageItems.forEach((item, index) => {
+        try {
+          const isNote = item.classList.contains('ko-timeline-2_list_item__note_1oksrd') ||
+                         item.closest('[class*="note"]') !== null;
+
+          const authorEl = item.querySelector('[class*="creator"]');
+          const author = authorEl ? authorEl.textContent.trim() : 'Unknown';
+
+          const contentEl = item.querySelector('[class*="html-content"], [class*="content"]');
+          let content = '';
+          if (contentEl) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = contentEl.innerHTML;
+            content = (tempDiv.textContent || tempDiv.innerText || '').trim().replace(/\s+/g, ' ');
+          }
+
+          const timeEl = item.querySelector('[class*="time"]');
+          const time = timeEl ? timeEl.textContent.trim() : '';
+
+          if (content && content.length > 10) {
+            const typeLabel = isNote ? '[NOTE]' : '[MESSAGE]';
+            messages.push(`${typeLabel} ${author}${time ? ` (${time})` : ''}: ${content}`);
+          }
+        } catch (e) {
+          console.warn('Error extracting side conversation message:', e);
+        }
+      });
+
+      if (messages.length === 0) return '';
+
+      console.log(`💬 Extracted ${messages.length} side conversation messages`);
+      return `[SIDE CONVERSATIONS]\n${messages.join('\n\n')}\n[END SIDE CONVERSATIONS]`;
+    } catch (error) {
+      console.warn('💬 Error extracting side conversations:', error);
+      return '';
+    }
+  }
+
+  async sendTicketChatMessage(userMessage) {
+    if (!this.ticketChatPanel) return;
+    if (this._chatSending) return;
+    this._chatSending = true;
+
+    const messagesContainer = this.ticketChatPanel.querySelector('.kayako-ai-chat-messages');
+    const sendBtn = this.ticketChatPanel.querySelector('.kayako-ai-chat-send-btn');
+    sendBtn.disabled = true;
+
+    // Add user bubble
+    if (!this.ticketChatHistory) this.ticketChatHistory = [];
+    this.ticketChatHistory.push({ role: 'user', content: userMessage });
+    this.appendChatBubble('user', userMessage);
+
+    // Show typing indicator
+    const typingEl = document.createElement('div');
+    typingEl.className = 'kayako-ai-chat-typing';
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    messagesContainer.appendChild(typingEl);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    try {
+      // Build messages for the API
+      const systemPrompt = `You are a ticket analysis assistant helping a support agent understand a ticket. You have access to the full ticket conversation history including agent notes, customer messages, and side conversations. Answer the agent's questions accurately and concisely. Cite specific messages or authors when relevant. Do not make up information not present in the context. Use simple HTML formatting (p, br, strong, em, ul, ol, li) for readability. Do not use markdown.`;
+
+      const contextMessage = this.ticketChatContext || 'No ticket context available.';
+
+      const apiMessages = [
+        { role: 'system', content: `${systemPrompt}\n\n--- TICKET CONTEXT ---\n${contextMessage}\n--- END CONTEXT ---` }
+      ];
+
+      // Add full chat history
+      this.ticketChatHistory.forEach(msg => {
+        apiMessages.push({ role: msg.role, content: msg.content });
+      });
+
+      const model = this.config?.model || 'gpt-5.2';
+      const provider = model.startsWith('claude-') ? 'anthropic' : 'openai';
+      const action = provider === 'anthropic' ? 'anthropicChat' : 'openaiChat';
+
+      console.log(`💬 Sending chat message via ${provider} (${model})`);
+
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action,
+          requestBody: {
+            model,
+            messages: apiMessages,
+            max_completion_tokens: 2000,
+            temperature: 0.3
+          }
+        }, (resp) => {
+          if (chrome?.runtime?.lastError) {
+            resolve({ success: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(resp || { success: false, error: 'No response' });
+          }
+        });
+      });
+
+      // Remove typing indicator
+      typingEl.remove();
+
+      if (response?.success && response.data?.choices?.[0]?.message?.content) {
+        const assistantText = response.data.choices[0].message.content;
+        this.ticketChatHistory.push({ role: 'assistant', content: assistantText });
+        this.appendChatBubble('assistant', assistantText);
+      } else {
+        const errorText = response?.error || 'Failed to get a response';
+        this.appendChatBubble('system', `Error: ${errorText}`);
+      }
+    } catch (error) {
+      typingEl.remove();
+      console.error('💬 Chat error:', error);
+      this.appendChatBubble('system', `Error: ${error.message}`);
+    } finally {
+      this._chatSending = false;
+      sendBtn.disabled = false;
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+
+  appendChatBubble(role, content) {
+    if (!this.ticketChatPanel) return;
+    const messagesContainer = this.ticketChatPanel.querySelector('.kayako-ai-chat-messages');
+    if (!messagesContainer) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = `kayako-ai-chat-bubble ${role}`;
+
+    if (role === 'assistant') {
+      bubble.innerHTML = content;
+    } else if (role === 'system') {
+      bubble.textContent = content;
+    } else {
+      bubble.textContent = content;
+    }
+
+    messagesContainer.appendChild(bubble);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  renderChatHistory() {
+    if (!this.ticketChatPanel || !this.ticketChatHistory) return;
+    const messagesContainer = this.ticketChatPanel.querySelector('.kayako-ai-chat-messages');
+    if (!messagesContainer) return;
+
+    messagesContainer.innerHTML = '';
+    this.ticketChatHistory.forEach(msg => {
+      this.appendChatBubble(msg.role, msg.content);
+    });
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  async generateDynamicSuggestions() {
+    if (!this.ticketChatPanel) return;
+    const dynamicContainer = this.ticketChatPanel.querySelector('.kayako-ai-chat-quick-dynamic');
+    if (!dynamicContainer) return;
+
+    const contextSnippet = (this.ticketChatContext || '').slice(0, 4000);
+    if (!contextSnippet || contextSnippet.length < 50) {
+      dynamicContainer.innerHTML = '';
+      return;
+    }
+
+    try {
+      console.log('💬 Generating dynamic suggestions via Haiku...');
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'anthropicChat',
+          requestBody: {
+            model: 'claude-haiku-4-5',
+            messages: [
+              { role: 'user', content: `Based on this support ticket context, suggest 2-3 specific questions a support agent would find most useful to ask about this ticket right now. Focus on actionable questions about the current state, next steps, or key details.\n\nTicket context:\n${contextSnippet}\n\nReturn ONLY a JSON array of objects with "label" (short button text, max 25 chars) and "query" (the full question to ask). Example: [{"label":"Student details?","query":"List all affected students with their emails and issues."}]` }
+            ],
+            max_completion_tokens: 300,
+            temperature: 0.3
+          }
+        }, (resp) => {
+          resolve(resp);
+        });
+      });
+
+      if (!response?.success || !response?.data?.choices?.[0]?.message?.content) {
+        console.warn('💬 Dynamic suggestions: no response from Haiku');
+        dynamicContainer.innerHTML = '';
+        return;
+      }
+
+      const raw = response.data.choices[0].message.content.trim();
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        dynamicContainer.innerHTML = '';
+        return;
+      }
+
+      const suggestions = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(suggestions) || suggestions.length === 0) {
+        dynamicContainer.innerHTML = '';
+        return;
+      }
+
+      dynamicContainer.innerHTML = '';
+      suggestions.slice(0, 3).forEach(s => {
+        if (!s.label || !s.query) return;
+        const btn = document.createElement('button');
+        btn.className = 'kayako-ai-chat-quick-btn kayako-ai-chat-quick-dynamic-btn';
+        btn.setAttribute('data-q', s.query);
+        btn.textContent = s.label;
+        btn.title = s.query;
+        btn.addEventListener('click', () => {
+          this.sendTicketChatMessage(s.query);
+        });
+        dynamicContainer.appendChild(btn);
+      });
+      console.log(`💬 Generated ${suggestions.length} dynamic suggestions`);
+    } catch (error) {
+      console.warn('💬 Failed to generate dynamic suggestions:', error);
+      dynamicContainer.innerHTML = '';
+    }
+  }
+
+  async performTicket360() {
+    if (!this.ticketChatPanel) return;
+    if (this._chatSending) return;
+
+    const rulesUrl = this.config?.threeSixtyRulesUrl;
+    if (!rulesUrl) {
+      this.appendChatBubble('system', 'No 360 Rules URL configured. Set it in extension settings under Experimental Features.');
+      return;
+    }
+
+    // Fetch rules (with caching)
+    if (!this._360rules) {
+      this.appendChatBubble('system', 'Fetching 360 analysis rules...');
+      try {
+        const resp = await fetch(rulesUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        this._360rules = await resp.text();
+        console.log(`💬 Fetched 360 rules: ${this._360rules.length} chars`);
+      } catch (error) {
+        this.appendChatBubble('system', `Failed to fetch 360 rules: ${error.message}`);
+        return;
+      }
+    }
+
+    const prompt = `Perform a complete 360-degree analysis of this ticket following these rules:\n\n--- RULES ---\n${this._360rules}\n--- END RULES ---\n\nAnalyze the full ticket context provided and produce the 360 analysis.`;
+    await this.sendTicketChatMessage(prompt);
   }
 }
 

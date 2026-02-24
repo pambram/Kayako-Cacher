@@ -586,6 +586,382 @@
     color: #93c5fd;
     border-color: #3b82f6;
   }
+
+  .kayako-ai-chat-panel {
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  .kayako-ai-chat-context-status {
+    background: #1e3a5f;
+    border-color: #334155;
+    color: #7dd3fc;
+  }
+
+  .kayako-ai-chat-bubble.assistant {
+    background: #334155;
+    color: #e2e8f0;
+  }
+
+  .kayako-ai-chat-quick-btn {
+    background: #334155;
+    border-color: #475569;
+    color: #cbd5e1;
+  }
+
+  .kayako-ai-chat-quick-btn:hover {
+    background: #475569;
+    border-color: #667eea;
+    color: #a5b4fc;
+  }
+
+  .kayako-ai-chat-input-area {
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  .kayako-ai-chat-input {
+    background: #0f172a;
+    border-color: #475569;
+    color: #e2e8f0;
+  }
+}
+
+/* ==============================
+   Ticket Chat Panel
+   ============================== */
+
+.kayako-ai-chat-btn {
+  background: #17a2b8 !important;
+  color: white !important;
+  border: none !important;
+  font-weight: 500 !important;
+  font-size: 16px !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: relative !important;
+  z-index: 1001 !important;
+}
+
+.kayako-ai-chat-btn:hover {
+  background: #138496 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(23, 162, 184, 0.3);
+}
+
+.kayako-ai-chat-btn:active {
+  transform: translateY(0);
+}
+
+.kayako-ai-chat-panel {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: 400px;
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  z-index: 10001;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity 0.2s ease;
+}
+
+.kayako-ai-chat-panel.minimized {
+  bottom: auto;
+  height: 48px;
+  overflow: hidden;
+}
+
+.kayako-ai-chat-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e1e5e9;
+  background: #17a2b8;
+  border-radius: 10px 10px 0 0;
+  cursor: move;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.kayako-ai-chat-header-title {
+  font-weight: 600;
+  color: white;
+  font-size: 14px;
+  flex: 1;
+  user-select: none;
+}
+
+.kayako-ai-chat-header-btn {
+  background: rgba(255,255,255,0.2);
+  border: none;
+  color: white;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.kayako-ai-chat-header-btn:hover {
+  background: rgba(255,255,255,0.35);
+}
+
+.kayako-ai-chat-context-status {
+  padding: 8px 16px;
+  background: #f0f9ff;
+  border-bottom: 1px solid #e1e5e9;
+  font-size: 11px;
+  color: #0369a1;
+  flex-shrink: 0;
+}
+
+.kayako-ai-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #ffffff !important;
+}
+
+.kayako-ai-chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.kayako-ai-chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.kayako-ai-chat-messages::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+.kayako-ai-chat-bubble {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.kayako-ai-chat-bubble.user {
+  align-self: flex-end;
+  background: #667eea;
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.kayako-ai-chat-bubble.assistant {
+  align-self: flex-start;
+  background: #f1f5f9;
+  color: #1e293b;
+  border-bottom-left-radius: 4px;
+}
+
+.kayako-ai-chat-bubble.assistant p {
+  margin: 0 0 8px 0;
+}
+
+.kayako-ai-chat-bubble.assistant p:last-child {
+  margin-bottom: 0;
+}
+
+.kayako-ai-chat-bubble.assistant ul,
+.kayako-ai-chat-bubble.assistant ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.kayako-ai-chat-bubble.assistant strong {
+  font-weight: 600;
+}
+
+.kayako-ai-chat-bubble.system {
+  align-self: center;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: italic;
+  padding: 4px 8px;
+}
+
+.kayako-ai-chat-typing {
+  align-self: flex-start;
+  padding: 10px 18px;
+  background: #f1f5f9;
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.kayako-ai-chat-typing span {
+  width: 6px;
+  height: 6px;
+  background: #94a3b8;
+  border-radius: 50%;
+  animation: chatTypingDot 1.2s ease-in-out infinite;
+}
+
+.kayako-ai-chat-typing span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.kayako-ai-chat-typing span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes chatTypingDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* 360 button in chat header */
+.kayako-ai-chat-360-btn {
+  background: rgba(255, 193, 7, 0.3) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px;
+  width: auto !important;
+  padding: 0 8px !important;
+}
+
+.kayako-ai-chat-360-btn:hover {
+  background: rgba(255, 193, 7, 0.5) !important;
+}
+
+.kayako-ai-chat-quick-buttons {
+  padding: 10px 16px;
+  border-top: 1px solid #e1e5e9;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.kayako-ai-chat-quick-static,
+.kayako-ai-chat-quick-dynamic {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kayako-ai-chat-quick-loading {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+  padding: 2px 0;
+}
+
+.kayako-ai-chat-quick-dynamic-btn {
+  border-color: #c7d2fe !important;
+  color: #4f46e5 !important;
+  background: #eef2ff !important;
+}
+
+.kayako-ai-chat-quick-dynamic-btn:hover {
+  background: #e0e7ff !important;
+  border-color: #667eea !important;
+}
+
+.kayako-ai-chat-quick-btn {
+  padding: 6px 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 16px;
+  background: white;
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.kayako-ai-chat-quick-btn:hover {
+  background: #f1f5f9;
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.kayako-ai-chat-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #e1e5e9;
+  background: #f8f9fa;
+  border-radius: 0 0 10px 10px;
+  flex-shrink: 0;
+}
+
+.kayako-ai-chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 20px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+  resize: none;
+  max-height: 80px;
+  min-height: 36px;
+  line-height: 1.4;
+}
+
+.kayako-ai-chat-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
+}
+
+.kayako-ai-chat-send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: #667eea;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+.kayako-ai-chat-send-btn:hover {
+  background: #5a6fd8;
+  transform: scale(1.05);
+}
+
+.kayako-ai-chat-send-btn:disabled {
+  background: #d1d5db;
+  cursor: not-allowed;
+  transform: none;
 }
 
 /* Quick Beautify icon button (prototype near Bold/Italic) */
