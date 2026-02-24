@@ -587,44 +587,6 @@
     border-color: #3b82f6;
   }
 
-  .kayako-ai-chat-panel {
-    background: #1e293b;
-    border-color: #334155;
-  }
-
-  .kayako-ai-chat-context-status {
-    background: #1e3a5f;
-    border-color: #334155;
-    color: #7dd3fc;
-  }
-
-  .kayako-ai-chat-bubble.assistant {
-    background: #334155;
-    color: #e2e8f0;
-  }
-
-  .kayako-ai-chat-quick-btn {
-    background: #334155;
-    border-color: #475569;
-    color: #cbd5e1;
-  }
-
-  .kayako-ai-chat-quick-btn:hover {
-    background: #475569;
-    border-color: #667eea;
-    color: #a5b4fc;
-  }
-
-  .kayako-ai-chat-input-area {
-    background: #1e293b;
-    border-color: #334155;
-  }
-
-  .kayako-ai-chat-input {
-    background: #0f172a;
-    border-color: #475569;
-    color: #e2e8f0;
-  }
 }
 
 /* ==============================
