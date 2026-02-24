@@ -2669,9 +2669,9 @@ function setupToolbarButtonListeners(editor) {
         }
     };
 
-    // Use capture so we run before other handlers that might stop propagation
-    toolbar.addEventListener('mousedown', delegatedHandler, true);
-    toolbar.addEventListener('click', delegatedHandler, true);
+    // Use a non-capturing click listener so we don't interfere with the button's own handlers.
+    // Previously mousedown+capture was swallowing clicks on new toolbar buttons (AI chat, etc.).
+    toolbar.addEventListener('click', delegatedHandler, false);
 
     toolbar.dataset.autoSizeListenersSetup = 'true';
 }
@@ -3887,56 +3887,43 @@ function captureCurrentTicketContext() {
             if (activeTab) ctx.subject = (activeTab.textContent || '').trim();
         }
 
-        // Capture the first post/note's actual message body from the timeline.
-        // Multiple strategies since Kayako renders differently depending on post type.
-        let firstMessageBody = null;
-        // Strategy 1: .fr-view inside the timeline (Froala-rendered content)
-        const frViews = document.querySelectorAll('[class*="ko-timeline-2"] .fr-view');
-        if (frViews.length) firstMessageBody = frViews[0];
-        // Strategy 2: look for __body_ elements inside post/note items (non-Froala rendered)
-        if (!firstMessageBody) {
-            const bodyEls = document.querySelectorAll('[class*="ko-timeline-2_list_post__body"], [class*="ko-timeline-2_list_item__body"]');
-            for (const el of bodyEls) {
-                // Prefer .fr-view inside body, otherwise use body itself
-                const fv = el.querySelector('.fr-view');
-                if (fv) { firstMessageBody = fv; break; }
-                if (el.textContent.trim().length > 5) { firstMessageBody = el; break; }
+        // Capture the original request from the DOM.
+        // Kayako renders timeline chronologically: oldest at top, newest at bottom.
+        // The FIRST message-or-note block is the original request.
+        // Content can be in .fr-view, __content_, or __html-content_ divs.
+        const allPosts = document.querySelectorAll('[class*="ko-timeline-2"] [class*="message-or-note"]');
+        if (allPosts.length) {
+            const originalPostBlock = allPosts[0];
+            const contentEl = originalPostBlock.querySelector('.fr-view') ||
+                              originalPostBlock.querySelector('[class*="ko-timeline-2_list_item__content_"]') ||
+                              originalPostBlock.querySelector('[class*="ko-timeline-2_list_item__html-content_"]');
+            if (contentEl) {
+                ctx.firstMessageHtml = contentEl.innerHTML;
+                console.log(`⚡ Captured original request (first of ${allPosts.length} posts):`, (contentEl.innerText || '').substring(0, 100));
+            } else {
+                console.warn('⚡ Found post block but no content element inside it');
             }
-        }
-        // Strategy 3: extract plain text from the first timeline post via innerText
-        // and build simple HTML (avoids SVGs, icons, etc.)
-        if (!firstMessageBody) {
-            const timeline = document.querySelector('[class*="ko-timeline-2__container"]');
-            if (timeline) {
-                // Find message-or-note blocks (these wrap individual posts)
-                const posts = timeline.querySelectorAll('[class*="message-or-note"], [class*="ko-timeline-2_list_post"]');
-                for (const post of posts) {
-                    // Skip event/system entries (those without substantial text)
-                    const text = (post.innerText || '').trim();
-                    // Filter: must have >20 chars and not be just metadata
-                    if (text.length > 20 && !/^(called the Endpoint|changed the|set the tags|logged in)/.test(text)) {
-                        // Extract just the body portion: skip author line, date, etc.
-                        // Find content containers that are NOT headers/metadata
-                        const contentEl = post.querySelector('[class*="__content_"], [class*="__body_"]');
-                        if (contentEl) {
-                            // Use textContent to avoid SVG/icon contamination, wrap lines in paragraphs
-                            const cleanText = (contentEl.innerText || contentEl.textContent || '').trim();
-                            if (cleanText.length > 5) {
-                                ctx.firstMessageHtml = cleanText.split('\n').filter(l => l.trim()).map(l => `<p>${l}</p>`).join('');
-                                console.log('⚡ Captured first message via innerText:', cleanText.substring(0, 100));
-                                break;
-                            }
-                        }
-                    }
+
+            // Grab attachments from the same post block
+            const links = originalPostBlock.querySelectorAll('a[href*="/attachments/"][href*="/download"]');
+            if (links.length) {
+                const seenUrls = new Set();
+                const atts = [];
+                links.forEach(link => {
+                    if (seenUrls.has(link.href)) return;
+                    seenUrls.add(link.href);
+                    const att = link.closest('[class*="attachment"]');
+                    const nameEl = att ? att.querySelector('span[class*="name-element"], span[class*="name_element"], [class*="__name-element"], [class*="__name_"]') : null;
+                    const name = nameEl ? nameEl.textContent.trim() : ('attachment_' + link.href.split('/').slice(-2, -1)[0]);
+                    atts.push({ url: link.href, name });
+                });
+                if (atts.length) {
+                    ctx.attachments = atts;
+                    console.log('⚡ Captured attachments from original post:', atts.map(a => a.name));
                 }
             }
-        }
-        if (firstMessageBody && !ctx.firstMessageHtml) {
-            ctx.firstMessageHtml = firstMessageBody.innerHTML;
-            console.log('⚡ Captured first message body:', ctx.firstMessageHtml.substring(0, 100));
-        }
-        if (!ctx.firstMessageHtml) {
-            console.warn('⚡ Could not capture first message content from timeline');
+        } else {
+            console.warn('⚡ No message-or-note blocks found in timeline');
         }
 
         // Capture attachments — find all download links on the page
@@ -4265,10 +4252,8 @@ async function applyPrefillFields(prefill) {
             await transferAttachments(prefill.attachments);
         }
 
-        // Post-fill verification: check Assignee didn't revert to (Unassigned)
-        if (prefill.assignee) {
-            await verifyAndRetryAssignee(prefill.assignee);
-        }
+        // Post-fill verification: check all fields and retry any that didn't stick
+        await verifyAllFields(prefill);
 
         // Clean up
         chrome.storage.local.remove('newTicketPrefill');
@@ -4538,17 +4523,34 @@ async function clickNotesTab() {
 /** Set the subject/title field on the new conversation page. */
 async function fillSubjectField(subject) {
     try {
-        // The subject is an input with placeholder "Click to set a subject..."
-        const subjectInput = document.querySelector('[class*="ko-editable-text__input"][placeholder*="subject" i], input[placeholder*="subject" i]');
+        // Try direct input first
+        let subjectInput = document.querySelector('[class*="ko-editable-text__input"][placeholder*="subject" i], input[placeholder*="subject" i]');
+        // If not found, the editable text might be in display mode — click the container to switch to edit
+        if (!subjectInput) {
+            const editableContainer = document.querySelector('[class*="ko-case-content__timeline-header-title"] [class*="ko-editable-text__container"], h3[class*="timeline-header-title"] [class*="ko-editable-text"]');
+            if (editableContainer) {
+                emberClick(editableContainer);
+                await sleep(400);
+                subjectInput = document.querySelector('[class*="ko-editable-text__input"], input[placeholder*="subject" i]');
+            }
+        }
+        // Broader fallback: any input inside the timeline header title area
+        if (!subjectInput) {
+            const titleArea = document.querySelector('[class*="ko-case-content__timeline-header-title"], h3[class*="timeline-header-title"]');
+            if (titleArea) {
+                emberClick(titleArea);
+                await sleep(400);
+                subjectInput = titleArea.querySelector('input');
+            }
+        }
         if (subjectInput) {
             subjectInput.focus();
             emberType(subjectInput, subject);
-            // Blur to confirm
             subjectInput.dispatchEvent(new Event('blur', { bubbles: true }));
             subjectInput.dispatchEvent(new Event('focusout', { bubbles: true }));
             console.log('⚡ Set subject:', subject);
         } else {
-            console.warn('⚡ Subject input not found');
+            console.warn('⚡ Subject input not found after all attempts');
         }
     } catch (e) {
         console.error('⚡ Error filling subject:', e);
@@ -4651,33 +4653,80 @@ async function transferAttachments(attachments) {
     }
 }
 
-/** Verify assignee was set correctly; retry if it reverted to (Unassigned). */
-async function verifyAndRetryAssignee(expectedValue) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-        await sleep(1500);
-        try {
-            const sidebar = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
-            if (!sidebar) break;
-            const triggers = sidebar.querySelectorAll('.ember-power-select-trigger, .ember-basic-dropdown-trigger');
-            for (const trig of triggers) {
-                const headerEl = trig.querySelector('[class*="__header_"]');
-                if (!headerEl || headerEl.textContent.trim().toLowerCase() !== 'assignee') continue;
+/** Read the current value of a sidebar dropdown field by label. */
+function readSidebarFieldValue(labelText) {
+    try {
+        const sidebar = document.querySelector('[class*="ko-agent-content_layout__sidebar_"]');
+        if (!sidebar) return '';
+        const triggers = sidebar.querySelectorAll('.ember-power-select-trigger, .ember-basic-dropdown-trigger');
+        for (const trig of triggers) {
+            const headerEl = trig.querySelector('[class*="__header_"]');
+            if (headerEl && headerEl.textContent.trim().toLowerCase() === labelText.toLowerCase()) {
                 const placeholderEl = trig.querySelector('[class*="__placeholder_"]');
-                const currentValue = placeholderEl ? (placeholderEl.getAttribute('title') || placeholderEl.textContent || '').trim() : '';
-                if (currentValue.toLowerCase().includes(expectedValue.toLowerCase())) {
-                    console.log(`⚡ Assignee verified: "${currentValue}"`);
-                    return;
-                }
-                if (/unassigned/i.test(currentValue) || currentValue === '-' || !currentValue) {
-                    console.log(`⚡ Assignee is "${currentValue}", retrying (attempt ${attempt + 1})...`);
-                    await fillSidebarDropdown('Assignee', expectedValue);
-                    break;
-                }
-                // Some other value; might be correct in a different format
-                console.log(`⚡ Assignee shows "${currentValue}", expected "${expectedValue}"`);
-                return;
+                return placeholderEl ? (placeholderEl.getAttribute('title') || placeholderEl.textContent || '').trim() : '';
             }
-        } catch (_) {}
+        }
+    } catch (_) {}
+    return '';
+}
+
+/** Verify all filled fields and retry any that didn't stick. */
+async function verifyAllFields(prefill) {
+    await sleep(2000);
+    const fieldsToCheck = [
+        { label: 'Assignee', expected: prefill.assignee },
+        { label: 'Priority', expected: prefill.priority },
+        { label: 'Form', expected: prefill.form },
+        { label: 'Product', expected: prefill.product }
+    ].filter(f => f.expected);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let allGood = true;
+        for (const field of fieldsToCheck) {
+            const current = readSidebarFieldValue(field.label);
+            if (current.toLowerCase().includes(field.expected.toLowerCase())) {
+                if (attempt === 0) console.log(`⚡ Verified ${field.label}: "${current}"`);
+            } else if (/unassigned/i.test(current) || current === '-' || !current) {
+                console.log(`⚡ ${field.label} is "${current}", retrying...`);
+                await fillSidebarDropdown(field.label, field.expected);
+                await sleep(800);
+                allGood = false;
+            } else {
+                console.log(`⚡ ${field.label} shows "${current}" (expected "${field.expected}")`);
+            }
+        }
+
+        // Also verify subject
+        if (prefill.subject) {
+            const subjectInput = document.querySelector('[class*="ko-editable-text__input"][placeholder*="subject" i], input[placeholder*="subject" i]');
+            const subjectText = document.querySelector('[class*="ko-editable-text__emphasizedText"]');
+            const currentSubject = subjectInput ? subjectInput.value : (subjectText ? subjectText.textContent.trim() : '');
+            if (!currentSubject || currentSubject === 'Click to set a subject...') {
+                console.log('⚡ Subject empty, retrying...');
+                await fillSubjectField(prefill.subject);
+                await sleep(400);
+                allGood = false;
+            } else if (attempt === 0) {
+                console.log(`⚡ Verified subject: "${currentSubject}"`);
+            }
+        }
+
+        // Verify editor has content (Notes body)
+        if (prefill.firstMessageHtml) {
+            const editor = document.querySelector('.fr-element.fr-view');
+            const editorText = editor ? (editor.innerText || '').trim() : '';
+            if (!editorText || editorText === 'Enter your reply here…' || editorText === 'Add a note...') {
+                console.log('⚡ Editor is empty, retrying content fill...');
+                await fillEditorContent(prefill.firstMessageHtml);
+                await sleep(400);
+                allGood = false;
+            } else if (attempt === 0) {
+                console.log(`⚡ Verified editor content: "${editorText.substring(0, 60)}..."`);
+            }
+        }
+
+        if (allGood) break;
+        await sleep(1500);
     }
 }
 
