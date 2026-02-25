@@ -433,22 +433,102 @@ optgroup[style*="display: none"] {
 
 .transcript-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .btn-icon {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border: none;
   background: transparent;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   transition: background 0.2s;
+  padding: 0;
 }
 
-.btn-icon:hover {
+.btn-icon:hover:not(:disabled) {
   background: #e5e7eb;
+}
+
+.btn-icon:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Spinner for in-progress generation */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Wrapper for saved transcript item + expandable arc detail */
+.saved-transcript-item-wrapper {
+  border-bottom: 1px solid #e5e7eb;
+  background: white;
+}
+
+.saved-transcript-item-wrapper:last-child {
+  border-bottom: none;
+}
+
+.saved-transcript-item-wrapper .saved-transcript-item {
+  border-bottom: none;
+}
+
+/* Inline expand arrow next to date */
+.btn-expand {
+  display: inline-block;
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 9px;
+  padding: 1px 4px;
+  margin-left: 6px;
+  color: #667eea;
+  vertical-align: middle;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.btn-expand:hover {
+  background: #e5e7eb;
+}
+
+/* Arc expand/collapse detail row */
+.arc-detail {
+  background: #f0f4ff;
+  padding: 6px 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.arc-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.arc-detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #667eea;
+}
+
+.arc-detail-actions {
+  display: flex;
+  gap: 2px;
 }
 
 .btn-small {

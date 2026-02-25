@@ -16,6 +16,9 @@ class MeetTranscriber {
     // Session tracking for auto-save
     this.sessionId = `meet-${Date.now()}`;
     this.meetUrl = window.location.href;
+    // TL;DR and Story Arc state
+    this.currentTldr = null;
+    this.currentStoryArc = null;
     this.init();
   }
 
@@ -113,6 +116,9 @@ class MeetTranscriber {
             <button class="download-btn" title="Download transcript">💾</button>
             <button class="upload-s3-btn" title="Upload to S3">☁️</button>
             <button class="import-btn" title="Continue from file">📂</button>
+            <button class="tldr-btn" title="Generate TL;DR">📝</button>
+            <button class="arc-btn" title="Build Story Arc">📖</button>
+            <button class="arc-download-btn" title="Download Story Arc" disabled>📖💾</button>
           </div>
           <div class="output-content" id="transcript-output">
             <p class="placeholder">Start recording to see transcript...</p>
@@ -133,6 +139,9 @@ class MeetTranscriber {
     panel.querySelector('.download-btn').addEventListener('click', () => this.downloadTranscript());
     panel.querySelector('.upload-s3-btn').addEventListener('click', () => this.uploadToS3());
     panel.querySelector('.import-btn').addEventListener('click', () => this.showImportOptions());
+    panel.querySelector('.tldr-btn').addEventListener('click', () => this.generateTldr());
+    panel.querySelector('.arc-btn').addEventListener('click', () => this.generateStoryArc());
+    panel.querySelector('.arc-download-btn').addEventListener('click', () => this.downloadStoryArc());
     panel.querySelector('#import-file-input').addEventListener('change', (e) => this.importFromFile(e));
     panel.querySelector('.transcriber-minimize').addEventListener('click', () => this.toggleMinimize());
     
@@ -234,6 +243,15 @@ class MeetTranscriber {
     
     this.showNotification('⏹ Recording stopped', 'info');
     console.log('⏹ Recording stopped');
+
+    // Auto-generate TL;DR if we have batches and none exists yet
+    if (this.transcriptLog.length > 0 && !this.currentTldr) {
+      await this.generateTldr();
+    }
+    // Auto-generate Story Arc if we have batches
+    if (this.transcriptLog.length > 0) {
+      await this.generateStoryArc();
+    }
   }
 
   async captureScreenshot() {
@@ -486,9 +504,13 @@ class MeetTranscriber {
     this.transcriptionHistory = '';
     this.transcriptLog = [];
     this.batchCounter = 0;
+    this.currentTldr = null;
+    this.currentStoryArc = null;
     
-    // Reset batch count
+    // Reset batch count and button states
     this.controlPanel.querySelector('#batch-count').textContent = '0';
+    this.controlPanel.querySelector('.tldr-btn').disabled = false;
+    this.controlPanel.querySelector('.arc-download-btn').disabled = true;
     
     this.showNotification('🗑 Transcript cleared', 'info');
   }
@@ -519,8 +541,15 @@ class MeetTranscriber {
     let text = 'Google Meet AI Transcription\n';
     text += '============================\n\n';
     text += `Generated: ${new Date().toLocaleString()}\n\n`;
+
+    if (this.currentTldr) {
+      text += '=== TL;DR ===\n';
+      text += this.currentTldr + '\n\n';
+      text += '=== Transcript ===\n\n';
+    }
     
     entries.forEach(entry => {
+      if (entry.classList.contains('tldr-entry')) return;
       const time = entry.querySelector('.entry-timestamp').textContent;
       const content = entry.querySelector('.entry-content').textContent;
       text += `[${time}]\n${content}\n\n`;
@@ -563,7 +592,10 @@ class MeetTranscriber {
         startTime: sessions[this.sessionId]?.startTime || new Date().toISOString(),
         lastUpdated: new Date().toISOString(),
         batchCount: this.batchCounter,
-        transcript: text
+        transcript: text,
+        batches: this.transcriptLog,
+        tldr: this.currentTldr || null,
+        storyArc: this.currentStoryArc || null
       };
       
       // Keep only last 10 sessions to avoid storage bloat
@@ -792,6 +824,160 @@ class MeetTranscriber {
     output.scrollTop = output.scrollHeight;
     
     console.log(`📂 Imported ${entries.length} entries from ${source}`);
+  }
+
+  /** Generate TL;DR from full transcript (only if one doesn't exist yet) */
+  async generateTldr() {
+    if (this.currentTldr) {
+      this.showNotification('📝 TL;DR already exists for this session', 'info');
+      return;
+    }
+
+    if (this.transcriptLog.length === 0) {
+      this.showNotification('⚠️ No transcript batches to summarize', 'error');
+      return;
+    }
+
+    const tldrBtn = this.controlPanel.querySelector('.tldr-btn');
+    tldrBtn.disabled = true;
+    this.updateStatus('processing', 'Generating TL;DR...');
+
+    try {
+      const fullTranscript = this.transcriptLog
+        .map((t, i) => `--- Batch ${i + 1} (${new Date(t.timestamp).toLocaleTimeString()}) ---\n${t.content}`)
+        .join('\n\n');
+
+      // Dispatch to background (fire-and-forget, writes result to storage)
+      await chrome.runtime.sendMessage({
+        action: 'generateTldr',
+        sessionId: this.sessionId,
+        fullTranscript
+      });
+
+      // Poll for completion
+      const tldr = await this.pollForSessionField('tldr');
+      if (tldr) {
+        this.currentTldr = tldr;
+        this.prependTldr(tldr);
+        await this.autoSaveTranscript();
+        this.showNotification('📝 TL;DR generated', 'success');
+        console.log('✅ TL;DR generated');
+      } else {
+        tldrBtn.disabled = false;
+        this.showNotification('❌ TL;DR generation failed or timed out', 'error');
+      }
+    } catch (error) {
+      tldrBtn.disabled = false;
+      this.showNotification('❌ TL;DR error: ' + error.message, 'error');
+      console.error('TL;DR error:', error);
+    } finally {
+      this.updateStatus(this.isRecording ? 'recording' : 'idle',
+                       this.isRecording ? 'Recording...' : 'Ready');
+    }
+  }
+
+  /** Prepend TL;DR as a styled entry at the top of transcript output */
+  prependTldr(tldr) {
+    const output = this.controlPanel.querySelector('#transcript-output');
+    const placeholder = output.querySelector('.placeholder');
+    if (placeholder) placeholder.remove();
+
+    const entry = document.createElement('div');
+    entry.className = 'transcript-entry tldr-entry';
+    entry.innerHTML = `
+      <div class="entry-timestamp tldr-timestamp">📝 TL;DR</div>
+      <div class="entry-content tldr-content">${this.formatMarkdown(tldr)}</div>
+    `;
+    output.insertBefore(entry, output.firstChild);
+  }
+
+  /** Build story arc by progressive batch replay */
+  async generateStoryArc() {
+    if (this.transcriptLog.length === 0) {
+      this.showNotification('⚠️ No transcript batches to build arc from', 'error');
+      return;
+    }
+
+    const arcBtn = this.controlPanel.querySelector('.arc-btn');
+    arcBtn.disabled = true;
+    this.updateStatus('processing', 'Building Story Arc...');
+
+    try {
+      const batches = this.transcriptLog.map(t => ({
+        timestamp: t.timestamp,
+        content: t.content
+      }));
+
+      console.log(`📖 Building story arc from ${batches.length} batches...`);
+
+      await chrome.runtime.sendMessage({
+        action: 'generateStoryArc',
+        sessionId: this.sessionId,
+        batches
+      });
+
+      // Poll for completion
+      const storyArc = await this.pollForSessionField('storyArc');
+      if (storyArc) {
+        this.currentStoryArc = storyArc;
+        this.controlPanel.querySelector('.arc-download-btn').disabled = false;
+        await this.autoSaveTranscript();
+        this.showNotification('📖 Story Arc built — click 📖💾 to download', 'success');
+        console.log('✅ Story arc generated');
+      } else {
+        this.showNotification('❌ Story Arc failed or timed out', 'error');
+      }
+    } catch (error) {
+      this.showNotification('❌ Story Arc error: ' + error.message, 'error');
+      console.error('Story arc error:', error);
+    } finally {
+      arcBtn.disabled = false;
+      this.updateStatus(this.isRecording ? 'recording' : 'idle',
+                       this.isRecording ? 'Recording...' : 'Ready');
+    }
+  }
+
+  /** Poll chrome.storage until a session field appears (set by background task) */
+  async pollForSessionField(field, timeoutMs = 300000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      const result = await chrome.storage.local.get(['meetTranscriptSessions']);
+      const sessions = result.meetTranscriptSessions || {};
+      const session = sessions[this.sessionId];
+      if (session?.[field]) return session[field];
+      // Check if task errored out
+      const taskResult = await chrome.storage.local.get(['meetTranscriberTasks']);
+      const tasks = taskResult.meetTranscriberTasks || {};
+      const taskKey = this.sessionId + ':' + (field === 'tldr' ? 'tldr' : 'arc');
+      if (tasks[taskKey]?.status === 'error') return null;
+      if (!tasks[taskKey]) return session?.[field] || null;
+    }
+    return null;
+  }
+
+  /** Download the story arc as a separate text file */
+  downloadStoryArc() {
+    if (!this.currentStoryArc) {
+      this.showNotification('⚠️ No story arc to download — build one first', 'error');
+      return;
+    }
+
+    let text = 'Google Meet - Story Arc\n';
+    text += '=======================\n\n';
+    text += `Generated: ${new Date().toLocaleString()}\n`;
+    text += `Meet URL: ${this.meetUrl}\n\n`;
+    text += this.currentStoryArc;
+
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `meet-story-arc-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    this.showNotification('📖 Story Arc downloaded', 'success');
   }
 
   showNotification(message, type = 'info') {

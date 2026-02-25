@@ -18,6 +18,9 @@ async function loadSettings() {
       document.getElementById('openai-key').value = config.openaiKey || '';
       document.getElementById('anthropic-key').value = config.anthropicKey || '';
       document.getElementById('model').value = config.model || 'claude-haiku-4-5';
+      document.getElementById('summary-model').value = config.summaryModel || 'claude-sonnet-4-6';
+      document.getElementById('tldr-model').value = config.tldrModel || 'claude-opus-4-6';
+      document.getElementById('story-arc-model').value = config.storyArcModel || 'claude-opus-4-6';
       document.getElementById('capture-interval').value = config.captureInterval || 10;
       document.getElementById('batch-size').value = config.batchSize || 6;
       document.getElementById('image-quality').value = config.imageQuality || 0.5;
@@ -129,6 +132,9 @@ async function saveSettings() {
       openaiKey: document.getElementById('openai-key').value,
       anthropicKey: document.getElementById('anthropic-key').value,
       model: document.getElementById('model').value,
+      summaryModel: document.getElementById('summary-model').value,
+      tldrModel: document.getElementById('tldr-model').value,
+      storyArcModel: document.getElementById('story-arc-model').value,
       captureInterval: parseInt(document.getElementById('capture-interval').value),
       batchSize: parseInt(document.getElementById('batch-size').value),
       imageQuality: parseFloat(document.getElementById('image-quality').value),
@@ -279,11 +285,34 @@ function showStatus(message, type = 'info') {
   }, 5000);
 }
 
+// Poll interval for background task progress
+let taskPollInterval = null;
+// Track which sessions have expanded arc details (survives re-renders)
+const expandedArcs = new Set();
+
+function startTaskPolling() {
+  if (taskPollInterval) return;
+  taskPollInterval = setInterval(async () => {
+    const result = await chrome.storage.local.get(['meetTranscriberTasks']);
+    const tasks = result.meetTranscriberTasks || {};
+    const hasRunning = Object.values(tasks).some(t => t.status === 'running');
+    await loadSavedTranscripts();
+    if (!hasRunning) {
+      clearInterval(taskPollInterval);
+      taskPollInterval = null;
+    }
+  }, 2000);
+}
+
 /** Load and display saved transcripts from Chrome storage */
 async function loadSavedTranscripts() {
   try {
-    const result = await chrome.storage.local.get(['meetTranscriptSessions']);
-    const sessions = result.meetTranscriptSessions || {};
+    const [sessResult, taskResult] = await Promise.all([
+      chrome.storage.local.get(['meetTranscriptSessions']),
+      chrome.storage.local.get(['meetTranscriberTasks'])
+    ]);
+    const sessions = sessResult.meetTranscriptSessions || {};
+    const tasks = taskResult.meetTranscriberTasks || {};
     const listEl = document.getElementById('saved-transcripts-list');
     
     const sessionIds = Object.keys(sessions).sort((a, b) => {
@@ -294,6 +323,10 @@ async function loadSavedTranscripts() {
       listEl.innerHTML = '<p class="no-transcripts">No saved transcripts yet</p>';
       return;
     }
+
+    // Check if any tasks are running and start polling if so
+    const hasRunning = Object.values(tasks).some(t => t.status === 'running');
+    if (hasRunning) startTaskPolling();
     
     listEl.innerHTML = sessionIds.map(id => {
       const session = sessions[id];
@@ -302,41 +335,156 @@ async function loadSavedTranscripts() {
       const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const meetCode = session.url.split('/').pop().split('?')[0] || 'unknown';
       
+      const hasTldr = !!session.tldr;
+      const hasArc = !!session.storyArc;
+      const hasBatches = getSessionBatches(session).length > 0;
+      const tldrTask = tasks[id + ':tldr'];
+      const arcTask = tasks[id + ':arc'];
+      const tldrBusy = tldrTask?.status === 'running';
+      const arcBusy = arcTask?.status === 'running';
+      const arcProgress = arcTask ? `${arcTask.progress || 0}/${arcTask.total || '?'}` : '';
+      const arcPct = (arcTask && arcTask.total) ? Math.round(((arcTask.progress || 0) / arcTask.total) * 100) : 0;
+      const hasDraftArc = arcBusy && arcTask?.checkpoint?.currentArc;
+      const showArcExpander = hasArc || hasDraftArc;
+      const arcLabel = hasArc ? '📖 Story Arc' : '📖 Story Arc (draft — in progress)';
+      const isExpanded = expandedArcs.has(id);
+
       return `
-        <div class="saved-transcript-item" data-session-id="${id}">
-          <div class="transcript-info">
-            <span class="transcript-date">${dateStr} ${timeStr}</span>
-            <span class="transcript-meet">Meet: ${meetCode}</span>
-            <span class="transcript-batches">${session.batchCount} batches</span>
+        <div class="saved-transcript-item-wrapper" data-session-id="${id}">
+          <div class="saved-transcript-item">
+            <div class="transcript-info">
+              <span class="transcript-date">${dateStr} ${timeStr} ${showArcExpander ? `<button class="btn-expand arc-expand" title="Story Arc options">${isExpanded ? '▼' : '▶'}</button>` : ''}</span>
+              <span class="transcript-meet">Meet: ${meetCode}</span>
+              <span class="transcript-batches">${session.batchCount} batches${hasTldr ? ' · TL;DR' : ''}${hasArc ? ' · Arc' : hasDraftArc ? ' · Arc (draft)' : ''}</span>
+            </div>
+            <div class="transcript-actions">
+              <button class="btn-icon download-saved" title="Download transcript" ${tldrBusy ? 'disabled' : ''}>💾</button>
+              <button class="btn-icon copy-saved" title="Copy">📋</button>
+              <button class="btn-icon tldr-saved" title="${hasTldr ? 'TL;DR exists' : tldrBusy ? 'Click to cancel TL;DR' : 'Generate TL;DR'}" ${hasTldr ? 'disabled' : ''}>${tldrBusy ? '<span class="spinner"></span>' : '📝'}</button>
+              <button class="btn-icon arc-saved" title="${arcBusy ? 'Building... ' + arcProgress + ' (~' + arcPct + '%) — click to cancel' : hasArc ? 'Regenerate Story Arc' : 'Build Story Arc'}" ${!hasBatches ? 'disabled' : ''}>${arcBusy ? '<span class="spinner"></span>' : '📖'}</button>
+              <button class="btn-icon delete-saved" title="Delete">🗑️</button>
+            </div>
           </div>
-          <div class="transcript-actions">
-            <button class="btn-icon download-saved" title="Download">💾</button>
-            <button class="btn-icon copy-saved" title="Copy">📋</button>
-            <button class="btn-icon delete-saved" title="Delete">🗑️</button>
+          ${showArcExpander ? `
+          <div class="arc-detail" style="display:${isExpanded ? 'block' : 'none'}">
+            <div class="arc-detail-row">
+              <span class="arc-detail-label">${arcLabel}</span>
+              <div class="arc-detail-actions">
+                <button class="btn-icon arc-download" title="Download Story Arc">💾</button>
+                <button class="btn-icon arc-copy" title="Copy Story Arc">📋</button>
+              </div>
+            </div>
           </div>
+          ` : ''}
         </div>
       `;
     }).join('');
     
-    // Add event listeners for buttons
+    // Wire up event listeners
     listEl.querySelectorAll('.download-saved').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
-        downloadSavedTranscript(sessionId, sessions[sessionId]);
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        downloadSavedTranscript(sid, sessions[sid]);
       });
     });
     
     listEl.querySelectorAll('.copy-saved').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
-        copySavedTranscript(sessions[sessionId]);
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        copySavedTranscript(sessions[sid]);
       });
     });
     
+    listEl.querySelectorAll('.tldr-saved').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        const task = tasks[sid + ':tldr'];
+        if (task?.status === 'running') {
+          chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':tldr' });
+          showStatus('📝 TL;DR generation cancelled', 'info');
+          loadSavedTranscripts();
+          return;
+        }
+        dispatchTldr(sid, sessions[sid]);
+      });
+    });
+
+    listEl.querySelectorAll('.arc-saved').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        const task = tasks[sid + ':arc'];
+        if (task?.status === 'running') {
+          chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':arc' });
+          showStatus('📖 Story Arc generation cancelled', 'info');
+          loadSavedTranscripts();
+          return;
+        }
+        dispatchStoryArc(sid, sessions[sid]);
+      });
+    });
+
+    listEl.querySelectorAll('.arc-expand').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wrapper = e.target.closest('.saved-transcript-item-wrapper');
+        const sid = wrapper.dataset.sessionId;
+        const detail = wrapper.querySelector('.arc-detail');
+        const isOpen = detail.style.display !== 'none';
+        if (isOpen) {
+          expandedArcs.delete(sid);
+          detail.style.display = 'none';
+          e.target.textContent = '▶';
+        } else {
+          expandedArcs.add(sid);
+          detail.style.display = 'block';
+          e.target.textContent = '▼';
+        }
+      });
+    });
+
+    listEl.querySelectorAll('.arc-copy').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        const arcText = sessions[sid]?.storyArc || tasks[sid + ':arc']?.checkpoint?.currentArc;
+        if (!arcText) { showStatus('⚠️ No arc content available', 'error'); return; }
+        navigator.clipboard.writeText(arcText).then(() => {
+          showStatus('📋 Story Arc copied to clipboard', 'success');
+        }).catch(() => showStatus('❌ Failed to copy', 'error'));
+      });
+    });
+
+    listEl.querySelectorAll('.arc-download').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        const session = sessions[sid];
+        const arcText = session?.storyArc || tasks[sid + ':arc']?.checkpoint?.currentArc;
+        if (!arcText) { showStatus('⚠️ No arc content available', 'error'); return; }
+        const isDraft = !session?.storyArc;
+        let text = `Google Meet - Story Arc${isDraft ? ' (DRAFT)' : ''}\n`;
+        text += '=======================\n\n';
+        text += `Meet URL: ${session.url}\n`;
+        text += `Recorded: ${session.startTime}\n`;
+        text += `Generated: ${new Date().toLocaleString()}\n`;
+        if (isDraft) {
+          const task = tasks[sid + ':arc'];
+          text += `Status: In progress — ${task?.progress || 0}/${task?.total || '?'} steps\n`;
+        }
+        text += '\n' + arcText;
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `meet-story-arc${isDraft ? '-draft' : ''}-${new Date(session.lastUpdated).toISOString().slice(0, 10)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showStatus(`📖 Story Arc ${isDraft ? 'draft ' : ''}downloaded`, 'success');
+      });
+    });
+
     listEl.querySelectorAll('.delete-saved').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const sessionId = e.target.closest('.saved-transcript-item').dataset.sessionId;
-        deleteSavedTranscript(sessionId);
+        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
+        deleteSavedTranscript(sid);
       });
     });
     
@@ -346,7 +494,11 @@ async function loadSavedTranscripts() {
 }
 
 function downloadSavedTranscript(sessionId, session) {
-  const text = `Google Meet AI Transcription\n============================\n\nMeet URL: ${session.url}\nRecorded: ${session.startTime}\nLast Updated: ${session.lastUpdated}\nBatches: ${session.batchCount}\n\n${session.transcript}`;
+  let text = `Google Meet AI Transcription\n============================\n\nMeet URL: ${session.url}\nRecorded: ${session.startTime}\nLast Updated: ${session.lastUpdated}\nBatches: ${session.batchCount}\n\n`;
+  if (session.tldr) {
+    text += `=== TL;DR ===\n${session.tldr}\n\n=== Transcript ===\n\n`;
+  }
+  text += session.transcript;
   
   const blob = new Blob([text], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
@@ -357,7 +509,107 @@ function downloadSavedTranscript(sessionId, session) {
   URL.revokeObjectURL(url);
   
   showStatus('💾 Transcript downloaded', 'success');
-}function copySavedTranscript(session) {
+}
+
+/** Parse flat transcript text into structured batches array */
+function parseBatchesFromTranscript(transcript) {
+  if (!transcript) return [];
+  const batches = [];
+  const lines = transcript.split('\n');
+  let current = null;
+
+  for (const line of lines) {
+    const match = line.match(/^\[([^\]]+)\]$/);
+    if (match) {
+      if (current && current.content.trim()) batches.push(current);
+      current = { timestamp: match[1], content: '' };
+    } else if (current) {
+      current.content += (current.content ? '\n' : '') + line;
+    }
+  }
+  if (current && current.content.trim()) batches.push(current);
+  return batches;
+}
+
+/** Get batches for a session -- uses stored array or parses from transcript */
+function getSessionBatches(session) {
+  if (session.batches && session.batches.length > 0) return session.batches;
+  return parseBatchesFromTranscript(session.transcript);
+}
+
+/** Dispatch TL;DR generation to background (fire-and-forget) */
+async function dispatchTldr(sessionId, session) {
+  if (session.tldr) {
+    showStatus('📝 TL;DR already exists', 'info');
+    return;
+  }
+  await chrome.runtime.sendMessage({
+    action: 'generateTldr',
+    sessionId,
+    fullTranscript: session.transcript
+  });
+  showStatus('📝 Generating TL;DR in background...', 'info');
+  startTaskPolling();
+  await loadSavedTranscripts();
+}
+
+/** Dispatch Story Arc generation to background (fire-and-forget) */
+async function dispatchStoryArc(sessionId, session) {
+  const batches = getSessionBatches(session);
+  if (batches.length === 0) {
+    showStatus('⚠️ No batch data available for this transcript', 'error');
+    return;
+  }
+  await chrome.runtime.sendMessage({
+    action: 'generateStoryArc',
+    sessionId,
+    batches
+  });
+  showStatus('📖 Building Story Arc in background...', 'info');
+  startTaskPolling();
+  await loadSavedTranscripts();
+}
+
+/** Copy Story Arc text to clipboard */
+function copySavedStoryArc(session) {
+  if (!session.storyArc) {
+    showStatus('⚠️ No story arc to copy', 'error');
+    return;
+  }
+  navigator.clipboard.writeText(session.storyArc).then(() => {
+    showStatus('📋 Story Arc copied to clipboard', 'success');
+  }).catch(error => {
+    showStatus('❌ Failed to copy', 'error');
+    console.error('Copy failed:', error);
+  });
+}
+
+/** Download Story Arc for a saved transcript */
+function downloadSavedStoryArc(session) {
+  if (!session.storyArc) {
+    showStatus('⚠️ No story arc — build one first', 'error');
+    return;
+  }
+
+  let text = 'Google Meet - Story Arc\n';
+  text += '=======================\n\n';
+  text += `Meet URL: ${session.url}\n`;
+  text += `Recorded: ${session.startTime}\n`;
+  text += `Generated: ${new Date().toLocaleString()}\n\n`;
+  text += session.storyArc;
+
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `meet-story-arc-${new Date(session.lastUpdated).toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  showStatus('📖 Story Arc downloaded', 'success');
+}
+
+function copySavedTranscript(session) {
   navigator.clipboard.writeText(session.transcript).then(() => {
     showStatus('📋 Transcript copied to clipboard', 'success');
   }).catch(error => {

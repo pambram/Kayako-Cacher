@@ -465,6 +465,37 @@
   padding: 20px;
 }
 
+/* TL;DR entry styling */
+.tldr-entry {
+  background: linear-gradient(135deg, #fef9c3 0%, #fde68a 100%);
+  border: 2px solid #f59e0b;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 20px !important;
+}
+
+.tldr-timestamp {
+  color: #92400e !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+}
+
+.tldr-content {
+  color: #1f2937 !important;
+  font-weight: 500;
+  line-height: 1.7;
+}
+
+/* Disabled header buttons */
+.output-header button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.output-header button:disabled:hover {
+  background: transparent;
+}
+
 /* Imported entry styling */
 .imported-entry {
   border-left: 3px solid #f59e0b;
