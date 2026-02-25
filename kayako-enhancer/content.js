@@ -3843,7 +3843,7 @@ let extensionContextValid = true;
 // --- NEW BUTTON SPLIT DROPDOWN WITH PRE-FILL ---
 
 /** Capture Brand, Form, and Product from the current ticket's sidebar/header. */
-function captureCurrentTicketContext() {
+async function captureCurrentTicketContext() {
     const ctx = {};
     try {
         // Brand: text next to "Change Brand" in the conversation header
@@ -3923,7 +3923,34 @@ function captureCurrentTicketContext() {
                 }
             }
         } else {
-            console.warn('⚡ No message-or-note blocks found in timeline');
+            console.warn('⚡ No message-or-note blocks found in timeline, trying API fallback');
+        }
+
+        // API fallback: if DOM capture failed (e.g. timeline was unloaded by SPA navigation)
+        if (!ctx.firstMessageHtml) {
+            const ticketId = window.location.href.match(/\/conversations?\/(\d+)/)?.[1];
+            if (ticketId) {
+                try {
+                    const resp = await fetch(`/api/v1/cases/${ticketId}/posts?limit=10&sort=id`, { credentials: 'include' });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const posts = data?.data || [];
+                        const getBody = (p) => p.contents || p.body_html || p.body || '';
+                        const toHtml = (body) => /<[a-z][\s\S]*>/i.test(body) ? body : body.split('\n').filter(l => l.trim()).map(l => `<p>${l}</p>`).join('');
+                        // Prefer first requester post, fallback to first post with content
+                        let fallbackPost = null;
+                        for (const p of posts) {
+                            if (getBody(p).length <= 5) continue;
+                            if (!fallbackPost) fallbackPost = p;
+                            if (p.is_requester) { fallbackPost = p; break; }
+                        }
+                        if (fallbackPost) {
+                            ctx.firstMessageHtml = toHtml(getBody(fallbackPost));
+                            console.log(`⚡ Captured message via API fallback (post ${fallbackPost.id}):`, getBody(fallbackPost).substring(0, 100));
+                        }
+                    }
+                } catch (e) { console.warn('⚡ API fallback failed:', e.message); }
+            }
         }
 
         // Capture attachments — find all download links on the page
@@ -4087,10 +4114,10 @@ function emberClick(el) {
     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 }
 
-function triggerPrefillNewConversation() {
+async function triggerPrefillNewConversation() {
     try {
         // 1. Capture context from current ticket
-        const ctx = captureCurrentTicketContext();
+        const ctx = await captureCurrentTicketContext();
         const prefillData = {
             brand: ctx.brand || '',
             form: ctx.form || '',
