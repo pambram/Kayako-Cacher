@@ -595,10 +595,20 @@ function setupAutoHyperlinking() {
                     // Could be single URL string or array of URLs
                     const urls = Array.isArray(standalone) ? standalone : [standalone];
                     console.log('📎 Pasted standalone URL(s), will suggest title:', urls);
-                    // Queue title suggestions sequentially
+                    // Mark all URLs as inflight so auto-link scan doesn't double-queue them
+                    try {
+                        const editor = target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element');
+                        if (editor) {
+                            const edKey = ensureEditorUid(editor);
+                            window.__kayakoSuggestInflight = window.__kayakoSuggestInflight || Object.create(null);
+                            urls.forEach(u => { window.__kayakoSuggestInflight[edKey + '|' + u] = Date.now(); });
+                        }
+                    } catch(_) {}
+                    // Queue title suggestions sequentially; use a longer delay to let
+                    // Kayako convert the raw text into an anchor first
                     setTimeout(() => {
                         queueTitleSuggestions(target, urls);
-                    }, 150);
+                    }, 300);
                 } else {
                     // Not just a URL → do nothing now; rely on auto-link scan after paste
                     setTimeout(() => { try { scanEditorForAutoLinks(target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element')); } catch(_) {} }, 250);
@@ -782,7 +792,17 @@ function suggestReplaceURLWithTitle(editor, url) {
         try { editor.addEventListener('input', cancelIfInput, { once: true }); } catch(_) {}
         const timeoutId = setTimeout(() => {
             if (!responded) {
-                console.log('⏳ No response from service worker for title within 2s. Pinging…');
+                console.log('⏳ No response from service worker for title within 2s – clearing lock and retrying…');
+                // Clear the inflight lock so a retry isn't blocked by the dedup cooldown
+                try { if (window.__kayakoSuggestInflight) delete window.__kayakoSuggestInflight[inflightKey]; } catch(_) {}
+                // Retry once – SW was probably asleep and is now waking
+                setTimeout(() => {
+                    if (!cancelled && isUrlPresentInEditor(editor, url)) {
+                        console.log('🔁 Retrying title fetch after SW wake-up for', url);
+                        suggestReplaceURLWithTitle(editor, url);
+                    }
+                }, 600);
+                // Also ping for diagnostics
                 if (isRuntimeAvailable()) {
                     try {
                         chrome.runtime.sendMessage({ action: 'ping' }, (pong) => {
@@ -1841,10 +1861,22 @@ function scanEditorForAutoLinks(editor) {
             } catch (_) {}
         });
         
-        // Queue all unchecked URLs for sequential processing
+        // Queue all unchecked URLs for sequential processing,
+        // but only if no inflight request already owns them (direct paste path may own them)
         if (uncheckedUrls.length > 0) {
-            console.log(`🔗 Auto-link scan found ${uncheckedUrls.length} raw URL(s), queueing for title suggestions`);
-            setTimeout(() => { queueTitleSuggestions(editor, uncheckedUrls); }, 50);
+            const edKey = ensureEditorUid(editor);
+            window.__kayakoSuggestInflight = window.__kayakoSuggestInflight || Object.create(null);
+            const fresh = uncheckedUrls.filter(u => {
+                const key = edKey + '|' + u;
+                const prevTs = window.__kayakoSuggestInflight[key] || 0;
+                return Date.now() - prevTs >= 2500;
+            });
+            if (fresh.length > 0) {
+                console.log(`🔗 Auto-link scan found ${fresh.length} raw URL(s), queueing for title suggestions`);
+                setTimeout(() => { queueTitleSuggestions(editor, fresh); }, 50);
+            } else {
+                console.log(`🔗 Auto-link scan: all ${uncheckedUrls.length} URL(s) already handled by paste path, skipping`);
+            }
         }
     } catch (_) {}
 }
