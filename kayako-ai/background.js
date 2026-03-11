@@ -12,7 +12,7 @@ const DEFAULT_CONFIG = {
   systemPrompt: '',
   temperature: 0.7,
   // Context truncation limits (in characters; ~4 chars ≈ 1 token)
-  maxContextChars: 60000,
+  maxContextChars: 90000,
   // Experimental features
   tavilyKey: '',
   enableUrlFetch: false,
@@ -862,8 +862,13 @@ async function handleSaveTemplates(templates, sendResponse) {
 
 async function handleUpdateConfig(newConfig, sendResponse) {
   try {
+    // Preserve existing templates - the popup doesn't send them, so we must
+    // merge carefully: defaults → existing stored config → new config fields
+    const existing = await chrome.storage.local.get(['kayakoAIConfig']);
+    const existingConfig = existing.kayakoAIConfig || {};
+    
     await chrome.storage.local.set({
-      kayakoAIConfig: { ...DEFAULT_CONFIG, ...newConfig }
+      kayakoAIConfig: { ...DEFAULT_CONFIG, ...existingConfig, ...newConfig }
     });
     
     // Notify all content scripts about the config update

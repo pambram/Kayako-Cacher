@@ -328,6 +328,12 @@ class KayakoAIEnhancer {
     dropdownButton.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+
+      // Focus the editor first to ensure Kayako expands the editor container
+      // (clicking chat panel may have left the editor collapsed)
+      if (editorElement && typeof editorElement.focus === 'function') {
+        editorElement.focus();
+      }
       
       const isVisible = dropdownMenu.style.display === 'block';
       
@@ -3287,7 +3293,7 @@ ${numberedMessages.join('\n\n')}
     const model = this.config.model || 'gpt-5.2';
     
     // Use configurable context limit (default 60k chars ≈ 15k tokens)
-    const configuredLimit = this.config?.maxContextChars || 60000;
+    const configuredLimit = this.config?.maxContextChars || 90000;
     const MAX_TEXT = Math.max(configuredLimit, 20000);
     const MAX_CTX = configuredLimit;
 
@@ -3296,18 +3302,42 @@ ${numberedMessages.join('\n\n')}
 
     const clamp = (s, max, label) => {
       if (!s) return '';
-      if (s.length > max) {
-        if (label === 'context') {
-          truncationInfo.ctxTruncated = true;
-          truncationInfo.ctxOriginal = s.length;
-        } else {
-          truncationInfo.textTruncated = true;
-          truncationInfo.textOriginal = s.length;
-        }
-        console.warn(`⚠️ ${label} truncated: ${s.length.toLocaleString()} chars → ${max.toLocaleString()} chars (limit: ${max.toLocaleString()})`);
-        return s.slice(0, max) + `\n…[truncated from ${s.length.toLocaleString()} to ${max.toLocaleString()} chars]`;
+      if (s.length <= max) return s;
+
+      if (label === 'context') {
+        truncationInfo.ctxTruncated = true;
+        truncationInfo.ctxOriginal = s.length;
+      } else {
+        truncationInfo.textTruncated = true;
+        truncationInfo.textOriginal = s.length;
       }
-      return s;
+      console.warn(`⚠️ ${label} truncated: ${s.length.toLocaleString()} chars → ${max.toLocaleString()} chars (limit: ${max.toLocaleString()})`);
+
+      // Smart truncation for ticket context: keep header + recent messages (top)
+      // and the newest messages from full history (bottom), drop the middle (oldest history)
+      if (label === 'context') {
+        const historyMarker = '=== FULL HISTORY (oldest → newest) ===';
+        const historyIdx = s.indexOf(historyMarker);
+        if (historyIdx > 0) {
+          const header = s.slice(0, historyIdx + historyMarker.length);
+          const history = s.slice(historyIdx + historyMarker.length);
+          const budgetForHistory = max - header.length - 200;
+          if (budgetForHistory > 0) {
+            // Keep newest messages (end of history) and trim oldest (start of history)
+            const trimmedHistory = history.slice(-budgetForHistory);
+            // Find the start of the next complete message after the cut point
+            const firstMsgStart = trimmedHistory.search(/\n\[(?:#\d+|MOST RECENT|2nd most recent)/);
+            const cleanHistory = firstMsgStart > 0 ? trimmedHistory.slice(firstMsgStart) : trimmedHistory;
+            const dropped = history.length - cleanHistory.length;
+            const truncNote = `\n\n…[${dropped.toLocaleString()} chars of oldest messages truncated — newest messages preserved]\n`;
+            console.log(`📐 Smart truncation: kept header (${header.length.toLocaleString()} chars) + newest history (${cleanHistory.length.toLocaleString()} chars), dropped ${dropped.toLocaleString()} chars of oldest messages`);
+            return header + truncNote + cleanHistory;
+          }
+        }
+      }
+
+      // Fallback: simple end-truncation for non-context or if markers not found
+      return s.slice(0, max) + `\n…[truncated from ${s.length.toLocaleString()} to ${max.toLocaleString()} chars]`;
     };
 
     // Build user content with the user's instruction first, then details, then context
@@ -3676,6 +3706,9 @@ ${numberedMessages.join('\n\n')}
       this.renderChatHistory();
     }
 
+    // Focus the input so the user can start typing immediately
+    input.focus();
+
     // Gather context
     this.gatherTicketChatContext();
   }
@@ -3699,14 +3732,41 @@ ${numberedMessages.join('\n\n')}
       // Customer name
       const customerName = this.extractCustomerName() || 'Unknown';
 
+      // Extract current editor content (agent's working notes / draft)
+      let editorNotes = '';
+      try {
+        const activeEditor = document.querySelector('.fr-element.fr-view');
+        if (activeEditor) {
+          const editorData = this.getEditorText(activeEditor);
+          if (editorData?.hasTemplate) {
+            const additionalCtx = this.extractAdditionalContextSection(editorData.fullText).trim();
+            const escalationCtx = this.extractEscalationSectionContent(editorData.fullText || '').trim();
+            if (additionalCtx) {
+              editorNotes += `[AGENT WORKING NOTES - from editor "Additional Context" section]\n${additionalCtx}\n[END AGENT WORKING NOTES]\n`;
+            }
+            if (escalationCtx) {
+              editorNotes += `[CURRENT ESCALATION DRAFT - from editor]\n${escalationCtx}\n[END ESCALATION DRAFT]\n`;
+            }
+          } else if (editorData?.fullText?.trim()) {
+            editorNotes = `[AGENT EDITOR CONTENT - current unsent draft]\n${editorData.fullText.trim()}\n[END AGENT EDITOR CONTENT]\n`;
+          }
+        }
+      } catch (e) {
+        console.warn('💬 Could not extract editor content for chat context:', e);
+      }
+
       this.ticketChatContext = `You are analyzing a support ticket for the agent.\n\nCustomer: ${customerName}\n\n${mainText}`;
       if (sideText) {
         this.ticketChatContext += `\n\n${sideText}`;
       }
+      if (editorNotes) {
+        this.ticketChatContext += `\n\n${editorNotes}`;
+      }
 
+      const editorLabel = editorNotes ? ' + editor notes' : '';
       const sideLabel = sideText ? ' + side conversations' : '';
       if (statusEl) {
-        statusEl.textContent = `Context loaded: ${mainMsgCount || 'multiple'} messages${sideLabel} (${(this.ticketChatContext.length / 1000).toFixed(0)}k chars)`;
+        statusEl.textContent = `Context loaded: ${mainMsgCount || 'multiple'} messages${sideLabel}${editorLabel} (${(this.ticketChatContext.length / 1000).toFixed(0)}k chars)`;
       }
       console.log(`💬 Chat context ready: ${this.ticketChatContext.length} chars`);
 
@@ -3913,7 +3973,7 @@ ${numberedMessages.join('\n\n')}
           requestBody: {
             model: 'claude-haiku-4-5',
             messages: [
-              { role: 'user', content: `Based on this support ticket context, suggest 2-3 specific questions a support agent would find most useful to ask about this ticket right now. Focus on actionable questions about the current state, next steps, or key details.\n\nTicket context:\n${contextSnippet}\n\nReturn ONLY a JSON array of objects with "label" (short button text, max 25 chars) and "query" (the full question to ask). Example: [{"label":"Student details?","query":"List all affected students with their emails and issues."}]` }
+              { role: 'user', content: `Based on this support ticket context, suggest 2-3 specific questions a support agent would find most useful to ask about this ticket right now. Focus on actionable questions about the current state, next steps, or key details.\n\nIMPORTANT: We already have these static buttons, so do NOT suggest anything similar:\n- "What is this ticket about?"\n- "What is the current blocker?"\nYour suggestions must be DIFFERENT and specific to this ticket's unique situation.\n\nTicket context:\n${contextSnippet}\n\nReturn ONLY a JSON array of objects with "label" (short button text, max 25 chars) and "query" (the full question to ask). Example: [{"label":"Student details?","query":"List all affected students with their emails and issues."}]` }
             ],
             max_completion_tokens: 300,
             temperature: 0.3

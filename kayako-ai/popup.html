@@ -98,7 +98,8 @@
           <select id="maxContextChars">
             <option value="20000">Small (20k chars / ~5k tokens) - Faster, cheaper</option>
             <option value="40000">Medium (40k chars / ~10k tokens)</option>
-            <option value="60000">Large (60k chars / ~15k tokens) - Recommended</option>
+            <option value="60000">Large (60k chars / ~15k tokens)</option>
+            <option value="90000">Large+ (90k chars / ~22k tokens) - Recommended</option>
             <option value="100000">Extra Large (100k chars / ~25k tokens)</option>
             <option value="200000">Very Large (200k chars / ~50k tokens) - Full history</option>
             <option value="500000">Maximum (500k chars / ~125k tokens) - Opus/Sonnet 4.6 with 1M context</option>
@@ -202,6 +203,13 @@
             <button id="sortTemplates" class="btn btn-secondary btn-small" title="Sort A-Z">
               ↕️ Sort A-Z
             </button>
+            <button id="exportTemplates" class="btn btn-secondary btn-small" title="Export templates to JSON file">
+              📤 Export
+            </button>
+            <button id="importTemplates" class="btn btn-secondary btn-small" title="Import templates from JSON file">
+              📥 Import
+            </button>
+            <input type="file" id="importTemplatesFile" accept=".json" style="display: none;" />
           </div>
         </div>
       </section>

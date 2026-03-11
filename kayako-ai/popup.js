@@ -166,6 +166,17 @@ class PopupManager {
       this.sortTemplatesAlphabetically();
     });
     
+    // Export/Import templates
+    document.getElementById('exportTemplates').addEventListener('click', () => {
+      this.exportTemplates();
+    });
+    document.getElementById('importTemplates').addEventListener('click', () => {
+      document.getElementById('importTemplatesFile').click();
+    });
+    document.getElementById('importTemplatesFile').addEventListener('change', (e) => {
+      this.importTemplates(e);
+    });
+    
     // Template modal actions
     document.getElementById('closeTemplateModal').addEventListener('click', () => {
       this.closeTemplateModal();
@@ -207,7 +218,7 @@ class PopupManager {
     document.getElementById('temperature').value = this.config.temperature || '0.7';
     
     // Context size limit
-    document.getElementById('maxContextChars').value = this.config.maxContextChars || '60000';
+    document.getElementById('maxContextChars').value = this.config.maxContextChars || '90000';
 
     // Update experimental features
     document.getElementById('tavilyKey').value = this.config.tavilyKey || '';
@@ -427,6 +438,83 @@ class PopupManager {
     await this.saveTemplatesOrder();
     this.renderTemplates();
     this.showSuccess('Templates sorted alphabetically');
+  }
+  
+  exportTemplates() {
+    if (!this.templates || this.templates.length === 0) {
+      this.showError('No templates to export');
+      return;
+    }
+    
+    const data = JSON.stringify(this.templates, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kayako-ai-templates-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    this.showSuccess(`Exported ${this.templates.length} templates`);
+  }
+  
+  async importTemplates(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    // Reset input so the same file can be re-imported
+    event.target.value = '';
+    
+    try {
+      const text = await file.text();
+      const imported = JSON.parse(text);
+      
+      if (!Array.isArray(imported)) {
+        this.showError('Invalid file: expected a JSON array of templates');
+        return;
+      }
+      
+      // Validate each template has required fields
+      const valid = imported.every(t => t.id && t.name && t.template);
+      if (!valid) {
+        this.showError('Invalid file: each template must have id, name, and template fields');
+        return;
+      }
+      
+      // Merge: add imported templates, skip duplicates by id, update existing by id
+      let added = 0;
+      let updated = 0;
+      for (const imp of imported) {
+        const existingIdx = this.templates.findIndex(t => t.id === imp.id);
+        if (existingIdx >= 0) {
+          this.templates[existingIdx] = imp;
+          updated++;
+        } else {
+          this.templates.push(imp);
+          added++;
+        }
+      }
+      
+      // Save
+      const response = await chrome.runtime.sendMessage({
+        action: 'saveTemplates',
+        templates: this.templates
+      });
+      
+      if (response.success) {
+        this.renderTemplates();
+        const parts = [];
+        if (added > 0) parts.push(`${added} added`);
+        if (updated > 0) parts.push(`${updated} updated`);
+        this.showSuccess(`Imported templates: ${parts.join(', ')}`);
+      } else {
+        this.showError('Failed to save imported templates: ' + response.error);
+      }
+    } catch (error) {
+      console.error('Import failed:', error);
+      this.showError('Failed to import: ' + (error.message || 'Invalid JSON file'));
+    }
   }
   
   openTemplateModal(templateId) {
