@@ -907,7 +907,7 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
 
     await setTaskStatus(taskKey, {
       type: 'arc', sessionId, status: 'running',
-      progress: step, total: totalSteps, batches,
+      progress: step, total: totalSteps,
       checkpoint: { currentArc, nextChunkIndex: step }
     });
 
@@ -991,17 +991,49 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
   await clearTaskStatus(taskKey);
 }
 
+/** Parse batches from a session's transcript text (fallback for resume) */
+function parseBatchesFromTranscriptBg(transcript) {
+  if (!transcript) return [];
+  const batches = [];
+  const lines = transcript.split('\n');
+  let current = null;
+  for (const line of lines) {
+    const match = line.match(/^\[([^\]]+)\]$/);
+    if (match) {
+      if (current && current.content.trim()) batches.push(current);
+      current = { timestamp: match[1], content: '' };
+    } else if (current) {
+      current.content += (current.content ? '\n' : '') + line;
+    }
+  }
+  if (current && current.content.trim()) batches.push(current);
+  return batches;
+}
+
 /** Resume any interrupted story arc tasks on service worker startup */
 async function resumeInterruptedTasks() {
   try {
-    const result = await chrome.storage.local.get(['meetTranscriberTasks']);
-    const tasks = result.meetTranscriberTasks || {};
+    const [taskResult, sessResult] = await Promise.all([
+      chrome.storage.local.get(['meetTranscriberTasks']),
+      chrome.storage.local.get(['meetTranscriptSessions'])
+    ]);
+    const tasks = taskResult.meetTranscriberTasks || {};
+    const sessions = sessResult.meetTranscriptSessions || {};
+
     for (const [taskKey, task] of Object.entries(tasks)) {
       if (task.status === 'running' && task.type === 'arc' && task.checkpoint && !activeTasks[taskKey]) {
+        const session = sessions[task.sessionId];
+        if (!session) { clearTaskStatus(taskKey); continue; }
+        const batches = session.batches && session.batches.length > 0
+          ? session.batches
+          : parseBatchesFromTranscriptBg(session.transcript);
+        if (batches.length === 0) { clearTaskStatus(taskKey); continue; }
+
         console.log(`📖 Auto-resuming interrupted task: ${taskKey}`);
         const handle = { cancelled: false };
         activeTasks[taskKey] = handle;
-        runStoryArcTask(taskKey, task.sessionId, task.batches, handle);
+        startKeepalive();
+        runStoryArcTask(taskKey, task.sessionId, batches, handle);
       }
     }
   } catch (error) {
