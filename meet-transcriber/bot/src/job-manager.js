@@ -13,6 +13,7 @@ import {
   estimateTokenCount,
   MAX_SINGLE_SUMMARY_INPUT_TOKENS
 } from './summarize.js';
+import { normalizeMeetUrlInput } from './meet-url.js';
 
 function newJobId() {
   return `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -142,13 +143,14 @@ export class JobManager {
     if (!request.meetUrl) {
       throw new Error('meetUrl is required');
     }
+    const normalizedMeetUrl = normalizeMeetUrlInput(request.meetUrl);
 
     const scheduledAt = request.scheduledAt ? new Date(request.scheduledAt).toISOString() : null;
     const jobId = newJobId();
     const now = new Date().toISOString();
     const job = {
       id: jobId,
-      meetUrl: request.meetUrl,
+      meetUrl: normalizedMeetUrl,
       status: scheduledAt ? 'scheduled' : 'pending',
       createdAt: now,
       updatedAt: now,

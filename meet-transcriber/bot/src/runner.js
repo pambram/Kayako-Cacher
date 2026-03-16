@@ -224,6 +224,12 @@ export async function runMeetingBot(config, hooks = {}) {
       onFatal: async (error) => {
         captureFatalError = error;
         emit(hooks, 'failed', { stage: 'capture', error: error.message });
+        if (session?.leave) {
+          emit(hooks, 'leaving_meeting', { reason: 'capture_fatal' });
+          await session.leave().catch((leaveError) => {
+            emit(hooks, 'leave_warning', { error: leaveError.message });
+          });
+        }
         resolveCaptureFatal('capture-fatal');
       },
       onTick: async (tick) => {

@@ -263,6 +263,37 @@ async function detectMeetingEnded(page) {
   });
 }
 
+async function leaveMeeting(page) {
+  try {
+    const clicked = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll('button, div[role="button"]'));
+      const leaveNode = nodes.find((node) => {
+        const text = (node.textContent || '').toLowerCase();
+        const aria = (node.getAttribute('aria-label') || '').toLowerCase();
+        const combined = `${text} ${aria}`;
+        return combined.includes('leave call')
+          || combined.includes('leave meeting')
+          || combined.includes('hang up')
+          || combined.includes('end call');
+      });
+      if (!leaveNode) return false;
+      const disabled = leaveNode.hasAttribute('disabled') || leaveNode.getAttribute('aria-disabled') === 'true';
+      if (disabled) return false;
+      leaveNode.click();
+      return true;
+    });
+
+    if (clicked) {
+      console.log('Leave call button clicked.');
+      await sleep(800);
+      return true;
+    }
+  } catch (error) {
+    console.warn('Leave call click failed:', error.message);
+  }
+  return false;
+}
+
 async function detectJoinDenied(page) {
   return page.evaluate(() => {
     const body = document.body?.innerText || '';
@@ -487,6 +518,10 @@ export async function startMeetSession(config) {
         if (Date.now() - startedAt > timeoutMs) return 'timeout';
         await sleep(5000);
       }
+    },
+    async leave() {
+      if (page.isClosed()) return false;
+      return leaveMeeting(page);
     },
     async close() {
       await browser.close();

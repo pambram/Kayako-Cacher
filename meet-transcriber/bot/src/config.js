@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { normalizeMeetUrlInput } from './meet-url.js';
 
 const DEFAULTS = {
   meetUrl: '',
@@ -72,10 +73,11 @@ export function loadConfig(cliArgs = {}, options = {}) {
   const requireMeetUrl = options.requireMeetUrl !== false;
   const explicitChromePath = cliArgs['chrome-path'] || process.env.CHROME_BIN || '';
   const resolvedChromePath = explicitChromePath || detectChromePath();
+  const rawMeetUrl = cliArgs['meet-url'] || process.env.MEET_URL || DEFAULTS.meetUrl;
 
   const config = {
     ...DEFAULTS,
-    meetUrl: cliArgs['meet-url'] || process.env.MEET_URL || DEFAULTS.meetUrl,
+    meetUrl: rawMeetUrl ? normalizeMeetUrlInput(rawMeetUrl) : '',
     googleEmail: cliArgs['google-email'] || process.env.GOOGLE_EMAIL || DEFAULTS.googleEmail,
     googlePassword: cliArgs['google-password'] || process.env.GOOGLE_PASSWORD || DEFAULTS.googlePassword,
     anthropicApiKey: cliArgs['anthropic-api-key'] || process.env.ANTHROPIC_API_KEY || DEFAULTS.anthropicApiKey,

@@ -101,7 +101,13 @@ function renderJobs(jobs) {
     return;
   }
 
-  root.innerHTML = jobs.map((job) => {
+  const sortedJobs = [...jobs].sort((a, b) => {
+    const aTs = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const bTs = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return bTs - aTs;
+  });
+
+  root.innerHTML = sortedJobs.map((job) => {
     const health = getHealthBadge(job);
     const checks = getSetupChecks(job);
     const checkpointLinks = (job.latestCheckpointLinks || [])

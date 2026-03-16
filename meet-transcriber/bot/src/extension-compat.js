@@ -21,6 +21,8 @@ export async function loadExtensionPromptSet() {
   }
 
   const tldrSystemMatch = source.match(
+    /const\s+tldrSystemPrompt\s*=\s*`([\s\S]*?)`;/m
+  ) || source.match(
     /system:\s*`([\s\S]*?)`,\s*messages:\s*\[\{ role: 'user', content: `[\s\S]*?\$\{fullTranscript\}` \}\]/m
   ) || source.match(
     /system:\s*`([\s\S]*?)`,\s*messages:\s*\[\{ role: 'user', content: `Generate a TL;DR for this meeting transcript:/m

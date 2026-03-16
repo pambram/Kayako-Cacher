@@ -6,24 +6,35 @@ import {
 
 export const MAX_SINGLE_SUMMARY_INPUT_TOKENS = 200000;
 export const MAP_REDUCE_CHUNK_TOKENS = 100000;
+const RATE_LIMIT_MAX_RETRIES = 2;
+const RATE_LIMIT_BASE_WAIT_MS = 12000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'content-type': 'application/json',
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: 'user', content: user }]
-    })
-  });
+  for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt += 1) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: user }]
+      })
+    });
 
-  if (!response.ok) {
+    if (response.ok) {
+      const json = await response.json();
+      return json.content?.find((item) => item.type === 'text')?.text?.trim() || '';
+    }
+
     let errorBody = '';
     try {
       const parsed = await response.json();
@@ -31,11 +42,23 @@ async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
     } catch (error) {
       errorBody = await response.text();
     }
+
+    // Auto-retry transient rate limiting using Retry-After when available.
+    if (response.status === 429 && attempt < RATE_LIMIT_MAX_RETRIES) {
+      const retryAfterHeader = response.headers.get('retry-after');
+      const retryAfterSec = Number(retryAfterHeader);
+      const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? retryAfterSec * 1000
+        : RATE_LIMIT_BASE_WAIT_MS * (attempt + 1);
+      console.warn(`Anthropic rate limit hit; retrying in ${waitMs}ms (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES + 1})`);
+      await sleep(waitMs);
+      continue;
+    }
+
     throw new Error(`Anthropic request failed (${response.status}): ${errorBody}`);
   }
 
-  const json = await response.json();
-  return json.content?.find((item) => item.type === 'text')?.text?.trim() || '';
+  throw new Error('Anthropic request failed after rate-limit retries');
 }
 
 export function estimateTokenCount(text) {
