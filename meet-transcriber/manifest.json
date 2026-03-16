@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Google Meet AI Transcriber",
-  "version": "1.9.0",
+  "version": "1.9.5",
   "description": "AI-powered visual transcription for Google Meet calls using screenshots and LLM analysis",
   "permissions": [
     "storage",

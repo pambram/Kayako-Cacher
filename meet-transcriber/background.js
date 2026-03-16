@@ -844,18 +844,17 @@ function startBulletPointsTask(sessionId, fullTranscript) {
   runBulletPointsTask(taskKey, sessionId, fullTranscript, handle);
 }
 
-const BULLET_POINTS_PROMPT = `Convert this meeting transcript into a series of chronological status update bullet points.
+const BULLET_POINTS_PROMPT = `Convert this meeting transcript into a bulleted status update timeline.
 
 FORMAT RULES:
-- Each update block starts with "Update Time:" (or "Update:") followed by the timestamp and timezone
-- Then "Status Update:" (or "Status:") followed by the person reporting, if identifiable
-- Then the actual content as concise bullet points
+- Group updates into 15-30 minute blocks. Do NOT create a separate block for every minute.
+- Each block starts with a time range: "Update Time: ~HH:MM - HH:MM PM" (or a single approximate time if the block is short)
+- Optionally followed by the person(s) reporting, if identifiable: "Status: Name1, Name2" (NOT "Status Update:")
+- Then the actual content as bullet points. Every content line MUST start with "- " (a dash and a space).
 - Most recent updates appear first (reverse chronological)
-- Each bullet should be a factual statement about what happened, what was found, or what the next step is
-- Use specific names, resource IDs, error messages, and technical details
-- Keep each bullet to 1-2 lines maximum
-- Group related bullets under the same timestamp if they happened together
+- Each bullet: 1-2 lines, factual. Use specific names, resource IDs, error messages, commands, and technical details.
 - Do not editorialize. No "interestingly" or "it's worth noting". Just facts.
+- A 1-hour meeting should produce roughly 4-6 blocks, not 30+.
 
 Here are two examples of the desired output format:
 
