@@ -710,6 +710,34 @@ ${transcripts.map((t, i) => `\n--- Batch ${i + 1} (${new Date(t.timestamp).toLoc
 // --- Background task management (survives popup close) ---
 
 const activeTasks = {};
+const MAX_SINGLE_SUMMARY_INPUT_TOKENS = 200000;
+const MAP_REDUCE_CHUNK_TOKENS = 100000;
+
+function estimateTokenCount(text) {
+  if (!text) return 0;
+  return Math.ceil(String(text).length / 4);
+}
+
+function chunkTranscriptByApproxTokens(text, chunkTokenBudget = MAP_REDUCE_CHUNK_TOKENS) {
+  const lines = String(text || '').split('\n');
+  const chunks = [];
+  let current = [];
+  let currentTokens = 0;
+
+  for (const line of lines) {
+    const lineTokens = estimateTokenCount(`${line}\n`);
+    if (current.length && currentTokens + lineTokens > chunkTokenBudget) {
+      chunks.push(current.join('\n'));
+      current = [line];
+      currentTokens = lineTokens;
+    } else {
+      current.push(line);
+      currentTokens += lineTokens;
+    }
+  }
+  if (current.length) chunks.push(current.join('\n'));
+  return chunks.length ? chunks : [''];
+}
 const KEEPALIVE_ALARM = 'task-keepalive';
 
 /** Start a periodic alarm to keep the service worker alive during long tasks */
@@ -769,7 +797,18 @@ function startTldrTask(sessionId, fullTranscript) {
 
 async function runTldrTask(taskKey, sessionId, fullTranscript, handle) {
   try {
-    await setTaskStatus(taskKey, { type: 'tldr', sessionId, status: 'running', progress: 0, total: 1 });
+    const estimatedTokens = estimateTokenCount(fullTranscript);
+    const useMapReduce = estimatedTokens > MAX_SINGLE_SUMMARY_INPUT_TOKENS;
+    const chunks = useMapReduce ? chunkTranscriptByApproxTokens(fullTranscript) : [fullTranscript];
+    await setTaskStatus(taskKey, {
+      type: 'tldr',
+      sessionId,
+      status: 'running',
+      progress: 0,
+      total: chunks.length,
+      estimatedInputTokens: estimatedTokens,
+      mode: useMapReduce ? 'map_reduce' : 'single_pass'
+    });
 
     const cfgResult = await chrome.storage.local.get(['meetTranscriberConfig']);
     const config = cfgResult.meetTranscriberConfig || DEFAULT_CONFIG;
@@ -779,39 +818,50 @@ async function runTldrTask(taskKey, sessionId, fullTranscript, handle) {
     const tldrModel = config.tldrModel || 'claude-opus-4-6';
     console.log(`📝 TL;DR task started: ${taskKey} with ${tldrModel}`);
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': config.anthropicKey,
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: tldrModel,
-        max_tokens: 2000,
-        system: `You produce concise executive TL;DR summaries of technical meeting transcripts.
+    let tldr = '';
+    const tldrSystemPrompt = `You produce concise executive TL;DR summaries of technical meeting transcripts.
 
 RULES:
 - 3-5 bullet points maximum
 - Cover: what happened, key decisions made, action items identified
 - Be specific: use real resource names, commands, metrics from the transcript
 - If nothing substantive happened, say so honestly
-- No fluff, no filler — just the essential takeaways`,
-        messages: [{ role: 'user', content: `Generate a TL;DR for this meeting transcript:\n\n${fullTranscript}` }]
-      })
-    });
+ - No fluff, no filler — just the essential takeaways`;
 
-    if (handle.cancelled) return;
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i];
+      const userPrompt = i === 0
+        ? `Generate a TL;DR for this meeting transcript:\n\n${chunk}`
+        : `<current_tldr>\n${tldr}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk into the existing TL;DR. Keep it concise and preserve key decisions, actions, and outcomes. Output only the updated TL;DR.`;
 
-    if (!response.ok) {
-      let errorData;
-      try { errorData = await response.json(); } catch (e) {}
-      throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': config.anthropicKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: tldrModel,
+          max_tokens: 2000,
+          system: tldrSystemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        })
+      });
+
+      if (handle.cancelled) return;
+
+      if (!response.ok) {
+        let errorData;
+        try { errorData = await response.json(); } catch (e) {}
+        throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      tldr = data.content?.[0]?.text || tldr;
+      await setTaskStatus(taskKey, { progress: i + 1, total: chunks.length });
     }
-
-    const data = await response.json();
-    const tldr = data.content?.[0]?.text || '';
 
     if (handle.cancelled) return;
 
@@ -985,7 +1035,18 @@ Match this style precisely. Do not invent your own format.`;
 
 async function runBulletPointsTask(taskKey, sessionId, fullTranscript, handle) {
   try {
-    await setTaskStatus(taskKey, { type: 'bullets', sessionId, status: 'running', progress: 0, total: 1 });
+    const estimatedTokens = estimateTokenCount(fullTranscript);
+    const useMapReduce = estimatedTokens > MAX_SINGLE_SUMMARY_INPUT_TOKENS;
+    const chunks = useMapReduce ? chunkTranscriptByApproxTokens(fullTranscript) : [fullTranscript];
+    await setTaskStatus(taskKey, {
+      type: 'bullets',
+      sessionId,
+      status: 'running',
+      progress: 0,
+      total: chunks.length,
+      estimatedInputTokens: estimatedTokens,
+      mode: useMapReduce ? 'map_reduce' : 'single_pass'
+    });
 
     const cfgResult = await chrome.storage.local.get(['meetTranscriberConfig']);
     const config = cfgResult.meetTranscriberConfig || DEFAULT_CONFIG;
@@ -995,32 +1056,41 @@ async function runBulletPointsTask(taskKey, sessionId, fullTranscript, handle) {
     const bpModel = config.bulletPointsModel || 'claude-opus-4-6';
     console.log(`📋 Bullet Points task started: ${taskKey} with ${bpModel}`);
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': config.anthropicKey,
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: bpModel,
-        max_tokens: 4000,
-        system: BULLET_POINTS_PROMPT,
-        messages: [{ role: 'user', content: `Convert this meeting transcript into status update bullet points:\n\n${fullTranscript}` }]
-      })
-    });
+    let bulletPoints = '';
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i];
+      const userPrompt = i === 0
+        ? `Convert this meeting transcript into status update bullet points:\n\n${chunk}`
+        : `<current_bullets>\n${bulletPoints}\n</current_bullets>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the bullet-point status summary by incorporating new facts from the chunk while deduplicating repeated information. Output only the updated bullets.`;
 
-    if (handle.cancelled) return;
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': config.anthropicKey,
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: bpModel,
+          max_tokens: 4000,
+          system: BULLET_POINTS_PROMPT,
+          messages: [{ role: 'user', content: userPrompt }]
+        })
+      });
 
-    if (!response.ok) {
-      let errorData;
-      try { errorData = await response.json(); } catch (e) {}
-      throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+      if (handle.cancelled) return;
+
+      if (!response.ok) {
+        let errorData;
+        try { errorData = await response.json(); } catch (e) {}
+        throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      bulletPoints = data.content?.[0]?.text || bulletPoints;
+      await setTaskStatus(taskKey, { progress: i + 1, total: chunks.length });
     }
-
-    const data = await response.json();
-    const bulletPoints = data.content?.[0]?.text || '';
 
     if (handle.cancelled) return;
 
@@ -1081,16 +1151,26 @@ PROGRESSIVE UPDATES:
 - If the new window adds nothing, output the existing arc unchanged.
 - Output ONLY the arc text. No XML tags, no labels, no meta-commentary.`;
 
-/** Group raw batches into chunks targeting ~10 LLM calls */
-function groupBatchesIntoChunks(batches, maxChunks = 10) {
-  if (batches.length <= maxChunks) {
-    return batches.map(b => [b]);
-  }
-  const chunkSize = Math.ceil(batches.length / maxChunks);
+/** Group raw batches into chunks by approximate token budget */
+function groupBatchesIntoChunks(batches, chunkTokenBudget = MAP_REDUCE_CHUNK_TOKENS) {
+  if (!batches || batches.length === 0) return [];
   const chunks = [];
-  for (let i = 0; i < batches.length; i += chunkSize) {
-    chunks.push(batches.slice(i, i + chunkSize));
+  let currentChunk = [];
+  let currentTokens = 0;
+
+  for (const batch of batches) {
+    const batchText = `<window time="${new Date(batch.timestamp).toLocaleTimeString()}">\n${batch.content || ''}\n</window>\n`;
+    const batchTokens = estimateTokenCount(batchText);
+    if (currentChunk.length && currentTokens + batchTokens > chunkTokenBudget) {
+      chunks.push(currentChunk);
+      currentChunk = [batch];
+      currentTokens = batchTokens;
+    } else {
+      currentChunk.push(batch);
+      currentTokens += batchTokens;
+    }
   }
+  if (currentChunk.length) chunks.push(currentChunk);
   return chunks;
 }
 
@@ -1106,6 +1186,9 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
   try {
     const chunks = groupBatchesIntoChunks(batches);
     const totalSteps = chunks.length;
+    const estimatedInputTokens = estimateTokenCount(
+      (batches || []).map((b) => `[${b.timestamp}]\n${b.content || ''}`).join('\n\n')
+    );
 
     // Check for a checkpoint from a previous interrupted run
     const existingTaskResult = await chrome.storage.local.get(['meetTranscriberTasks']);
@@ -1122,6 +1205,8 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
     await setTaskStatus(taskKey, {
       type: 'arc', sessionId, status: 'running',
       progress: step, total: totalSteps,
+      estimatedInputTokens,
+      mode: 'map_reduce',
       checkpoint: { currentArc, nextChunkIndex: step }
     });
 
