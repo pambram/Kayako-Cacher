@@ -1,0 +1,23 @@
+{
+  "name": "meet-transcriber-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote Google Meet bot for screenshot + captions based LLM transcription",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:debug": "LOG_LEVEL=debug node src/index.js",
+    "start:server": "node src/start-server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.883.0",
+    "@aws-sdk/client-ses": "^3.1009.0",
+    "@aws-sdk/client-sns": "^3.883.0",
+    "@aws-sdk/s3-request-presigner": "^3.883.0",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "puppeteer-core": "^24.23.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

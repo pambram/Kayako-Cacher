@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Meet bot remote runner (Fargate + trigger API)
+
+Parameters:
+  EmailNotification:
+    Type: String
+    Description: Email address subscribed to transcript notifications
+  MeetBotImageUri:
+    Type: String
+    Description: ECR image URI for the meet bot container
+  GoogleEmail:
+    Type: String
+    Description: Google account email for meeting join
+  GooglePassword:
+    Type: String
+    NoEcho: true
+    Description: Google account password for meeting join
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: Anthropic API key
+
+Resources:
+  MeetBotBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 90
+
+  MeetBotTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: meet-bot-notifications
+
+  MeetBotTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref MeetBotTopic
+      Endpoint: !Ref EmailNotification
+
+  MeetBotCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: meet-bot-cluster
+
+  MeetBotTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  MeetBotTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MeetBotDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${MeetBotBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref MeetBotTopic
+
+  MeetBotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/meet-bot
+      RetentionInDays: 14
+
+  MeetBotTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: meet-bot-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '2048'
+      Memory: '4096'
+      ExecutionRoleArn: !GetAtt MeetBotTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MeetBotTaskRole.Arn
+      ContainerDefinitions:
+        - Name: meet-bot
+          Image: !Ref MeetBotImageUri
+          Essential: true
+          Environment:
+            - Name: GOOGLE_EMAIL
+              Value: !Ref GoogleEmail
+            - Name: GOOGLE_PASSWORD
+              Value: !Ref GooglePassword
+            - Name: ANTHROPIC_API_KEY
+              Value: !Ref AnthropicApiKey
+            - Name: S3_BUCKET
+              Value: !Ref MeetBotBucket
+            - Name: SNS_TOPIC_ARN
+              Value: !Ref MeetBotTopic
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MeetBotLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  TriggerFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TriggerEcsRunTask
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                Resource: !Ref MeetBotTaskDefinition
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt MeetBotTaskExecutionRole.Arn
+                  - !GetAtt MeetBotTaskRole.Arn
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeTaskDefinition
+                Resource: '*'
+
+  TriggerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 30
+      InlineCode: |
+        import { ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
+        const ecs = new ECSClient({});
+        export const handler = async (event) => {
+          const body = JSON.parse(event.body || "{}");
+          if (!body.meetUrl) return { statusCode: 400, body: JSON.stringify({ error: "meetUrl required" }) };
+          const cluster = process.env.CLUSTER_ARN;
+          const taskDef = process.env.TASK_DEF_ARN;
+          const subnet = process.env.SUBNET_ID;
+          const cmd = new RunTaskCommand({
+            cluster,
+            taskDefinition: taskDef,
+            launchType: "FARGATE",
+            networkConfiguration: {
+              awsvpcConfiguration: {
+                assignPublicIp: "ENABLED",
+                subnets: [subnet]
+              }
+            },
+            overrides: {
+              containerOverrides: [{
+                name: "meet-bot",
+                environment: [{ name: "MEET_URL", value: body.meetUrl }]
+              }]
+            }
+          });
+          await ecs.send(cmd);
+          return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+        };
+      Environment:
+        Variables:
+          CLUSTER_ARN: !Ref MeetBotCluster
+          TASK_DEF_ARN: !Ref MeetBotTaskDefinition
+          SUBNET_ID: subnet-REPLACE_ME
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            Path: /join
+            Method: post
+      Role: !GetAtt TriggerFunctionRole.Arn
+
+Outputs:
+  BucketName:
+    Value: !Ref MeetBotBucket
+  SnsTopicArn:
+    Value: !Ref MeetBotTopic
