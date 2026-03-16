@@ -92,13 +92,7 @@ app.get('/api/config', (_req, res) => {
       arcModel: current.arcModel,
       bulletsModel: current.bulletsModel,
       guestName: current.guestName,
-      forceGoogleSignIn: current.forceGoogleSignIn,
-      joinWaitSec: current.joinWaitSec,
-      enableStealth: current.enableStealth,
-      checkpointUploadEnabled: current.checkpointUploadEnabled,
-      checkpointUploadMinutes: current.checkpointUploadMinutes,
-      strictPromptParity: current.strictPromptParity,
-      allowPromptFallback: current.allowPromptFallback
+      forceGoogleSignIn: current.forceGoogleSignIn
     }
   });
 });
@@ -151,13 +145,7 @@ app.put('/api/config', async (req, res) => {
       arcModel: 'ARC_MODEL',
       bulletsModel: 'BULLETS_MODEL',
       guestName: 'GUEST_NAME',
-      forceGoogleSignIn: 'FORCE_GOOGLE_SIGNIN',
-      joinWaitSec: 'JOIN_WAIT_SEC',
-      enableStealth: 'ENABLE_STEALTH',
-      checkpointUploadEnabled: 'CHECKPOINT_UPLOAD_ENABLED',
-      checkpointUploadMinutes: 'CHECKPOINT_UPLOAD_MINUTES',
-      strictPromptParity: 'STRICT_PROMPT_PARITY',
-      allowPromptFallback: 'ALLOW_PROMPT_FALLBACK'
+      forceGoogleSignIn: 'FORCE_GOOGLE_SIGNIN'
     };
     for (const [k, envKey] of Object.entries(map)) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {

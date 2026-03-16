@@ -1,8 +1,18 @@
 import { runMeetingBot } from './runner.js';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { loadExtensionPromptSet } from './extension-compat.js';
-import { generateTldr, generateBulletPoints, generateStoryArc } from './summarize.js';
+import {
+  generateTldr,
+  generateBulletPoints,
+  generateStoryArc,
+  generateTldrMapReduce,
+  generateBulletPointsMapReduce,
+  generateStoryArcMapReduce,
+  estimateTokenCount,
+  MAX_SINGLE_SUMMARY_INPUT_TOKENS
+} from './summarize.js';
 
 function newJobId() {
   return `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -12,6 +22,13 @@ export class JobManager {
   constructor(baseConfig) {
     this.baseConfig = baseConfig;
     this.jobs = new Map();
+    this.persistTimer = null;
+    this.statePath = path.resolve(
+      baseConfig.outputDir || path.resolve(process.cwd(), 'bot-output'),
+      'jobs-state.json'
+    );
+    this.#restoreJobsFromDisk();
+    this.#schedulePersist();
   }
 
   getBaseConfig() {
@@ -33,6 +50,71 @@ export class JobManager {
     });
     if (job.recentEvents.length > 40) {
       job.recentEvents = job.recentEvents.slice(-40);
+    }
+    this.#schedulePersist();
+  }
+
+  #serializeJob(job) {
+    return {
+      ...job,
+      timer: null,
+      runnerPromise: null,
+      abortController: null
+    };
+  }
+
+  #restoreJobsFromDisk() {
+    try {
+      if (!fsSync.existsSync(this.statePath)) return;
+      const raw = fsSync.readFileSync(this.statePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed.jobs)) return;
+      for (const item of parsed.jobs) {
+        const restored = {
+          ...item,
+          timer: null,
+          runnerPromise: null,
+          abortController: null
+        };
+        if (['running', 'cancelling', 'pending', 'scheduled'].includes(restored.status)) {
+          restored.status = 'failed';
+          restored.error = restored.error || 'Bot server restarted before job completion';
+          restored.endedAt = restored.endedAt || new Date().toISOString();
+          restored.lastEvent = 'failed';
+          restored.recentEvents = [
+            ...(Array.isArray(restored.recentEvents) ? restored.recentEvents.slice(-39) : []),
+            {
+              ts: new Date().toISOString(),
+              event: 'failed',
+              payload: { error: restored.error }
+            }
+          ];
+        }
+        this.jobs.set(restored.id, restored);
+      }
+    } catch (error) {
+      console.warn('Failed to restore jobs-state.json:', error.message);
+    }
+  }
+
+  #schedulePersist() {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.#persistJobs();
+    }, 250);
+  }
+
+  async #persistJobs() {
+    try {
+      const payload = {
+        savedAt: new Date().toISOString(),
+        jobs: [...this.jobs.values()].map((job) => this.#serializeJob(job))
+      };
+      await fs.mkdir(path.dirname(this.statePath), { recursive: true });
+      await fs.writeFile(this.statePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    } catch (error) {
+      console.warn('Failed to persist jobs-state.json:', error.message);
     }
   }
 
@@ -142,16 +224,41 @@ export class JobManager {
       }
 
       const transcript = entries.map((entry) => `[${entry.timestampLabel}]\n${entry.content}`).join('\n\n');
+      const estimatedInputTokens = estimateTokenCount(transcript);
+      const useMapReduce = estimatedInputTokens > MAX_SINGLE_SUMMARY_INPUT_TOKENS;
+      job.summaryTasks[type].estimatedInputTokens = estimatedInputTokens;
+      job.summaryTasks[type].mode = useMapReduce ? 'map_reduce' : 'single_pass';
+      this.#pushEvent(job, 'summary_plan', {
+        type,
+        estimatedInputTokens,
+        mode: job.summaryTasks[type].mode
+      });
+
       let text = '';
       if (type === 'tldr') {
-        text = await generateTldr(transcript, config);
+        text = useMapReduce
+          ? await generateTldrMapReduce(transcript, config, async (p) => {
+              job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+              job.updatedAt = new Date().toISOString();
+            })
+          : await generateTldr(transcript, config);
       } else if (type === 'bullets') {
-        text = await generateBulletPoints(transcript, config);
+        text = useMapReduce
+          ? await generateBulletPointsMapReduce(transcript, config, async (p) => {
+              job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+              job.updatedAt = new Date().toISOString();
+            })
+          : await generateBulletPoints(transcript, config);
       } else {
-        text = await generateStoryArc(entries, config, async (p) => {
-          job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
-          job.updatedAt = new Date().toISOString();
-        });
+        text = useMapReduce
+          ? await generateStoryArcMapReduce(transcript, config, async (p) => {
+              job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+              job.updatedAt = new Date().toISOString();
+            })
+          : await generateStoryArc(entries, config, async (p) => {
+              job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+              job.updatedAt = new Date().toISOString();
+            });
       }
 
       await fs.mkdir(config.outputDir, { recursive: true });
@@ -175,7 +282,9 @@ export class JobManager {
         progress: 100,
         startedAt: job.summaryTasks[type]?.startedAt || new Date().toISOString(),
         endedAt: new Date().toISOString(),
-        error: null
+        error: null,
+        estimatedInputTokens: job.summaryTasks[type]?.estimatedInputTokens,
+        mode: job.summaryTasks[type]?.mode || 'single_pass'
       };
       this.#pushEvent(job, 'summary_generated', { type, localPath: outPath });
       job.updatedAt = new Date().toISOString();

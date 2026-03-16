@@ -19,6 +19,18 @@
     .eventLine { font-family: monospace; font-size: 12px; margin-bottom: 4px; }
     .eventTs { color: #8ab4f8; margin-right: 8px; }
     .badge { padding: 2px 6px; border: 1px solid #555; border-radius: 999px; font-size: 11px; }
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -28,8 +40,9 @@
       <label for="meetUrl">Meet link</label>
       <input id="meetUrl" style="min-width:420px" placeholder="https://meet.google.com/xxx-yyy-zzz">
       <button id="joinNow">Join now</button>
+      <button id="toggleScheduleBtn" type="button">Show schedule</button>
     </div>
-    <div class="row">
+    <div class="row" id="scheduleRow" style="display:none">
       <label for="scheduledAt">Schedule (optional)</label>
       <input id="scheduledAt" type="datetime-local">
     </div>
@@ -38,8 +51,8 @@
 
   <div class="panel">
     <h2>Configuration</h2>
-    <div class="row"><button id="toggleConfigBtn">Hide config</button></div>
-    <div id="configBody">
+    <div class="row"><button id="toggleConfigBtn">Show config</button></div>
+    <div id="configBody" style="display:none">
     <div class="row">
       <label><input id="cfgTechnicalMode" type="checkbox"> Ultra technical mode</label>
       <label><input id="cfgForceGoogleSignIn" type="checkbox"> Force Google sign-in</label>
@@ -58,8 +71,6 @@
     <div class="row">
       <label>Arc model</label><select id="cfgArcModel" style="width:170px"></select>
       <label>Bullets model</label><select id="cfgBulletsModel" style="width:170px"></select>
-      <label><input id="cfgCheckpointUploadEnabled" type="checkbox"> Checkpoint upload</label>
-      <label>Checkpoint mins</label><input id="cfgCheckpointUploadMinutes" type="number" min="1" style="width:90px">
     </div>
     <div class="row"><button id="saveConfigBtn">Save config</button></div>
     </div>
@@ -72,6 +83,9 @@
 
   <div class="panel">
     <h2>Live Event Stream</h2>
+    <div class="row">
+      <button id="copyEventsBtn" type="button">Copy visible events</button>
+    </div>
     <div class="row">
       <label for="eventJobFilter">Job</label>
       <input id="eventJobFilter" placeholder="job-...">

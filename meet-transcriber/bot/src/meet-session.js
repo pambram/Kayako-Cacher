@@ -34,34 +34,45 @@ async function maybeSignIn(page, config) {
 }
 
 async function disableMicAndCamera(page) {
-  const toggleByLabel = async (keywords) => {
-    return page.evaluate((needles) => {
+  const toggleIfOnByLabel = async (keywords, offMarkers) => {
+    return page.evaluate((needles, offStates) => {
       const nodes = Array.from(document.querySelectorAll('button, div[role="button"]'));
       for (const node of nodes) {
         const text = (node.textContent || '').toLowerCase();
         const aria = (node.getAttribute('aria-label') || '').toLowerCase();
         const combined = `${text} ${aria}`;
         if (!needles.some((needle) => combined.includes(needle))) continue;
+        if (offStates.some((marker) => combined.includes(marker))) {
+          return false;
+        }
         const disabled = node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true';
         if (disabled) continue;
         node.click();
         return true;
       }
       return false;
-    }, keywords);
+    }, keywords, offMarkers);
   };
 
   try {
     // Prefer explicit pre-join controls when available.
-    const micClicked = await toggleByLabel([
+    const micClicked = await toggleIfOnByLabel([
       'turn off microphone',
       'mute microphone',
       'microphone'
+    ], [
+      'turn on microphone',
+      'microphone off',
+      'unmute'
     ]);
-    const camClicked = await toggleByLabel([
+    await sleep(500);
+    const camClicked = await toggleIfOnByLabel([
       'turn off camera',
       'camera is on',
       'camera'
+    ], [
+      'turn on camera',
+      'camera off'
     ]);
     if (micClicked || camClicked) {
       console.log('Pre-join AV controls clicked:', { micClicked, camClicked });
@@ -72,10 +83,18 @@ async function disableMicAndCamera(page) {
     await page.keyboard.down('Meta');
     await page.keyboard.press('KeyD');
     await page.keyboard.up('Meta');
+    await sleep(200);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyD');
+    await page.keyboard.up('Control');
     await sleep(300);
     await page.keyboard.down('Meta');
     await page.keyboard.press('KeyE');
     await page.keyboard.up('Meta');
+    await sleep(200);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyE');
+    await page.keyboard.up('Control');
   } catch (error) {
     console.warn('Warning: could not toggle mic/cam via keyboard', error.message);
   }
@@ -193,6 +212,42 @@ async function isCaptionsOn(page) {
       return label.includes('turn off captions');
     });
   });
+}
+
+async function ensureMeetingControlsReady(page, maxAttempts = 20, intervalMs = 2000) {
+  let lastAv = { micOff: false, camOff: false };
+  let lastCaptionsOn = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    lastAv = await verifyMicCameraOff(page);
+    lastCaptionsOn = await isCaptionsOn(page);
+    const done = lastAv.micOff && lastAv.camOff && lastCaptionsOn;
+
+    console.log('Post-join controls check:', {
+      attempt,
+      maxAttempts,
+      micOff: lastAv.micOff,
+      camOff: lastAv.camOff,
+      captionsOn: lastCaptionsOn,
+      done
+    });
+
+    if (done) {
+      return { av: lastAv, captionsOn: lastCaptionsOn, attempts: attempt };
+    }
+
+    if (!lastAv.micOff || !lastAv.camOff) {
+      await disableMicAndCamera(page);
+      await sleep(900);
+    }
+    if (!lastCaptionsOn) {
+      await enableCaptions(page);
+      await sleep(700);
+    }
+    await sleep(intervalMs);
+  }
+
+  return { av: lastAv, captionsOn: lastCaptionsOn, attempts: maxAttempts };
 }
 
 async function detectMeetingEnded(page) {
@@ -404,14 +459,15 @@ export async function startMeetSession(config) {
     throw new Error('Could not find Ask to join / Join now button.');
   }
   await waitForMeetingAdmission(page, config.joinWaitSec);
-  console.log('Meeting admission confirmed. Enabling captions.');
-  const av = await ensureMicCameraOff(page);
+  console.log('Meeting admission confirmed. Verifying controls...');
+  await sleep(2000);
+  const ready = await ensureMeetingControlsReady(page);
+  const av = ready.av;
+  const captionsOn = ready.captionsOn;
   console.log('AV state after join:', av);
   if (!av.micOff || !av.camOff) {
     console.warn('Meet bot could not fully verify mic/camera are off.');
   }
-
-  const captionsOn = await ensureCaptionsEnabled(page);
   console.log('Caption toggle attempted. Captions on:', captionsOn);
 
   const startedAt = Date.now();

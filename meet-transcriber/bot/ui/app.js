@@ -35,6 +35,65 @@ function formatDuration(startedAt, endedAt) {
   return `${s}s`;
 }
 
+function formatDateTime(ts) {
+  if (!ts) return 'n/a';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+function getSetupChecks(job) {
+  const joined = (job.recentEvents || []).find((event) => event.event === 'joined');
+  const av = joined?.payload?.avState || {};
+  const hasAny = Boolean(joined?.payload?.avState) || typeof joined?.payload?.captionsOn === 'boolean';
+  const captionsOn = Boolean(joined?.payload?.captionsOn);
+  return {
+    hasAny,
+    micOff: Boolean(av.micOff),
+    camOff: Boolean(av.camOff),
+    captionsOn
+  };
+}
+
+function getHealthBadge(job) {
+  const checks = getSetupChecks(job);
+  const checksDone = checks.micOff && checks.camOff && checks.captionsOn;
+  const activeEvents = new Set([
+    'capturing',
+    'batch_processing',
+    'batch_analyzed',
+    'checkpoint_uploaded',
+    'summarizing',
+    'summary_progress'
+  ]);
+  const setupEvents = new Set(['starting', 'joining', 'joined']);
+
+  if (job.status === 'running') {
+    if (activeEvents.has(job.lastEvent)) return { dot: '#31c46d', label: 'active' };
+    if (checksDone) return { dot: '#31c46d', label: 'active' };
+    if (setupEvents.has(job.lastEvent)) return { dot: '#f2c94c', label: 'setting up' };
+    return { dot: '#31c46d', label: 'active' };
+  }
+  if (job.status === 'pending' || job.status === 'scheduled' || job.status === 'cancelling') {
+    return { dot: '#f2c94c', label: job.status };
+  }
+  return { dot: '#e05c5c', label: job.status || 'inactive' };
+}
+
+function renderArtifactLink(file, kind) {
+  const name = (file.name || '').toLowerCase();
+  if (kind === 'checkpoint') {
+    if (name.includes('live') && name.endsWith('.txt')) {
+      return `<a href="${file.url}" target="_blank" rel="noopener">checkpoint transcript (s3 txt)</a>`;
+    }
+    if (name.includes('state') && name.endsWith('.json')) {
+      return `<a href="${file.url}" target="_blank" rel="noopener">checkpoint state (s3 json)</a>`;
+    }
+    return `<a href="${file.url}" target="_blank" rel="noopener">checkpoint:${file.name}</a>`;
+  }
+  return `<a href="${file.url}" target="_blank" rel="noopener">final:${file.name}</a>`;
+}
+
 function renderJobs(jobs) {
   const root = document.getElementById('jobs');
   if (!jobs.length) {
@@ -43,11 +102,13 @@ function renderJobs(jobs) {
   }
 
   root.innerHTML = jobs.map((job) => {
+    const health = getHealthBadge(job);
+    const checks = getSetupChecks(job);
     const checkpointLinks = (job.latestCheckpointLinks || [])
-      .map((file) => `<a href="${file.url}" target="_blank" rel="noopener">checkpoint:${file.name}</a>`)
+      .map((file) => renderArtifactLink(file, 'checkpoint'))
       .join('');
     const finalLinks = (job.finalLinks || [])
-      .map((file) => `<a href="${file.url}" target="_blank" rel="noopener">final:${file.name}</a>`)
+      .map((file) => renderArtifactLink(file, 'final'))
       .join('');
 
     const summaryActions = ['tldr', 'bullets', 'storyArc'].map((type) => {
@@ -58,7 +119,10 @@ function renderJobs(jobs) {
       const ready = Boolean(job.summaryArtifacts?.[type]?.localPath);
       const fileHref = ready ? `/api/jobs/${job.id}/summaries/${type}/file` : '';
       const running = status === 'running';
-      const caption = running ? `Generating ${label}${type === 'storyArc' ? ` (${pct}%)` : ''}` : `Generate ${label}`;
+      const overLimitMapReduce = task.mode === 'map_reduce';
+      const caption = running
+        ? `Generating ${label}${type === 'storyArc' ? ` (${pct}%)` : ''}`
+        : `Generate ${label}${overLimitMapReduce ? ' (map-reduce)' : ''}`;
       const spinner = running ? '⏳ ' : '';
       return `
         <button data-summary="${job.id}:${type}" ${running ? 'disabled' : ''}>${spinner}${caption}</button>
@@ -68,9 +132,18 @@ function renderJobs(jobs) {
 
     return `
       <div class="job">
-        <div><strong>${job.id}</strong> — <code>${job.status}</code></div>
+        <div>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${health.dot};margin-right:8px;"></span>
+          <strong>${job.id}</strong> — <code>${job.status}</code> <span class="muted">(${health.label})</span>
+        </div>
         <div class="muted">${job.meetUrl}</div>
+        <div class="muted">created: ${formatDateTime(job.createdAt)}</div>
         <div class="muted">last event: ${job.lastEvent || 'n/a'} | heartbeat: ${job.heartbeatAt || 'n/a'} | duration: ${formatDuration(job.startedAt, job.endedAt)}</div>
+        <div class="muted">checks: ${
+          checks.hasAny
+            ? `mic ${checks.micOff ? 'ok' : 'pending'} | cam ${checks.camOff ? 'ok' : 'pending'} | captions ${checks.captionsOn ? 'ok' : 'pending'}`
+            : 'not reported by this run yet'
+        }</div>
         ${job.error ? `<div style="color:#ff8b8b">error: ${job.error}</div>` : ''}
         <div class="links">${checkpointLinks}${finalLinks}</div>
         <div class="row">
@@ -87,7 +160,7 @@ function renderJobs(jobs) {
     button.addEventListener('click', async () => {
       const id = button.getAttribute('data-cancel');
       button.disabled = true;
-      button.textContent = 'Leaving...';
+      button.innerHTML = '<span class="spinner"></span>Leaving...';
       const response = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -151,7 +224,14 @@ function renderEventPanel(jobs) {
     return;
   }
 
-  root.innerHTML = filtered.slice(0, 120).map((line) => {
+  const visible = filtered.slice(0, 120);
+  const copyText = visible.map((line) => {
+    const details = line.data ? ` ${JSON.stringify(line.data)}` : '';
+    return `${line.ts} ${line.jobId} :: ${line.event}${details}`;
+  }).join('\n');
+  root.setAttribute('data-copy-text', copyText);
+
+  root.innerHTML = visible.map((line) => {
     const details = line.data ? ` ${JSON.stringify(line.data)}` : '';
     return `<div class="eventLine"><span class="eventTs">${line.ts}</span>${line.jobId} :: ${line.event}${details}</div>`;
   }).join('');
@@ -212,8 +292,6 @@ async function loadConfigIntoForm() {
   setModelOptions('cfgTldrModel', cfg.tldrModel ?? '');
   setModelOptions('cfgArcModel', cfg.arcModel ?? '');
   setModelOptions('cfgBulletsModel', cfg.bulletsModel ?? '');
-  document.getElementById('cfgCheckpointUploadEnabled').checked = Boolean(cfg.checkpointUploadEnabled);
-  document.getElementById('cfgCheckpointUploadMinutes').value = cfg.checkpointUploadMinutes ?? 5;
 }
 
 function collectConfigFromForm() {
@@ -230,9 +308,7 @@ function collectConfigFromForm() {
     summaryModel: document.getElementById('cfgSummaryModel').value.trim(),
     tldrModel: document.getElementById('cfgTldrModel').value.trim(),
     arcModel: document.getElementById('cfgArcModel').value.trim(),
-    bulletsModel: document.getElementById('cfgBulletsModel').value.trim(),
-    checkpointUploadEnabled: document.getElementById('cfgCheckpointUploadEnabled').checked,
-    checkpointUploadMinutes: Number(document.getElementById('cfgCheckpointUploadMinutes').value)
+    bulletsModel: document.getElementById('cfgBulletsModel').value.trim()
   };
 }
 
@@ -250,6 +326,31 @@ document.getElementById('toggleConfigBtn').addEventListener('click', () => {
   const isHidden = body.style.display === 'none';
   body.style.display = isHidden ? 'block' : 'none';
   document.getElementById('toggleConfigBtn').textContent = isHidden ? 'Hide config' : 'Show config';
+});
+document.getElementById('toggleScheduleBtn').addEventListener('click', () => {
+  const row = document.getElementById('scheduleRow');
+  const isHidden = row.style.display === 'none';
+  row.style.display = isHidden ? 'flex' : 'none';
+  document.getElementById('toggleScheduleBtn').textContent = isHidden ? 'Hide schedule' : 'Show schedule';
+});
+document.getElementById('copyEventsBtn').addEventListener('click', async () => {
+  const eventsEl = document.getElementById('events');
+  const text = eventsEl.getAttribute('data-copy-text') || '';
+  if (!text.trim()) {
+    alert('No visible events to copy.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById('copyEventsBtn');
+    const prev = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(() => {
+      btn.textContent = prev;
+    }, 1200);
+  } catch (_error) {
+    alert('Could not access clipboard in this browser context.');
+  }
 });
 document.getElementById('eventJobFilter').addEventListener('input', () => refresh());
 document.getElementById('eventTextFilter').addEventListener('input', () => refresh());
