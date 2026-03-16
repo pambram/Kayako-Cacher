@@ -16,9 +16,10 @@ class MeetTranscriber {
     // Session tracking for auto-save
     this.sessionId = `meet-${Date.now()}`;
     this.meetUrl = window.location.href;
-    // TL;DR and Story Arc state
+    // Summarization state
     this.currentTldr = null;
     this.currentStoryArc = null;
+    this.currentBulletPoints = null;
     this.init();
   }
 
@@ -116,9 +117,15 @@ class MeetTranscriber {
             <button class="download-btn" title="Download transcript">💾</button>
             <button class="upload-s3-btn" title="Upload to S3">☁️</button>
             <button class="import-btn" title="Continue from file">📂</button>
-            <button class="tldr-btn" title="Generate TL;DR">📝</button>
-            <button class="arc-btn" title="Build Story Arc">📖</button>
-            <button class="arc-download-btn" title="Download Story Arc" disabled>📖💾</button>
+            <div class="summarize-dropdown-wrap">
+              <button class="summarize-toggle" title="Summarize">Summarize ▾</button>
+              <div class="summarize-menu" style="display:none">
+                <button class="summarize-opt" data-action="tldr">📝 TL;DR</button>
+                <button class="summarize-opt" data-action="arc">📖 Story Arc</button>
+                <button class="summarize-opt" data-action="bullets">📋 Bullet Points</button>
+                <button class="summarize-opt summarize-opt-dl" data-action="dl-arc" style="display:none">💾 Download Arc</button>
+              </div>
+            </div>
           </div>
           <div class="output-content" id="transcript-output">
             <p class="placeholder">Start recording to see transcript...</p>
@@ -139,11 +146,32 @@ class MeetTranscriber {
     panel.querySelector('.download-btn').addEventListener('click', () => this.downloadTranscript());
     panel.querySelector('.upload-s3-btn').addEventListener('click', () => this.uploadToS3());
     panel.querySelector('.import-btn').addEventListener('click', () => this.showImportOptions());
-    panel.querySelector('.tldr-btn').addEventListener('click', () => this.generateTldr());
-    panel.querySelector('.arc-btn').addEventListener('click', () => this.generateStoryArc());
-    panel.querySelector('.arc-download-btn').addEventListener('click', () => this.downloadStoryArc());
     panel.querySelector('#import-file-input').addEventListener('change', (e) => this.importFromFile(e));
     panel.querySelector('.transcriber-minimize').addEventListener('click', () => this.toggleMinimize());
+
+    // Summarize dropdown
+    const toggle = panel.querySelector('.summarize-toggle');
+    const menu = panel.querySelector('.summarize-menu');
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const show = menu.style.display === 'none';
+      menu.style.display = show ? 'block' : 'none';
+      // Show/hide download arc option based on state
+      const dlArc = menu.querySelector('[data-action="dl-arc"]');
+      dlArc.style.display = this.currentStoryArc ? 'block' : 'none';
+    });
+    document.addEventListener('click', () => { menu.style.display = 'none'; });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+    panel.querySelectorAll('.summarize-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        menu.style.display = 'none';
+        const action = btn.dataset.action;
+        if (action === 'tldr') this.generateTldr();
+        else if (action === 'arc') this.generateStoryArc();
+        else if (action === 'bullets') this.generateBulletPoints();
+        else if (action === 'dl-arc') this.downloadStoryArc();
+      });
+    });
     
     // Make panel draggable
     this.makeDraggable(panel);
@@ -506,11 +534,10 @@ class MeetTranscriber {
     this.batchCounter = 0;
     this.currentTldr = null;
     this.currentStoryArc = null;
+    this.currentBulletPoints = null;
     
-    // Reset batch count and button states
+    // Reset batch count
     this.controlPanel.querySelector('#batch-count').textContent = '0';
-    this.controlPanel.querySelector('.tldr-btn').disabled = false;
-    this.controlPanel.querySelector('.arc-download-btn').disabled = true;
     
     this.showNotification('🗑 Transcript cleared', 'info');
   }
@@ -595,7 +622,8 @@ class MeetTranscriber {
         transcript: text,
         batches: this.transcriptLog,
         tldr: this.currentTldr || null,
-        storyArc: this.currentStoryArc || null
+        storyArc: this.currentStoryArc || null,
+        bulletPoints: this.currentBulletPoints || null
       };
       
       // Keep only last 10 sessions to avoid storage bloat
@@ -826,20 +854,13 @@ class MeetTranscriber {
     console.log(`📂 Imported ${entries.length} entries from ${source}`);
   }
 
-  /** Generate TL;DR from full transcript (only if one doesn't exist yet) */
+  /** Generate TL;DR from full transcript (allows regeneration) */
   async generateTldr() {
-    if (this.currentTldr) {
-      this.showNotification('📝 TL;DR already exists for this session', 'info');
-      return;
-    }
-
     if (this.transcriptLog.length === 0) {
       this.showNotification('⚠️ No transcript batches to summarize', 'error');
       return;
     }
 
-    const tldrBtn = this.controlPanel.querySelector('.tldr-btn');
-    tldrBtn.disabled = true;
     this.updateStatus('processing', 'Generating TL;DR...');
 
     try {
@@ -847,27 +868,27 @@ class MeetTranscriber {
         .map((t, i) => `--- Batch ${i + 1} (${new Date(t.timestamp).toLocaleTimeString()}) ---\n${t.content}`)
         .join('\n\n');
 
-      // Dispatch to background (fire-and-forget, writes result to storage)
+      // Ensure session exists in storage before dispatching
+      await this.autoSaveTranscript();
+
       await chrome.runtime.sendMessage({
         action: 'generateTldr',
         sessionId: this.sessionId,
         fullTranscript
       });
 
-      // Poll for completion
-      const tldr = await this.pollForSessionField('tldr');
+      const tldr = await this.pollForTaskCompletion('tldr', 'tldr');
       if (tldr) {
         this.currentTldr = tldr;
         this.prependTldr(tldr);
         await this.autoSaveTranscript();
-        this.showNotification('📝 TL;DR generated', 'success');
+        await navigator.clipboard.writeText(tldr).catch(() => {});
+        this.showNotification('📝 TL;DR generated and copied to clipboard', 'success');
         console.log('✅ TL;DR generated');
       } else {
-        tldrBtn.disabled = false;
         this.showNotification('❌ TL;DR generation failed or timed out', 'error');
       }
     } catch (error) {
-      tldrBtn.disabled = false;
       this.showNotification('❌ TL;DR error: ' + error.message, 'error');
       console.error('TL;DR error:', error);
     } finally {
@@ -876,11 +897,14 @@ class MeetTranscriber {
     }
   }
 
-  /** Prepend TL;DR as a styled entry at the top of transcript output */
+  /** Prepend TL;DR as a styled entry at the top of transcript output (replaces existing) */
   prependTldr(tldr) {
     const output = this.controlPanel.querySelector('#transcript-output');
     const placeholder = output.querySelector('.placeholder');
     if (placeholder) placeholder.remove();
+
+    const existing = output.querySelector('.tldr-entry');
+    if (existing) existing.remove();
 
     const entry = document.createElement('div');
     entry.className = 'transcript-entry tldr-entry';
@@ -889,6 +913,7 @@ class MeetTranscriber {
       <div class="entry-content tldr-content">${this.formatMarkdown(tldr)}</div>
     `;
     output.insertBefore(entry, output.firstChild);
+    output.scrollTop = 0;
   }
 
   /** Build story arc by progressive batch replay */
@@ -898,8 +923,6 @@ class MeetTranscriber {
       return;
     }
 
-    const arcBtn = this.controlPanel.querySelector('.arc-btn');
-    arcBtn.disabled = true;
     this.updateStatus('processing', 'Building Story Arc...');
 
     try {
@@ -910,19 +933,20 @@ class MeetTranscriber {
 
       console.log(`📖 Building story arc from ${batches.length} batches...`);
 
+      await this.autoSaveTranscript();
+
       await chrome.runtime.sendMessage({
         action: 'generateStoryArc',
         sessionId: this.sessionId,
         batches
       });
 
-      // Poll for completion
-      const storyArc = await this.pollForSessionField('storyArc');
+      const storyArc = await this.pollForTaskCompletion('arc', 'storyArc');
       if (storyArc) {
         this.currentStoryArc = storyArc;
-        this.controlPanel.querySelector('.arc-download-btn').disabled = false;
         await this.autoSaveTranscript();
-        this.showNotification('📖 Story Arc built — click 📖💾 to download', 'success');
+        await navigator.clipboard.writeText(storyArc).catch(() => {});
+        this.showNotification('📖 Story Arc built and copied to clipboard', 'success');
         console.log('✅ Story arc generated');
       } else {
         this.showNotification('❌ Story Arc failed or timed out', 'error');
@@ -931,27 +955,84 @@ class MeetTranscriber {
       this.showNotification('❌ Story Arc error: ' + error.message, 'error');
       console.error('Story arc error:', error);
     } finally {
-      arcBtn.disabled = false;
       this.updateStatus(this.isRecording ? 'recording' : 'idle',
                        this.isRecording ? 'Recording...' : 'Ready');
     }
   }
 
-  /** Poll chrome.storage until a session field appears (set by background task) */
-  async pollForSessionField(field, timeoutMs = 300000) {
+  /** Generate bullet points summary */
+  async generateBulletPoints() {
+    if (this.transcriptLog.length === 0) {
+      this.showNotification('⚠️ No transcript batches to summarize', 'error');
+      return;
+    }
+
+    this.updateStatus('processing', 'Generating Bullet Points...');
+
+    try {
+      const fullTranscript = this.transcriptLog
+        .map((t, i) => `--- Batch ${i + 1} (${new Date(t.timestamp).toLocaleTimeString()}) ---\n${t.content}`)
+        .join('\n\n');
+
+      await this.autoSaveTranscript();
+
+      await chrome.runtime.sendMessage({
+        action: 'generateBulletPoints',
+        sessionId: this.sessionId,
+        fullTranscript
+      });
+
+      const bulletPoints = await this.pollForTaskCompletion('bullets', 'bulletPoints');
+      if (bulletPoints) {
+        this.currentBulletPoints = bulletPoints;
+        await this.autoSaveTranscript();
+        await navigator.clipboard.writeText(bulletPoints).catch(() => {});
+        this.showNotification('📋 Bullet Points generated and copied to clipboard', 'success');
+        console.log('✅ Bullet Points generated');
+      } else {
+        this.showNotification('❌ Bullet Points generation failed or timed out', 'error');
+      }
+    } catch (error) {
+      this.showNotification('❌ Bullet Points error: ' + error.message, 'error');
+      console.error('Bullet Points error:', error);
+    } finally {
+      this.updateStatus(this.isRecording ? 'recording' : 'idle',
+                       this.isRecording ? 'Recording...' : 'Ready');
+    }
+  }
+
+  /** Poll until a background task completes, then return the session field value */
+  async pollForTaskCompletion(taskType, field, timeoutMs = 300000) {
+    const taskKey = this.sessionId + ':' + taskType;
     const deadline = Date.now() + timeoutMs;
+    const labels = { tldr: 'TL;DR', arc: 'Story Arc', bullets: 'Bullet Points' };
+    const label = labels[taskType] || taskType;
+
+    // Phase 1: wait for task to appear in storage
+    let taskSeen = false;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      const taskResult = await chrome.storage.local.get(['meetTranscriberTasks']);
+      const task = (taskResult.meetTranscriberTasks || {})[taskKey];
+      if (task) { taskSeen = true; break; }
+    }
+    if (!taskSeen) return null;
+
+    // Phase 2: wait for task to finish, updating status with progress
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 2000));
-      const result = await chrome.storage.local.get(['meetTranscriptSessions']);
-      const sessions = result.meetTranscriptSessions || {};
-      const session = sessions[this.sessionId];
-      if (session?.[field]) return session[field];
-      // Check if task errored out
       const taskResult = await chrome.storage.local.get(['meetTranscriberTasks']);
-      const tasks = taskResult.meetTranscriberTasks || {};
-      const taskKey = this.sessionId + ':' + (field === 'tldr' ? 'tldr' : 'arc');
-      if (tasks[taskKey]?.status === 'error') return null;
-      if (!tasks[taskKey]) return session?.[field] || null;
+      const task = (taskResult.meetTranscriberTasks || {})[taskKey];
+      if (task?.status === 'error') return null;
+      if (!task) {
+        const sessResult = await chrome.storage.local.get(['meetTranscriptSessions']);
+        const session = (sessResult.meetTranscriptSessions || {})[this.sessionId];
+        return session?.[field] || null;
+      }
+      if (task.progress !== undefined && task.total) {
+        const pct = Math.round((task.progress / task.total) * 100);
+        this.updateStatus('processing', `${label}... ${task.progress}/${task.total} (${pct}%)`);
+      }
     }
     return null;
   }

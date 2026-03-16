@@ -8,6 +8,7 @@ const DEFAULT_CONFIG = {
   summaryModel: 'claude-sonnet-4-6',
   tldrModel: 'claude-opus-4-6',
   storyArcModel: 'claude-opus-4-6',
+  bulletPointsModel: 'claude-opus-4-6',
   enabled: true,
   captureInterval: 10, // seconds
   batchSize: 6, // screenshots (60 seconds worth at 10s interval)
@@ -37,7 +38,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       existingConfig.model === 'claude-4-5-haiku' ||
       !existingConfig.summaryModel ||
       !existingConfig.tldrModel ||
-      !existingConfig.storyArcModel;
+      !existingConfig.storyArcModel ||
+      !existingConfig.bulletPointsModel;
 
   if (needsMigration && existingConfig) {
     console.log('Updating configuration with new defaults');
@@ -93,6 +95,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'generateStoryArc':
       startStoryArcTask(request.sessionId, request.batches);
+      sendResponse({ success: true, started: true });
+      return true;
+
+    case 'generateBulletPoints':
+      startBulletPointsTask(request.sessionId, request.fullTranscript);
       sendResponse({ success: true, started: true });
       return true;
 
@@ -811,15 +818,223 @@ RULES:
     // Persist result into the session
     const sessResult = await chrome.storage.local.get(['meetTranscriptSessions']);
     const sessions = sessResult.meetTranscriptSessions || {};
-    if (sessions[sessionId]) {
-      sessions[sessionId].tldr = tldr;
-      await chrome.storage.local.set({ meetTranscriptSessions: sessions });
-    }
+    if (!sessions[sessionId]) sessions[sessionId] = {};
+    sessions[sessionId].tldr = tldr;
+    await chrome.storage.local.set({ meetTranscriptSessions: sessions });
 
     console.log(`✅ TL;DR task complete: ${taskKey}`);
   } catch (error) {
     if (handle.cancelled) return;
     console.error(`❌ TL;DR task failed: ${taskKey}`, error);
+    await setTaskStatus(taskKey, { status: 'error', error: error.message });
+    return;
+  } finally {
+    delete activeTasks[taskKey];
+    stopKeepaliveIfIdle();
+  }
+  await clearTaskStatus(taskKey);
+}
+
+/** Fire-and-forget Bullet Points generation */
+function startBulletPointsTask(sessionId, fullTranscript) {
+  const taskKey = sessionId + ':bullets';
+  const handle = { cancelled: false };
+  activeTasks[taskKey] = handle;
+  startKeepalive();
+  runBulletPointsTask(taskKey, sessionId, fullTranscript, handle);
+}
+
+const BULLET_POINTS_PROMPT = `Convert this meeting transcript into a series of chronological status update bullet points.
+
+FORMAT RULES:
+- Each update block starts with "Update Time:" (or "Update:") followed by the timestamp and timezone
+- Then "Status Update:" (or "Status:") followed by the person reporting, if identifiable
+- Then the actual content as concise bullet points
+- Most recent updates appear first (reverse chronological)
+- Each bullet should be a factual statement about what happened, what was found, or what the next step is
+- Use specific names, resource IDs, error messages, and technical details
+- Keep each bullet to 1-2 lines maximum
+- Group related bullets under the same timestamp if they happened together
+- Do not editorialize. No "interestingly" or "it's worth noting". Just facts.
+
+Here are two examples of the desired output format:
+
+<example_1>
+Update time: Mar 13, 2026 2:15 PM GMT+0
+Status update:
+ Abdul-Muizz Oyewole is now investigating while DevOps work continues on other incidents
+
+Update: 2026-03-13 13:15 UTC
+Status:
+Jhonis's investigation was unsuccessful so far. Ahmed Cakir has taken over the investigation
+Customer shared further examples for our analysis.
+If we remain stuck, we will need to involve Abdul-Muizz Oyewole
+
+Update Time: Mar 13, 2026 09:30 AM GMT
+Status Update: Ciprian Nastase
+No updates on the ticket since 6:30 AM UTC - tagged Ashu in the IM thread
+Sanket shared something with me -  a convo between him and  Ashu at around 5:51 AM UTC
+
+So it looks like no one is looking into this, as Quang never touched the ticket
+Jhonis de Souza is looking into the matter async
+
+Update Time: Mar 13, 2026 08:00 AM GMT
+Status Update: Mohammed Amer
+Following up with Ashu , they are still investigating.
+
+
+Update Time: Mar 13, 2026 06:00 AM GMT
+Status Update: Sanket Ghia
+The LIA App Nodes are NOT the root cause. The nodes are healthy, serving web traffic, and processing internal events normally. The firehose event emission is handled by a centralized external API service.
+Investigation continues.
+
+Update Time: Mar 13, 2026 05:30 AM GMT
+Status Update: Sanket Ghia
+Update from 5 am UTC indicates restart of DropBox nodes might be required.
+Current - DevOps Ashu Bhardwaj now mentioned that all nodes are down for a particular service (specially for DropBox). They are now SSH-ing into each node to confirm this hypothesis.
+
+Update Time: Mar 13, 2026 04:30 AM GMT
+Status Update: Sanket Ghia
+It seems that different communities have different issues.
+Have informed DevOps that only 2 customers have reported this.
+DevOps is continuing their investigation. Latest update.
+
+Update Time: Mar 13, 2026 04:00 AM GMT
+Status Update: Sanket Ghia
+DevOps Ashu Bhardwaj was investigating a Lambda that the previous DevOps Ali Ahmad had mentioned.
+Per further investigation, that Lambda is not the culprit and investigation is being done on other components.
+
+Update Time: Mar 13, 2026 03:31 AM GMT
+Status Update:
+\t* Ali Ahmad pinpointed the AWS account (us-west-2) and identified the specific SQS queues feeding the Firehose layer via the "pageviews" Kinesis stream.
+\t* Ali verified that public-post events have resumed over the past 15-40 minutes, but Dropbox community messages remain at zero, confirming the upstream producer stall persists.
+\t* Ashu Bhardwaj will initiate a lambda-level deep-dive on the Firehose message-dispatcher component, and Ali Ahmad will concurrently review the associated code to isolate and remediate the remaining ingestion failure.
+
+
+Update Time: Mar 13, 2026 03:08 AM GMT
+Status Update:
+\t* Pinpointed the message-dispatcher service in the Firehose pipeline as the precise failure point; it hasn't processed any messages for ~15 hours.
+\t* Discovered only a staging ALB for the Firehose layer and no production ALB; will verify and remediate the prod load-balancer configuration.
+\t* Will deep-dive into the message-dispatcher logs and code to identify the root-cause and implement a fix.
+
+Update Time: 2026-03-13 02:50
+Status Update:
+Issue Isolated: Ali Ahmad has isolated the issue by reviewing the code.
+Working Components: The initial steps - a user posting a message, the event being created, and the "entity created message" - are all working correctly.
+Broken Component Identified: The failure point is in the message_dispatcher.Java file, where the "fire hose logic" is supposed to create a message for the downstream services.
+Outage Timeline: The last successful execution of this specific message creation was 15 hours ago, which aligns with the start of the outage.
+Next Steps: He is currently trying to locate where the "Firehose" service is running to determine what is causing it to fail.
+
+
+Update Time: 2026-03-13 02:15
+Status Update:
+The Issue: The synchronization is broken for new community posts or comments, which are not showing up in the right-side activity bar. The problem is in the pipeline before the Gopher service, and he is not seeing activity resuming for the Dropbox community specifically. He noted that if a message successfully reaches Gopher, the subsequent process is working correctly.
+Action: Ali Ahmad is investigating the code and product documentation to identify the exact services in the broken part of the pipeline, their purpose, and their known breaking points to precisely pinpoint the cause of the failure.
+
+
+Update Time: Mar 13, 2026 02:23 AM GMT
+Status Update:
+\t* Identified that LIA (the upstream producer for the Dropbox community) emitted zero messages to Gopher during the outage, confirming the stall occurs before Kinesis ingestion
+\t* Observed that public-post events were fully halted for ~40 minutes before resuming; will extend log analysis to a 24-hour window to define the complete impacted period
+\t* Chintan Parekh took over from Aditi Garg to lead the Dropbox and CommScope ingestion analysis
+\t* David Rodriguez drafted a Markdown summary for the AI agent and will post it into the ticket within minutes to consolidate investigative steps
+\t* Ali Ahmad will review the streaming-plugin and firehose pipeline code to pinpoint the exact service component where ingestion is failing
+
+
+Update Time: 2026-03-13 00:40
+Status Update:
+Current working theory is that the Firehose Contract layer is not working in the complete ingestion flow.
+
+
+
+Update Time: Mar 13, 2026 12:15 AM GMT
+Status Update:
+\t* Determined that the ingestion stoppage (~15 h) impacts only a subset of Khoros Community instances and originates upstream of the Gopher ECS service; ALBs were confirmed healthy.
+\t* Applied four of five change requests under spread fast 15167; one remaining change will be applied before closing this incident.
+\t* Implemented rate-limiting WAF rules on Khoros Community endpoints to curb excessive API calls; will evaluate the customer's IPv4-whitelisting request for practicality.
+\t* Will escalate the Community-to-Care ingestion investigation to DevOps (including Ranga) to review Kinesis event routing and ECS memory metrics.
+</example_1>
+
+<example_2>
+Update: 2026-03-13 03:15
+Status: Sanket Ghia
+SaaS approval received.
+TPM and Compliance approvals pending.
+Pinged Milad Chalfoun (TPM) and Anca Zetea (Compliance) 1x1
+
+Update: 2026-03-12 22:00
+Status: Harry Tasker
+I don't see any reason to keep this IM open since there's no customer ticket and the issue is solved.
+Oh its waiting on LIA-17440
+Requested SaaS, TPM, Compliance approvals in the chat
+
+Update time: Mar 12, 2026 3:46 PM
+Status update:
+Pablo Ambram
+Started from an alarm monitor
+Robert Egglestone identified the root cause of the Google Nest Community outage: the daily certificate renewal cronjob on sslutil-rhel9-1.usw2.int.khorostech.com was not running, causing the production certificate to revert to an expired state despite a fresh cert being deployed the previous day.
+Robert manually executed certbot renew on the host; Nitin Manik confirmed the main domain certificate was restored to working state.
+Affected community URL: https://www.googlenestcommunity.com/
+Jira ticket for tracking: UA-17427
+Open question: why the previously deployed certificate was swapped out for the older/expired one - cause not yet determined.
+Monitoring gap identified: multiple subdomains and stage instances (including "stage popular" and "stage community") are not currently under certificate monitoring. Robert confirmed these are customer-facing environments, not internal, making monitoring critical.
+Nitin Manik committed to creating a TCR immediately and a formal change request covering cron automation and monitoring expansion across all stage environments.
+Meeting transitioning to monitoring status pending confirmation that cron is in place and monitoring coverage is expanded.
+</example_2>
+
+Match this style precisely. Do not invent your own format.`;
+
+async function runBulletPointsTask(taskKey, sessionId, fullTranscript, handle) {
+  try {
+    await setTaskStatus(taskKey, { type: 'bullets', sessionId, status: 'running', progress: 0, total: 1 });
+
+    const cfgResult = await chrome.storage.local.get(['meetTranscriberConfig']);
+    const config = cfgResult.meetTranscriberConfig || DEFAULT_CONFIG;
+
+    if (!config.anthropicKey) throw new Error('Anthropic API key required');
+
+    const bpModel = config.bulletPointsModel || 'claude-opus-4-6';
+    console.log(`📋 Bullet Points task started: ${taskKey} with ${bpModel}`);
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': config.anthropicKey,
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: bpModel,
+        max_tokens: 4000,
+        system: BULLET_POINTS_PROMPT,
+        messages: [{ role: 'user', content: `Convert this meeting transcript into status update bullet points:\n\n${fullTranscript}` }]
+      })
+    });
+
+    if (handle.cancelled) return;
+
+    if (!response.ok) {
+      let errorData;
+      try { errorData = await response.json(); } catch (e) {}
+      throw new Error(errorData?.error?.message || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const bulletPoints = data.content?.[0]?.text || '';
+
+    if (handle.cancelled) return;
+
+    const sessResult = await chrome.storage.local.get(['meetTranscriptSessions']);
+    const sessions = sessResult.meetTranscriptSessions || {};
+    if (!sessions[sessionId]) sessions[sessionId] = {};
+    sessions[sessionId].bulletPoints = bulletPoints;
+    await chrome.storage.local.set({ meetTranscriptSessions: sessions });
+
+    console.log(`✅ Bullet Points task complete: ${taskKey}`);
+  } catch (error) {
+    if (handle.cancelled) return;
+    console.error(`❌ Bullet Points task failed: ${taskKey}`, error);
     await setTaskStatus(taskKey, { status: 'error', error: error.message });
     return;
   } finally {
@@ -932,7 +1147,7 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
         userPrompt = `<existing_arc>\n${currentArc}\n</existing_arc>\n\n${chunkWindows}\n\nOutput the updated arc. Fold new info into existing sections when the topic fits. Only add a new section if the subject clearly changed. Compress earlier sections if the arc is getting too long. Target: 6-10 sections total. Output only the arc text.`;
       }
 
-      console.log(`📖 Story arc chunk ${c + 1}/${totalSteps} (${chunks[c].length} batches)`);
+      console.log(`📖 Story arc chunk ${c + 1}/${totalSteps} (${chunks[c].length} raw batches in this chunk)`);
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -973,10 +1188,9 @@ async function runStoryArcTask(taskKey, sessionId, batches, handle) {
     // Persist final result into the session
     const sessResult = await chrome.storage.local.get(['meetTranscriptSessions']);
     const sessions = sessResult.meetTranscriptSessions || {};
-    if (sessions[sessionId]) {
-      sessions[sessionId].storyArc = currentArc;
-      await chrome.storage.local.set({ meetTranscriptSessions: sessions });
-    }
+    if (!sessions[sessionId]) sessions[sessionId] = {};
+    sessions[sessionId].storyArc = currentArc;
+    await chrome.storage.local.set({ meetTranscriptSessions: sessions });
 
     console.log(`✅ Story arc task complete: ${taskKey}`);
   } catch (error) {

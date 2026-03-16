@@ -531,6 +531,60 @@ optgroup[style*="display: none"] {
   gap: 2px;
 }
 
+/* Popup summarize dropdown per transcript row */
+.popup-summarize-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.popup-summarize-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  min-width: 150px;
+  overflow: hidden;
+}
+
+.popup-sum-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 11px;
+  color: #374151;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.popup-sum-opt:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.popup-sum-opt:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.spinner-sm {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid #e5e7eb;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
 .btn-small {
   padding: 6px 12px;
   font-size: 12px;

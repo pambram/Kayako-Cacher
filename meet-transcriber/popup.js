@@ -21,6 +21,7 @@ async function loadSettings() {
       document.getElementById('summary-model').value = config.summaryModel || 'claude-sonnet-4-6';
       document.getElementById('tldr-model').value = config.tldrModel || 'claude-opus-4-6';
       document.getElementById('story-arc-model').value = config.storyArcModel || 'claude-opus-4-6';
+      document.getElementById('bullet-points-model').value = config.bulletPointsModel || 'claude-opus-4-6';
       document.getElementById('capture-interval').value = config.captureInterval || 10;
       document.getElementById('batch-size').value = config.batchSize || 6;
       document.getElementById('image-quality').value = config.imageQuality || 0.5;
@@ -135,6 +136,7 @@ async function saveSettings() {
       summaryModel: document.getElementById('summary-model').value,
       tldrModel: document.getElementById('tldr-model').value,
       storyArcModel: document.getElementById('story-arc-model').value,
+      bulletPointsModel: document.getElementById('bullet-points-model').value,
       captureInterval: parseInt(document.getElementById('capture-interval').value),
       batchSize: parseInt(document.getElementById('batch-size').value),
       imageQuality: parseFloat(document.getElementById('image-quality').value),
@@ -337,10 +339,12 @@ async function loadSavedTranscripts() {
       
       const hasTldr = !!session.tldr;
       const hasArc = !!session.storyArc;
+      const hasBullets = !!session.bulletPoints;
       const hasBatches = getSessionBatches(session).length > 0;
       const tldrTask = tasks[id + ':tldr'];
       const arcTask = tasks[id + ':arc'];
-      const tldrBusy = tldrTask?.status === 'running';
+      const bulletsTask = tasks[id + ':bullets'];
+      const anyBusy = tldrTask?.status === 'running' || arcTask?.status === 'running' || bulletsTask?.status === 'running';
       const arcBusy = arcTask?.status === 'running';
       const arcProgress = arcTask ? `${arcTask.progress || 0}/${arcTask.total || '?'}` : '';
       const arcPct = (arcTask && arcTask.total) ? Math.round(((arcTask.progress || 0) / arcTask.total) * 100) : 0;
@@ -348,20 +352,34 @@ async function loadSavedTranscripts() {
       const showArcExpander = hasArc || hasDraftArc;
       const arcLabel = hasArc ? '📖 Story Arc' : '📖 Story Arc (draft — in progress)';
       const isExpanded = expandedArcs.has(id);
+      const badges = [hasTldr ? 'TL;DR' : '', hasArc ? 'Arc' : hasDraftArc ? 'Arc (draft)' : '', hasBullets ? 'Bullets' : ''].filter(Boolean).join(' · ');
+
+      let busyLabel = '';
+      if (tldrTask?.status === 'running') busyLabel = 'TL;DR...';
+      else if (bulletsTask?.status === 'running') busyLabel = 'Bullets...';
+      else if (arcBusy) busyLabel = `Arc ${arcProgress} (~${arcPct}%)`;
 
       return `
         <div class="saved-transcript-item-wrapper" data-session-id="${id}">
           <div class="saved-transcript-item">
             <div class="transcript-info">
-              <span class="transcript-date">${dateStr} ${timeStr} ${showArcExpander ? `<button class="btn-expand arc-expand" title="Story Arc options">${isExpanded ? '▼' : '▶'}</button>` : ''}</span>
+              <span class="transcript-date">${dateStr} ${timeStr} ${showArcExpander ? `<button class="btn-expand arc-expand" title="Expand">${isExpanded ? '▼' : '▶'}</button>` : ''}</span>
               <span class="transcript-meet">Meet: ${meetCode}</span>
-              <span class="transcript-batches">${session.batchCount} batches${hasTldr ? ' · TL;DR' : ''}${hasArc ? ' · Arc' : hasDraftArc ? ' · Arc (draft)' : ''}</span>
+              <span class="transcript-batches">${session.batchCount} batches${badges ? ' · ' + badges : ''}</span>
             </div>
             <div class="transcript-actions">
-              <button class="btn-icon download-saved" title="Download transcript" ${tldrBusy ? 'disabled' : ''}>💾</button>
-              <button class="btn-icon copy-saved" title="Copy">📋</button>
-              <button class="btn-icon tldr-saved" title="${hasTldr ? 'TL;DR exists' : tldrBusy ? 'Click to cancel TL;DR' : 'Generate TL;DR'}" ${hasTldr ? 'disabled' : ''}>${tldrBusy ? '<span class="spinner"></span>' : '📝'}</button>
-              <button class="btn-icon arc-saved" title="${arcBusy ? 'Building... ' + arcProgress + ' (~' + arcPct + '%) — click to cancel' : hasArc ? 'Regenerate Story Arc' : 'Build Story Arc'}" ${!hasBatches ? 'disabled' : ''}>${arcBusy ? '<span class="spinner"></span>' : '📖'}</button>
+              <button class="btn-icon download-saved" title="Download transcript">💾</button>
+              <button class="btn-icon copy-saved" title="Copy transcript">📋</button>
+              <div class="popup-summarize-wrap">
+                <button class="btn-icon popup-summarize-toggle" title="${anyBusy ? busyLabel + ' — click to open menu' : 'Summarize'}">${anyBusy ? '<span class="spinner"></span>' : '✨'}</button>
+                <div class="popup-summarize-menu" style="display:none">
+                  <button class="popup-sum-opt" data-action="tldr">${tldrTask?.status === 'running' ? '<span class="spinner-sm"></span> TL;DR...' : '📝 TL;DR'}</button>
+                  <button class="popup-sum-opt" data-action="arc" ${!hasBatches ? 'disabled' : ''}>${arcBusy ? '<span class="spinner-sm"></span> Arc ' + arcProgress : '📖 Story Arc'}</button>
+                  <button class="popup-sum-opt" data-action="bullets">${bulletsTask?.status === 'running' ? '<span class="spinner-sm"></span> Bullets...' : '📋 Bullet Points'}</button>
+                  ${showArcExpander ? '<button class="popup-sum-opt" data-action="dl-arc">💾 Download Arc</button>' : ''}
+                  ${showArcExpander ? '<button class="popup-sum-opt" data-action="cp-arc">📋 Copy Arc</button>' : ''}
+                </div>
+              </div>
               <button class="btn-icon delete-saved" title="Delete">🗑️</button>
             </div>
           </div>
@@ -395,32 +413,54 @@ async function loadSavedTranscripts() {
       });
     });
     
-    listEl.querySelectorAll('.tldr-saved').forEach(btn => {
+    // Summarize dropdown per row
+    listEl.querySelectorAll('.popup-summarize-toggle').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
-        const task = tasks[sid + ':tldr'];
-        if (task?.status === 'running') {
-          chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':tldr' });
-          showStatus('📝 TL;DR generation cancelled', 'info');
-          loadSavedTranscripts();
-          return;
-        }
-        dispatchTldr(sid, sessions[sid]);
+        e.stopPropagation();
+        const wrap = e.target.closest('.popup-summarize-wrap');
+        const menu = wrap.querySelector('.popup-summarize-menu');
+        // Close all other open menus
+        listEl.querySelectorAll('.popup-summarize-menu').forEach(m => { if (m !== menu) m.style.display = 'none'; });
+        menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
       });
     });
 
-    listEl.querySelectorAll('.arc-saved').forEach(btn => {
+    listEl.querySelectorAll('.popup-sum-opt').forEach(btn => {
       btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wrap = e.target.closest('.popup-summarize-wrap');
+        wrap.querySelector('.popup-summarize-menu').style.display = 'none';
         const sid = e.target.closest('.saved-transcript-item-wrapper').dataset.sessionId;
-        const task = tasks[sid + ':arc'];
-        if (task?.status === 'running') {
-          chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':arc' });
-          showStatus('📖 Story Arc generation cancelled', 'info');
-          loadSavedTranscripts();
-          return;
+        const action = e.target.closest('.popup-sum-opt').dataset.action;
+        if (action === 'tldr') {
+          if (tasks[sid + ':tldr']?.status === 'running') {
+            chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':tldr' });
+            showStatus('TL;DR cancelled', 'info');
+          } else { dispatchTldr(sid, sessions[sid]); }
+        } else if (action === 'arc') {
+          if (tasks[sid + ':arc']?.status === 'running') {
+            chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':arc' });
+            showStatus('Story Arc cancelled', 'info');
+          } else { dispatchStoryArc(sid, sessions[sid]); }
+        } else if (action === 'bullets') {
+          if (tasks[sid + ':bullets']?.status === 'running') {
+            chrome.runtime.sendMessage({ action: 'cancelTask', taskKey: sid + ':bullets' });
+            showStatus('Bullet Points cancelled', 'info');
+          } else { dispatchBulletPoints(sid, sessions[sid]); }
+        } else if (action === 'dl-arc') {
+          const arcText = sessions[sid]?.storyArc || tasks[sid + ':arc']?.checkpoint?.currentArc;
+          if (arcText) downloadArcText(sessions[sid], arcText, tasks[sid + ':arc']);
+        } else if (action === 'cp-arc') {
+          const arcText = sessions[sid]?.storyArc || tasks[sid + ':arc']?.checkpoint?.currentArc;
+          if (arcText) navigator.clipboard.writeText(arcText).then(() => showStatus('Arc copied', 'success'));
         }
-        dispatchStoryArc(sid, sessions[sid]);
+        loadSavedTranscripts();
       });
+    });
+
+    // Close popup menus on outside click
+    document.addEventListener('click', () => {
+      listEl.querySelectorAll('.popup-summarize-menu').forEach(m => m.style.display = 'none');
     });
 
     listEl.querySelectorAll('.arc-expand').forEach(btn => {
@@ -537,12 +577,8 @@ function getSessionBatches(session) {
   return parseBatchesFromTranscript(session.transcript);
 }
 
-/** Dispatch TL;DR generation to background (fire-and-forget) */
+/** Dispatch TL;DR generation to background (fire-and-forget, allows regeneration) */
 async function dispatchTldr(sessionId, session) {
-  if (session.tldr) {
-    showStatus('📝 TL;DR already exists', 'info');
-    return;
-  }
   await chrome.runtime.sendMessage({
     action: 'generateTldr',
     sessionId,
@@ -568,6 +604,36 @@ async function dispatchStoryArc(sessionId, session) {
   showStatus('📖 Building Story Arc in background...', 'info');
   startTaskPolling();
   await loadSavedTranscripts();
+}
+
+/** Dispatch Bullet Points generation to background (fire-and-forget) */
+async function dispatchBulletPoints(sessionId, session) {
+  await chrome.runtime.sendMessage({
+    action: 'generateBulletPoints',
+    sessionId,
+    fullTranscript: session.transcript
+  });
+  showStatus('📋 Generating Bullet Points in background...', 'info');
+  startTaskPolling();
+  await loadSavedTranscripts();
+}
+
+/** Download arc text (works for both final and draft) */
+function downloadArcText(session, arcText, arcTask) {
+  const isDraft = !session?.storyArc;
+  let text = `Google Meet - Story Arc${isDraft ? ' (DRAFT)' : ''}\n`;
+  text += '=======================\n\n';
+  text += `Meet URL: ${session.url}\nRecorded: ${session.startTime}\nGenerated: ${new Date().toLocaleString()}\n`;
+  if (isDraft && arcTask) text += `Status: In progress - ${arcTask.progress || 0}/${arcTask.total || '?'} steps\n`;
+  text += '\n' + arcText;
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `meet-story-arc${isDraft ? '-draft' : ''}-${new Date(session.lastUpdated).toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showStatus(`Story Arc ${isDraft ? 'draft ' : ''}downloaded`, 'success');
 }
 
 /** Copy Story Arc text to clipboard */
