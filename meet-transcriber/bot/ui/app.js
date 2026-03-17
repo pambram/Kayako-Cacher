@@ -22,6 +22,25 @@ async function saveConfig(config) {
   }
 }
 
+let objectiveSaveTimer = null;
+
+function queueObjectiveSave() {
+  if (objectiveSaveTimer) {
+    clearTimeout(objectiveSaveTimer);
+  }
+  objectiveSaveTimer = setTimeout(async () => {
+    objectiveSaveTimer = null;
+    try {
+      await saveConfig({
+        enableScreenshotClassifier: document.getElementById('liveEnableScreenshotClassifier').checked,
+        meetingObjective: document.getElementById('liveMeetingObjective').value.trim()
+      });
+    } catch (error) {
+      alert(error.message);
+    }
+  }, 500);
+}
+
 function formatDuration(startedAt, endedAt) {
   if (!startedAt) return 'n/a';
   const end = endedAt ? new Date(endedAt).getTime() : Date.now();
@@ -96,12 +115,17 @@ function renderArtifactLink(file, kind) {
 
 function renderJobs(jobs) {
   const root = document.getElementById('jobs');
-  if (!jobs.length) {
+  const hideFailed = document.getElementById('hideFailedJobs')?.checked !== false;
+  const visibleJobs = hideFailed
+    ? jobs.filter((job) => job.status !== 'failed' && job.status !== 'cancelled')
+    : jobs;
+
+  if (!visibleJobs.length) {
     root.innerHTML = '<div class="muted">No jobs yet.</div>';
     return;
   }
 
-  const sortedJobs = [...jobs].sort((a, b) => {
+  const sortedJobs = [...visibleJobs].sort((a, b) => {
     const aTs = new Date(a.createdAt || a.updatedAt || 0).getTime();
     const bTs = new Date(b.createdAt || b.updatedAt || 0).getTime();
     return bTs - aTs;
@@ -145,6 +169,15 @@ function renderJobs(jobs) {
         <div class="muted">${job.meetUrl}</div>
         <div class="muted">created: ${formatDateTime(job.createdAt)}</div>
         <div class="muted">last event: ${job.lastEvent || 'n/a'} | heartbeat: ${job.heartbeatAt || 'n/a'} | duration: ${formatDuration(job.startedAt, job.endedAt)}</div>
+        ${
+          job.classifierConfig?.enabled
+            ? `<div class="muted">screenshot capture: on | classifier model: ${job.classifierConfig.model || 'n/a'}${
+                job.classifierConfig.meetingObjective
+                  ? ` | objective: ${job.classifierConfig.meetingObjective}`
+                  : ''
+              }</div>`
+            : ''
+        }
         <div class="muted">checks: ${
           checks.hasAny
             ? `mic ${checks.micOff ? 'ok' : 'pending'} | cam ${checks.camOff ? 'ok' : 'pending'} | captions ${checks.captionsOn ? 'ok' : 'pending'}`
@@ -287,17 +320,21 @@ function setModelOptions(selectId, currentValue) {
 
 async function loadConfigIntoForm() {
   const cfg = await fetchConfig();
+  document.getElementById('liveEnableScreenshotClassifier').checked = Boolean(cfg.enableScreenshotClassifier);
+  document.getElementById('liveMeetingObjective').value = cfg.meetingObjective ?? '';
   document.getElementById('cfgTechnicalMode').checked = Boolean(cfg.technicalMode);
   document.getElementById('cfgForceGoogleSignIn').checked = Boolean(cfg.forceGoogleSignIn);
   document.getElementById('cfgCaptureInterval').value = cfg.captureIntervalSec ?? 10;
   document.getElementById('cfgBatchSize').value = cfg.batchSize ?? 6;
   document.getElementById('cfgScreenshotQuality').value = cfg.screenshotQuality ?? 50;
+  document.getElementById('cfgArtifactUploadEndpoint').value = cfg.artifactUploadEndpoint ?? '';
   document.getElementById('cfgGuestName').value = cfg.guestName ?? 'Meet Bot';
   setModelOptions('cfgAnalysisModel', cfg.analysisModel ?? '');
   setModelOptions('cfgSummaryModel', cfg.summaryModel ?? '');
   setModelOptions('cfgTldrModel', cfg.tldrModel ?? '');
   setModelOptions('cfgArcModel', cfg.arcModel ?? '');
   setModelOptions('cfgBulletsModel', cfg.bulletsModel ?? '');
+  setModelOptions('cfgScreenshotClassifierModel', cfg.screenshotClassifierModel ?? '');
 }
 
 function collectConfigFromForm() {
@@ -309,16 +346,36 @@ function collectConfigFromForm() {
     captureIntervalSec: Number(document.getElementById('cfgCaptureInterval').value),
     batchSize: Number(document.getElementById('cfgBatchSize').value),
     screenshotQuality,
+    artifactUploadEndpoint: document.getElementById('cfgArtifactUploadEndpoint').value.trim(),
     guestName: document.getElementById('cfgGuestName').value.trim(),
     analysisModel: document.getElementById('cfgAnalysisModel').value.trim(),
     summaryModel: document.getElementById('cfgSummaryModel').value.trim(),
     tldrModel: document.getElementById('cfgTldrModel').value.trim(),
     arcModel: document.getElementById('cfgArcModel').value.trim(),
-    bulletsModel: document.getElementById('cfgBulletsModel').value.trim()
+    bulletsModel: document.getElementById('cfgBulletsModel').value.trim(),
+    screenshotClassifierModel: document.getElementById('cfgScreenshotClassifierModel').value.trim()
   };
 }
 
 document.getElementById('joinNow').addEventListener('click', createJob);
+document.getElementById('liveEnableScreenshotClassifier').addEventListener('change', queueObjectiveSave);
+document.getElementById('liveMeetingObjective').addEventListener('input', queueObjectiveSave);
+document.getElementById('saveObjectiveBtn').addEventListener('click', async () => {
+  try {
+    await saveConfig({
+      enableScreenshotClassifier: document.getElementById('liveEnableScreenshotClassifier').checked,
+      meetingObjective: document.getElementById('liveMeetingObjective').value.trim()
+    });
+    const btn = document.getElementById('saveObjectiveBtn');
+    const prev = btn.textContent;
+    btn.textContent = 'Saved';
+    setTimeout(() => {
+      btn.textContent = prev;
+    }, 1000);
+  } catch (error) {
+    alert(error.message);
+  }
+});
 document.getElementById('saveConfigBtn').addEventListener('click', async () => {
   try {
     await saveConfig(collectConfigFromForm());
@@ -358,6 +415,7 @@ document.getElementById('copyEventsBtn').addEventListener('click', async () => {
     alert('Could not access clipboard in this browser context.');
   }
 });
+document.getElementById('hideFailedJobs').addEventListener('change', () => refresh());
 document.getElementById('eventJobFilter').addEventListener('input', () => refresh());
 document.getElementById('eventTextFilter').addEventListener('input', () => refresh());
 loadConfigIntoForm().catch(() => {});

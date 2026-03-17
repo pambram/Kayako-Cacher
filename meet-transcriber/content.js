@@ -20,6 +20,7 @@ class MeetTranscriber {
     this.currentTldr = null;
     this.currentStoryArc = null;
     this.currentBulletPoints = null;
+    this.meetingObjective = '';
     this.init();
   }
 
@@ -90,6 +91,7 @@ class MeetTranscriber {
           <span class="status-text">Ready</span>
         </div>
         <div class="transcriber-controls">
+          <input class="meeting-objective-input" placeholder="Meeting objective (optional, helps AI pick screenshots)..." />
           <button class="transcriber-btn start-btn" title="Start Recording">
             <span class="btn-icon">▶</span> Start
           </button>
@@ -148,6 +150,9 @@ class MeetTranscriber {
     panel.querySelector('.import-btn').addEventListener('click', () => this.showImportOptions());
     panel.querySelector('#import-file-input').addEventListener('change', (e) => this.importFromFile(e));
     panel.querySelector('.transcriber-minimize').addEventListener('click', () => this.toggleMinimize());
+    panel.querySelector('.meeting-objective-input').addEventListener('input', (event) => {
+      this.meetingObjective = event.target.value || '';
+    });
 
     // Summarize dropdown
     const toggle = panel.querySelector('.summarize-toggle');
@@ -361,7 +366,8 @@ class MeetTranscriber {
       this.updateScreenshotCount();
       
       this.updateStatus('processing', 'Analyzing...');
-      console.log(`🔄 Processing ${screenshots.length} screenshots... (batch #${this.batchCounter + 1})`);
+      const currentBatchNumber = this.batchCounter + 1;
+      console.log(`🔄 Processing ${screenshots.length} screenshots... (batch #${currentBatchNumber})`);
       
       // Send to background for AI analysis
       const response = await chrome.runtime.sendMessage({
@@ -371,17 +377,51 @@ class MeetTranscriber {
       });
       
       if (response.success) {
+        let transcriptContent = response.transcription;
+
+        try {
+          console.log(
+            `🧠 KT classifier request: batch #${currentBatchNumber}, screenshots=${screenshots.length}, objectiveChars=${(this.meetingObjective || '').length}`
+          );
+          const classifyResponse = await chrome.runtime.sendMessage({
+            action: 'classifyScreenshot',
+            screenshots,
+            transcript: response.transcription,
+            meetingObjective: this.meetingObjective || '',
+            meetUrl: this.meetUrl,
+            sessionId: this.sessionId,
+            batchNumber: currentBatchNumber
+          });
+          if (classifyResponse?.success && classifyResponse.selected && classifyResponse.imageUrl) {
+            const imageMarkdown = `\n\n![Screenshot batch ${currentBatchNumber}](${classifyResponse.imageUrl})`;
+            transcriptContent += imageMarkdown;
+            console.log(
+              `🖼️ KT classifier selected screenshot: batch #${currentBatchNumber}, index=${classifyResponse.selectedIndex}, reason="${classifyResponse.reason || 'n/a'}", url=${classifyResponse.imageUrl}`
+            );
+          } else if (classifyResponse?.success) {
+            console.log(
+              `🖼️ KT classifier skipped batch #${currentBatchNumber}: ${classifyResponse?.reason || 'no screenshot selected'}`
+            );
+          } else {
+            console.warn(
+              `⚠️ KT classifier response error for batch #${currentBatchNumber}: ${classifyResponse?.error || 'unknown error'}`
+            );
+          }
+        } catch (classifyError) {
+          console.warn('Screenshot classification failed. Continuing without image embed.', classifyError);
+        }
+
         // Update transcript display
-        this.appendTranscription(response.transcription, screenshots[0].timestamp);
+        this.appendTranscription(transcriptContent, screenshots[0].timestamp);
         
         // Update history (keep last 2 batches for context)
         this.transcriptionHistory = response.transcription;
         
         // Store in transcript log for meta-analysis
         this.transcriptLog.push({
-          content: response.transcription,
+          content: transcriptContent,
           timestamp: screenshots[0].timestamp,
-          batchNumber: this.batchCounter + 1
+          batchNumber: currentBatchNumber
         });
         
         this.batchCounter++;
@@ -443,6 +483,7 @@ class MeetTranscriber {
   formatMarkdown(text) {
     // Simple markdown formatting
     return text
+      .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<div class="entry-image-wrap"><img src="$2" alt="$1" class="entry-image" loading="lazy" /></div>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
       .replace(/\n/g, '<br>');

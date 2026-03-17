@@ -75,6 +75,10 @@ UI features:
 - `HEADLESS` (default: `false`)
 - `CHROME_BIN` (default: auto-detected)
 - `NOTIFY_EMAIL` + `SES_FROM_EMAIL` (optional SES lifecycle emails on join/finish)
+- `ARTIFACT_UPLOAD_ENDPOINT` (optional; when set, screenshots upload through Lambda endpoint)
+- `ENABLE_SCREENSHOT_CLASSIFIER` (default: `false`) enables KT screenshot selection
+- `SCREENSHOT_CLASSIFIER_MODEL` (default: `claude-haiku-4-5`) classifier model
+- `MEETING_OBJECTIVE` (optional) extra context for screenshot classification
 
 ## Output
 
@@ -85,6 +89,7 @@ Files are written to `bot-output/` by default:
 - `meet-bullet-points-YYYY-MM-DD.txt`
 - `meet-transcript-live-<run>.txt` (incremental checkpoint file)
 - `meet-transcript-state-<run>.json` (incremental state)
+- Optional inline markdown image links for selected KT screenshots
 
 ## Docker
 
@@ -109,6 +114,22 @@ docker run --rm \
 - Lambda + HTTP API trigger (`POST /join`)
 
 Before deploying, you must set real VPC subnet values and image URI.
+
+### Wire deployed endpoints automatically
+
+After your SAM stack is deployed, run:
+
+```bash
+cd meet-transcriber/bot
+npm run wire:endpoints -- --stack-name your-stack-name --region us-east-1
+```
+
+This command:
+- reads `ArtifactUploadFunctionUrl`, `BucketName`, and `SnsTopicArn` from CloudFormation outputs
+- writes them into `bot/.env` (`ARTIFACT_UPLOAD_ENDPOINT`, `S3_BUCKET`, `SNS_TOPIC_ARN`)
+- updates extension defaults in `meet-transcriber/background.js` for:
+  - `s3UploadEndpoint`
+  - `s3ScreenshotEndpoint`
 
 ## Notes
 

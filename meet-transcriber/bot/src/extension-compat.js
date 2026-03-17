@@ -44,11 +44,18 @@ export async function loadExtensionPromptSet() {
     'story arc system prompt'
   );
 
+  const ktScreenshotClassifierSystem = extractRegex(
+    source,
+    /const KT_SCREENSHOT_CLASSIFIER_PROMPT = `([\s\S]*?)`;/m,
+    'KT screenshot classifier prompt'
+  );
+
   return {
     analysisTechnical: analysisPrompts[1],
     analysisStandard: analysisPrompts[2],
     tldrSystem,
     bulletSystem: bulletPrompt,
-    arcSystem
+    arcSystem,
+    ktScreenshotClassifierSystem
   };
 }

@@ -34,6 +34,24 @@ async function main() {
         console.log(`Batch analysis complete. Transcript entries total: ${payload.entriesCount}`);
         return;
       }
+      if (event === 'screenshot_classifier_running') {
+        console.log(`KT screenshot classifier running for batch #${payload.batchNumber} (${payload.screenshots} screenshots)`);
+        return;
+      }
+      if (event === 'screenshot_classifier_selected') {
+        console.log(
+          `KT screenshot selected for batch #${payload.batchNumber}: index=${payload.selectedIndex}, reason="${payload.reason}", url=${payload.imageUrl}`
+        );
+        return;
+      }
+      if (event === 'screenshot_classifier_skipped') {
+        console.log(`KT screenshot skipped for batch #${payload.batchNumber}: ${payload.reason}`);
+        return;
+      }
+      if (event === 'screenshot_classifier_error') {
+        console.warn(`KT screenshot classifier failed for batch #${payload.batchNumber}: ${payload.error}`);
+        return;
+      }
       if (event === 'summary_progress' && payload.type === 'storyArc') {
         const pct = Math.floor((payload.progress.current / payload.progress.total) * 100);
         console.log(`Story arc progress: ${payload.progress.current}/${payload.progress.total} (${pct}%)`);

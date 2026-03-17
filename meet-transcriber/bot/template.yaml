@@ -207,8 +207,116 @@ Resources:
             Method: post
       Role: !GetAtt TriggerFunctionRole.Arn
 
+  ArtifactUploadFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ArtifactUploadS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${MeetBotBucket.Arn}/*'
+
+  ArtifactUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 30
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - '*'
+          AllowMethods:
+            - POST
+            - OPTIONS
+          AllowHeaders:
+            - content-type
+      InlineCode: |
+        const AWS = require('aws-sdk');
+        const s3 = new AWS.S3({ signatureVersion: 'v4' });
+
+        exports.handler = async (event) => {
+          try {
+            if (event.requestContext?.http?.method === 'OPTIONS') {
+              return {
+                statusCode: 200,
+                headers: {
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Methods': 'POST,OPTIONS',
+                  'Access-Control-Allow-Headers': 'content-type'
+                },
+                body: ''
+              };
+            }
+
+            const body = JSON.parse(event.body || '{}');
+            const action = body.action || 'getUploadUrl';
+            const meetCode = String(body.meetCode || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+            const batchNumber = Number.isFinite(Number(body.batchNumber)) ? Number(body.batchNumber) : 0;
+            const isImage = action === 'getImageUploadUrl' || body.fileType === 'image';
+            const ext = isImage ? 'jpg' : 'txt';
+            const contentType = isImage ? 'image/jpeg' : 'text/plain; charset=utf-8';
+            const prefix = isImage ? 'screenshots' : 'transcripts';
+            const fileName = isImage
+              ? `batch-${batchNumber}.jpg`
+              : `meet-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+            const key = `${prefix}/${meetCode}/${fileName}`;
+
+            const uploadUrl = await s3.getSignedUrlPromise('putObject', {
+              Bucket: process.env.BUCKET_NAME,
+              Key: key,
+              ContentType: contentType,
+              Expires: 900
+            });
+            const downloadUrl = await s3.getSignedUrlPromise('getObject', {
+              Bucket: process.env.BUCKET_NAME,
+              Key: key,
+              Expires: 7 * 24 * 60 * 60
+            });
+
+            return {
+              statusCode: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              },
+              body: JSON.stringify({ uploadUrl, downloadUrl, key, action })
+            };
+          } catch (error) {
+            return {
+              statusCode: 400,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              },
+              body: JSON.stringify({ error: error.message })
+            };
+          }
+        };
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref MeetBotBucket
+      Role: !GetAtt ArtifactUploadFunctionRole.Arn
+
 Outputs:
   BucketName:
     Value: !Ref MeetBotBucket
   SnsTopicArn:
     Value: !Ref MeetBotTopic
+  ArtifactUploadFunctionUrl:
+    Value: !GetAtt ArtifactUploadFunctionUrl.FunctionUrl

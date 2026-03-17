@@ -86,13 +86,17 @@ app.get('/api/config', (_req, res) => {
       batchSize: current.batchSize,
       screenshotQuality: current.screenshotQuality,
       maxMeetingMinutes: current.maxMeetingMinutes,
+      artifactUploadEndpoint: current.artifactUploadEndpoint,
       analysisModel: current.analysisModel,
       summaryModel: current.summaryModel,
       tldrModel: current.tldrModel,
       arcModel: current.arcModel,
       bulletsModel: current.bulletsModel,
       guestName: current.guestName,
-      forceGoogleSignIn: current.forceGoogleSignIn
+      forceGoogleSignIn: current.forceGoogleSignIn,
+      enableScreenshotClassifier: current.enableScreenshotClassifier,
+      screenshotClassifierModel: current.screenshotClassifierModel,
+      meetingObjective: current.meetingObjective
     }
   });
 });
@@ -117,7 +121,7 @@ async function writeEnvValues(updates) {
   });
 
   for (const [key, value] of Object.entries(updates)) {
-    if (value === undefined || value === null || value === '') continue;
+    if (value === undefined || value === null) continue;
     const nextLine = `${key}=${toEnvValue(value)}`;
     if (indexByKey.has(key)) {
       lines[indexByKey.get(key)] = nextLine;
@@ -139,13 +143,17 @@ app.put('/api/config', async (req, res) => {
       batchSize: 'BATCH_SIZE',
       screenshotQuality: 'SCREENSHOT_QUALITY',
       maxMeetingMinutes: 'MAX_MEETING_MINUTES',
+      artifactUploadEndpoint: 'ARTIFACT_UPLOAD_ENDPOINT',
       analysisModel: 'ANALYSIS_MODEL',
       summaryModel: 'SUMMARY_MODEL',
       tldrModel: 'TLDR_MODEL',
       arcModel: 'ARC_MODEL',
       bulletsModel: 'BULLETS_MODEL',
       guestName: 'GUEST_NAME',
-      forceGoogleSignIn: 'FORCE_GOOGLE_SIGNIN'
+      forceGoogleSignIn: 'FORCE_GOOGLE_SIGNIN',
+      enableScreenshotClassifier: 'ENABLE_SCREENSHOT_CLASSIFIER',
+      screenshotClassifierModel: 'SCREENSHOT_CLASSIFIER_MODEL',
+      meetingObjective: 'MEETING_OBJECTIVE'
     };
     for (const [k, envKey] of Object.entries(map)) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {

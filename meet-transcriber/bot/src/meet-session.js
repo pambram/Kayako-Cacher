@@ -20,6 +20,85 @@ async function clickFirstMatching(page, selectors) {
   return false;
 }
 
+/**
+ * Dismisses Google Meet's pre-join media consent dialog ("Continue without microphone and camera").
+ * Uses Puppeteer trusted clicks (ElementHandle.click) and avoids filtering by aria-hidden,
+ * because Meet marks the entire page wrapper as aria-hidden="true" when this dialog is open.
+ */
+async function dismissPreJoinMediaPrompt(page) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      // Strategy 1: Direct selector for the MDC dialog cancel action button.
+      const mdcBtn = await page.$('button[data-mdc-dialog-action="cancel"]');
+      if (mdcBtn) {
+        const text = await mdcBtn.evaluate((el) => (el.textContent || '').toLowerCase());
+        if (text.includes('without microphone') || text.includes('continue without')) {
+          await mdcBtn.click();
+          console.log(`Pre-join media prompt clicked via MDC selector (attempt ${attempt + 1}/8).`);
+          await sleep(700);
+          return { state: 'clicked', attempt: attempt + 1 };
+        }
+      }
+
+      // Strategy 2: Find by visible text content, using ElementHandle for trusted click.
+      // Intentionally does NOT filter by aria-hidden — Meet wraps everything in aria-hidden when dialog is open.
+      const btnHandle = await page.evaluateHandle(() => {
+        const needle = 'continue without microphone and camera';
+        const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        for (const btn of allButtons) {
+          const combined = ((btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '')).toLowerCase();
+          if (!combined.includes(needle)) continue;
+          const rect = btn.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          const style = window.getComputedStyle(btn);
+          if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
+          if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+          return btn;
+        }
+        // Fallback: find any span/element with the text and walk up to its button ancestor.
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = (node.textContent || '').toLowerCase().trim();
+          if (!text.includes(needle)) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          const btn = node.closest('button, [role="button"]');
+          if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') return btn;
+        }
+        return null;
+      });
+
+      const btnElement = btnHandle.asElement();
+      if (btnElement) {
+        await btnElement.click();
+        console.log(`Pre-join media prompt clicked via text search (attempt ${attempt + 1}/8).`);
+        await sleep(700);
+        return { state: 'clicked', attempt: attempt + 1 };
+      }
+
+      // Detect if the modal text is present even though we couldn't find a clickable button.
+      const modalPresent = await page.evaluate(() => {
+        const bodyText = (document.body?.innerText || '').toLowerCase();
+        return bodyText.includes('do you want people to see and hear you in the meeting')
+          || bodyText.includes('continue without microphone and camera');
+      }).catch(() => false);
+
+      console.log(`Pre-join media prompt attempt ${attempt + 1}/8: modal_visible=${modalPresent}, no clickable button found.`);
+    } catch (error) {
+      console.warn(`Pre-join media prompt attempt ${attempt + 1}/8 error:`, error.message);
+    }
+    await sleep(600);
+  }
+
+  const finalPresent = await page.evaluate(() => {
+    const bodyText = (document.body?.innerText || '').toLowerCase();
+    return bodyText.includes('do you want people to see and hear you in the meeting')
+      || bodyText.includes('continue without microphone and camera');
+  }).catch(() => false);
+  return { state: finalPresent ? 'visible' : 'absent', attempt: 8 };
+}
+
 async function maybeSignIn(page, config) {
   if (!config.googleEmail || !config.googlePassword) return;
 
@@ -34,69 +113,39 @@ async function maybeSignIn(page, config) {
 }
 
 async function disableMicAndCamera(page) {
-  const toggleIfOnByLabel = async (keywords, offMarkers) => {
-    return page.evaluate((needles, offStates) => {
+  const clickOffControlByLabel = async (keywords) => {
+    return page.evaluate((needles) => {
       const nodes = Array.from(document.querySelectorAll('button, div[role="button"]'));
       for (const node of nodes) {
         const text = (node.textContent || '').toLowerCase();
         const aria = (node.getAttribute('aria-label') || '').toLowerCase();
         const combined = `${text} ${aria}`;
         if (!needles.some((needle) => combined.includes(needle))) continue;
-        if (offStates.some((marker) => combined.includes(marker))) {
-          return false;
-        }
         const disabled = node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true';
         if (disabled) continue;
         node.click();
         return true;
       }
       return false;
-    }, keywords, offMarkers);
+    }, keywords);
   };
 
   try {
-    // Prefer explicit pre-join controls when available.
-    const micClicked = await toggleIfOnByLabel([
+    // Strict safety: only click explicit OFF controls; never generic toggles.
+    const micClicked = await clickOffControlByLabel([
       'turn off microphone',
-      'mute microphone',
-      'microphone'
-    ], [
-      'turn on microphone',
-      'microphone off',
-      'unmute'
+      'mute microphone'
     ]);
     await sleep(500);
-    const camClicked = await toggleIfOnByLabel([
+    const camClicked = await clickOffControlByLabel([
       'turn off camera',
-      'camera is on',
-      'camera'
-    ], [
-      'turn on camera',
-      'camera off'
+      'camera is on'
     ]);
     if (micClicked || camClicked) {
       console.log('Pre-join AV controls clicked:', { micClicked, camClicked });
-      return;
     }
-
-    // Fallback keyboard shortcuts if controls are not detected.
-    await page.keyboard.down('Meta');
-    await page.keyboard.press('KeyD');
-    await page.keyboard.up('Meta');
-    await sleep(200);
-    await page.keyboard.down('Control');
-    await page.keyboard.press('KeyD');
-    await page.keyboard.up('Control');
-    await sleep(300);
-    await page.keyboard.down('Meta');
-    await page.keyboard.press('KeyE');
-    await page.keyboard.up('Meta');
-    await sleep(200);
-    await page.keyboard.down('Control');
-    await page.keyboard.press('KeyE');
-    await page.keyboard.up('Control');
   } catch (error) {
-    console.warn('Warning: could not toggle mic/cam via keyboard', error.message);
+    console.warn('Warning: could not click explicit mic/cam OFF controls', error.message);
   }
 }
 
@@ -214,6 +263,40 @@ async function isCaptionsOn(page) {
   });
 }
 
+/**
+ * Dismisses any post-join consent dialog that has a "Join now" button (transcription warnings,
+ * Gemini notes, third-party app sharing like Read AI, etc.). Clicks "Join now" to proceed.
+ */
+async function dismissPostJoinConsentDialog(page) {
+  try {
+    const result = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll('button, div[role="button"]'));
+      const joinNowNode = nodes.find((node) => {
+        const text = (node.textContent || '').toLowerCase().trim();
+        const aria = (node.getAttribute('aria-label') || '').toLowerCase().trim();
+        return text === 'join now' || aria === 'join now';
+      });
+      if (!joinNowNode) return { clicked: false, reason: null };
+      const disabled = joinNowNode.hasAttribute('disabled') || joinNowNode.getAttribute('aria-disabled') === 'true';
+      if (disabled) return { clicked: false, reason: 'join_now_disabled' };
+      const dialogText = (joinNowNode.closest('[role="dialog"], [role="alertdialog"], .mUIrbf-RMB1Gb')
+        ?.textContent || document.body?.innerText || '').substring(0, 300).trim();
+      joinNowNode.click();
+      return { clicked: true, reason: dialogText };
+    });
+    if (result.clicked) {
+      console.log('Post-join consent dialog dismissed (clicked Join now). Context:', result.reason?.substring(0, 120));
+      await sleep(700);
+    }
+    return result.clicked;
+  } catch (error) {
+    if (!String(error?.message || '').includes('detached')) {
+      console.warn('Could not process post-join consent dialog:', error.message);
+    }
+    return false;
+  }
+}
+
 async function ensureMeetingControlsReady(page, maxAttempts = 20, intervalMs = 2000) {
   let lastAv = { micOff: false, camOff: false };
   let lastCaptionsOn = false;
@@ -244,6 +327,7 @@ async function ensureMeetingControlsReady(page, maxAttempts = 20, intervalMs = 2
       await enableCaptions(page);
       await sleep(700);
     }
+    await dismissPostJoinConsentDialog(page);
     await sleep(intervalMs);
   }
 
@@ -331,9 +415,28 @@ async function isInMeeting(page) {
   });
 }
 
-async function waitForMeetingAdmission(page, waitSec) {
+async function waitForMeetingAdmission(page, waitSec, onModalCheck, emitStatus) {
   const timeoutAt = Date.now() + waitSec * 1000;
   while (Date.now() < timeoutAt) {
+    if (onModalCheck) {
+      try {
+        await onModalCheck();
+      } catch (error) {
+        if (!String(error?.message || '').toLowerCase().includes('detached frame')) {
+          console.warn('Modal check warning during admission wait:', error.message);
+        }
+      }
+    }
+    try {
+      await dismissPostJoinConsentDialog(page);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('detached frame')) {
+        console.warn('Transcription warning check failed during admission wait:', error.message);
+      }
+    }
+    if (emitStatus) {
+      emitStatus('join_wait_tick', { secondsRemaining: Math.max(0, Math.round((timeoutAt - Date.now()) / 1000)) });
+    }
     if (await detectJoinDenied(page)) {
       console.log('Join diagnostics (denied-during-wait):', await collectJoinDiagnostics(page));
       throw new Error("Join denied by Google Meet. This account must be invited or admitted by the host.");
@@ -361,9 +464,10 @@ async function hasGuestJoinUi(page) {
   });
 }
 
-async function waitForJoinButtonEnabled(page, waitSec) {
+async function waitForJoinButtonEnabled(page, waitSec, onModalCheck) {
   const timeoutAt = Date.now() + waitSec * 1000;
   while (Date.now() < timeoutAt) {
+    if (onModalCheck) await onModalCheck();
     const state = await page.evaluate(() => {
       const nodes = Array.from(document.querySelectorAll('button, div[role="button"]'));
       const target = nodes.find((node) => {
@@ -420,7 +524,25 @@ async function collectJoinDiagnostics(page) {
   });
 }
 
-export async function startMeetSession(config) {
+export async function startMeetSession(config, hooks = {}) {
+  const emitStatus = (event, payload = {}) => {
+    if (hooks?.onStatus) {
+      hooks.onStatus(event, payload);
+    }
+  };
+
+  async function dismissPreJoinMediaPromptWithStatus() {
+    const result = await dismissPreJoinMediaPrompt(page);
+    if (result?.state === 'clicked') {
+      emitStatus('prejoin_media_prompt', { state: 'clicked', attempt: result.attempt });
+    } else if (result?.state === 'visible') {
+      emitStatus('prejoin_media_prompt', { state: 'visible', attempt: result.attempt });
+    } else {
+      emitStatus('prejoin_media_prompt', { state: 'absent', attempt: result?.attempt || 0 });
+    }
+    return result;
+  }
+
   const puppeteer = addExtra(puppeteerCore);
   if (config.enableStealth) {
     puppeteer.use(StealthPlugin());
@@ -436,18 +558,22 @@ export async function startMeetSession(config) {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--disable-blink-features=AutomationControlled',
-      '--window-size=1440,900',
+      '--window-size=1920,1080',
       '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
       '--autoplay-policy=no-user-gesture-required'
     ],
-    defaultViewport: { width: 1440, height: 900 }
+    defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 2 }
   });
 
   const [page] = await browser.pages();
   await page.bringToFront();
+  await page.browserContext().overridePermissions('https://meet.google.com', ['notifications', 'camera', 'microphone']);
 
   await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
   await sleep(3000);
+  await dismissPreJoinMediaPromptWithStatus();
+  await dismissPreJoinMediaPromptWithStatus();
 
   const initialDiagnostics = await collectJoinDiagnostics(page);
   console.log('Join diagnostics (initial):', initialDiagnostics);
@@ -466,7 +592,7 @@ export async function startMeetSession(config) {
     if (!filledName) {
       throw new Error('Guest join detected but could not fill name input.');
     }
-    const joinEnabled = await waitForJoinButtonEnabled(page, 20);
+    const joinEnabled = await waitForJoinButtonEnabled(page, 20, dismissPreJoinMediaPromptWithStatus);
     if (!joinEnabled) {
       console.log('Join diagnostics (guest-button-disabled):', await collectJoinDiagnostics(page));
       throw new Error('Ask to join button stayed disabled after entering guest name.');
@@ -479,9 +605,12 @@ export async function startMeetSession(config) {
     await maybeSignIn(page, config);
     await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
     await sleep(3000);
+    await dismissPreJoinMediaPromptWithStatus();
+    await dismissPreJoinMediaPromptWithStatus();
     console.log('Join diagnostics (post-signin):', await collectJoinDiagnostics(page));
   }
 
+  await dismissPreJoinMediaPromptWithStatus();
   await ensureMicCameraOff(page);
   console.log('Join diagnostics (pre-click):', await collectJoinDiagnostics(page));
   const clickedJoin = await joinMeet(page);
@@ -489,7 +618,11 @@ export async function startMeetSession(config) {
     console.log('Join diagnostics (click-missed):', await collectJoinDiagnostics(page));
     throw new Error('Could not find Ask to join / Join now button.');
   }
-  await waitForMeetingAdmission(page, config.joinWaitSec);
+  // Modal often renders right after clicking join; let DOM settle first.
+  await sleep(1000);
+  await dismissPreJoinMediaPromptWithStatus();
+  await waitForMeetingAdmission(page, config.joinWaitSec, dismissPreJoinMediaPromptWithStatus, emitStatus);
+  await dismissPostJoinConsentDialog(page);
   console.log('Meeting admission confirmed. Verifying controls...');
   await sleep(2000);
   const ready = await ensureMeetingControlsReady(page);

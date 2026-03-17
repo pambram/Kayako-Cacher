@@ -6,12 +6,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
 });
 
+let lastLoadedConfig = null;
+
 async function loadSettings() {
   try {
     const response = await chrome.runtime.sendMessage({ action: 'getConfig' });
     
     if (response.success) {
       const config = response.config;
+      lastLoadedConfig = config;
       
       // Set form values
       document.getElementById('provider').value = config.provider || 'anthropic';
@@ -29,11 +32,15 @@ async function loadSettings() {
       document.getElementById('meta-analysis-enabled').checked = config.enableMetaAnalysis !== false;
       document.getElementById('meta-interval').value = config.metaAnalysisInterval || 5;
       document.getElementById('meta-window').value = config.metaAnalysisWindow || 5;
+      document.getElementById('kt-screenshot-enabled').checked = Boolean(config.enableScreenshotClassifier);
+      document.getElementById('kt-screenshot-model').value = config.screenshotClassifierModel || 'claude-haiku-4-5';
+      document.getElementById('kt-screenshot-endpoint').value = config.s3ScreenshotEndpoint || config.s3UploadEndpoint || '';
       
       // Update slider displays
       updateSliderDisplays();
       updateTechnicalModeLabel();
       updateMetaLabel();
+      updateKtScreenshotLabel();
       
       // Update model options based on provider
       updateModelOptions(config.provider);
@@ -62,6 +69,7 @@ function setupEventListeners() {
   document.getElementById('meta-analysis-enabled').addEventListener('change', updateMetaLabel);
   document.getElementById('meta-interval').addEventListener('input', updateSliderDisplays);
   document.getElementById('meta-window').addEventListener('input', updateSliderDisplays);
+  document.getElementById('kt-screenshot-enabled').addEventListener('change', updateKtScreenshotLabel);
   
   // Buttons
   document.getElementById('save-btn').addEventListener('click', saveSettings);
@@ -97,6 +105,12 @@ function updateTechnicalModeLabel() {
 function updateMetaLabel() {
   const isEnabled = document.getElementById('meta-analysis-enabled').checked;
   const label = document.getElementById('meta-label');
+  label.textContent = isEnabled ? 'Enabled' : 'Disabled';
+}
+
+function updateKtScreenshotLabel() {
+  const isEnabled = document.getElementById('kt-screenshot-enabled').checked;
+  const label = document.getElementById('kt-screenshot-label');
   label.textContent = isEnabled ? 'Enabled' : 'Disabled';
 }
 
@@ -147,7 +161,13 @@ async function saveSettings() {
       enableMetaAnalysis: document.getElementById('meta-analysis-enabled').checked,
       metaAnalysisInterval: parseInt(document.getElementById('meta-interval').value),
       metaAnalysisWindow: parseInt(document.getElementById('meta-window').value),
+      enableScreenshotClassifier: document.getElementById('kt-screenshot-enabled').checked,
+      screenshotClassifierModel: document.getElementById('kt-screenshot-model').value,
+      s3ScreenshotEndpoint: document.getElementById('kt-screenshot-endpoint').value.trim(),
     };
+    if (!config.s3ScreenshotEndpoint) {
+      config.s3ScreenshotEndpoint = lastLoadedConfig?.s3UploadEndpoint || '';
+    }
     
     // Validate that at least one API key is provided
     if (!config.openaiKey && !config.anthropicKey) {
@@ -210,7 +230,10 @@ async function resetSettings() {
       captureInterval: 10,
       batchSize: 6,
       imageQuality: 0.5,
-      imageFormat: 'jpeg'
+      imageFormat: 'jpeg',
+      enableScreenshotClassifier: false,
+      screenshotClassifierModel: 'claude-haiku-4-5',
+      s3ScreenshotEndpoint: ''
     };
     
     const response = await chrome.runtime.sendMessage({

@@ -257,6 +257,48 @@
         </div>
       </div>
 
+      <div class="setting-group">
+        <label class="setting-label">
+          🖼 KT Screenshot Capture
+          <span class="tooltip" title="Classify and preserve one useful screenshot per batch for KT docs">ⓘ</span>
+        </label>
+        <div class="toggle-container">
+          <label class="toggle-switch">
+            <input type="checkbox" id="kt-screenshot-enabled">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label" id="kt-screenshot-label">Disabled</span>
+        </div>
+        <p class="setting-help">
+          Optional KT-only feature. Uses built-in upload endpoint by default; override only if needed.
+        </p>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">
+          Screenshot Classifier Model
+          <span class="tooltip" title="Model used only for screenshot yes/no selection">ⓘ</span>
+        </label>
+        <select id="kt-screenshot-model" class="setting-input model-select-anthropic">
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 (Recommended)</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+          <option value="claude-opus-4-6">Claude Opus 4.6</option>
+        </select>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label" for="kt-screenshot-endpoint">
+          S3 Screenshot Endpoint
+          <span class="tooltip" title="Lambda endpoint that returns presigned image upload URLs">ⓘ</span>
+        </label>
+        <input
+          type="url"
+          id="kt-screenshot-endpoint"
+          class="setting-input"
+          placeholder="https://your-lambda-url.amazonaws.com/"
+        />
+      </div>
+
       <!-- Status -->
       <div class="status-section">
         <div id="status-message" class="status-message"></div>
@@ -313,7 +355,7 @@
     </div>
 
     <div class="footer">
-      <p>Version 1.9.5 | Made with ❤️</p>
+      <p>Version 1.9.6 | Made with ❤️</p>
     </div>
   </div>
 

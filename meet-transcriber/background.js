@@ -21,8 +21,37 @@ const DEFAULT_CONFIG = {
   metaAnalysisInterval: 5, // Generate summary every N batches
   metaAnalysisWindow: 5, // Minutes of transcript to analyze
   // S3 upload settings (serverless - no credentials needed)
-  s3UploadEndpoint: 'https://623peylizt4pa4hjiwsfcvh56m0bwkgn.lambda-url.us-east-1.on.aws/'
+  s3UploadEndpoint: 'https://623peylizt4pa4hjiwsfcvh56m0bwkgn.lambda-url.us-east-1.on.aws/',
+  // KT screenshot classifier settings
+  enableScreenshotClassifier: false,
+  screenshotClassifierModel: 'claude-haiku-4-5',
+  s3ScreenshotEndpoint: 'https://623peylizt4pa4hjiwsfcvh56m0bwkgn.lambda-url.us-east-1.on.aws/'
 };
+
+const KT_SCREENSHOT_CLASSIFIER_PROMPT = `You are a screenshot classifier for Knowledge Transfer (KT) meeting documentation.
+You receive a batch of screenshots from a screen-sharing session along with the transcript
+of what was discussed during this batch.
+
+DECIDE: Does any screenshot in this batch show something that should be saved for documentation?
+
+SAVE a screenshot if it shows:
+- A system interface, dashboard, or admin panel being demonstrated
+- Architecture diagrams, workflow diagrams, or process flows
+- Code being walked through or explained
+- Configuration screens, settings, or infrastructure views
+- Error messages, log outputs, or debugging sessions
+- Database schemas, API responses, or data structures
+- Any visual that would help someone understand the system being transferred
+
+DO NOT SAVE if the batch only shows:
+- Google Meet participant tiles / video feeds
+- Generic web pages with no technical content
+- The AI Transcriber panel itself
+- Blurry, transitional, or duplicate views of already-captured content
+
+Select at most ONE screenshot from the batch -- the clearest, most informative one.
+
+Respond with JSON only: {"save": true/false, "index": N, "reason": "one line"}`;
 
 // Initialize extension on install
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -39,7 +68,10 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       !existingConfig.summaryModel ||
       !existingConfig.tldrModel ||
       !existingConfig.storyArcModel ||
-      !existingConfig.bulletPointsModel;
+      !existingConfig.bulletPointsModel ||
+      existingConfig.enableScreenshotClassifier === undefined ||
+      !Object.prototype.hasOwnProperty.call(existingConfig, 'screenshotClassifierModel') ||
+      !Object.prototype.hasOwnProperty.call(existingConfig, 's3ScreenshotEndpoint');
 
   if (needsMigration && existingConfig) {
     console.log('Updating configuration with new defaults');
@@ -86,6 +118,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     case 'uploadToS3':
       handleUploadToS3(request.transcript, request.meetUrl, sendResponse);
+      return true;
+
+    case 'classifyScreenshot':
+      handleClassifyScreenshot(request, sendResponse);
       return true;
 
     case 'generateTldr':
@@ -154,6 +190,11 @@ async function handleUpdateConfig(newConfig, sendResponse) {
 
 async function handleCaptureTab(tabId, sendResponse) {
   try {
+    const cfgResult = await chrome.storage.local.get(['meetTranscriberConfig']);
+    const config = cfgResult.meetTranscriberConfig || DEFAULT_CONFIG;
+    const imageFormat = config.imageFormat === 'webp' ? 'png' : 'jpeg';
+    const qualityPercent = Math.max(10, Math.min(100, Math.round((config.imageQuality ?? 0.5) * 100)));
+
     // Find the Meet tab
     const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
     
@@ -181,8 +222,8 @@ async function handleCaptureTab(tabId, sendResponse) {
     
     // Capture the currently active Meet tab (no tab switching)
     const dataUrl = await chrome.tabs.captureVisibleTab(meetTab.windowId, {
-      format: 'jpeg',
-      quality: 50
+      format: imageFormat,
+      quality: qualityPercent
     });
     
     sendResponse({ success: true, dataUrl });
@@ -1341,6 +1382,231 @@ async function resumeInterruptedTasks() {
 
 // Resume interrupted tasks when the service worker starts
 resumeInterruptedTasks();
+
+function extractMeetCodeFromUrl(meetUrl) {
+  if (!meetUrl) return 'unknown';
+  try {
+    const parsed = new URL(meetUrl);
+    const segment = parsed.pathname.split('/').filter(Boolean).pop();
+    return segment || 'unknown';
+  } catch (_error) {
+    const parts = String(meetUrl).split('/');
+    return (parts[parts.length - 1] || 'unknown').split('?')[0];
+  }
+}
+
+function stripMarkdownCodeFence(text) {
+  const trimmed = String(text || '').trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+async function handleClassifyScreenshot(request, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get(['meetTranscriberConfig']);
+    const config = result.meetTranscriberConfig || DEFAULT_CONFIG;
+    const screenshots = Array.isArray(request.screenshots) ? request.screenshots : [];
+    const batchNumber = request.batchNumber || 0;
+    console.log(
+      `🧠 KT classifier start: batch #${batchNumber}, screenshots=${screenshots.length}, model=${config.screenshotClassifierModel || DEFAULT_CONFIG.screenshotClassifierModel}`
+    );
+
+    if (!config.enableScreenshotClassifier) {
+      console.log(`🧠 KT classifier disabled. Skipping batch #${batchNumber}`);
+      sendResponse({ success: true, selected: false, reason: 'Classifier disabled' });
+      return;
+    }
+    const resolvedScreenshotEndpoint = config.s3ScreenshotEndpoint || config.s3UploadEndpoint || DEFAULT_CONFIG.s3ScreenshotEndpoint;
+    if (!resolvedScreenshotEndpoint) {
+      console.log(`🧠 KT classifier missing screenshot/upload endpoint. Skipping batch #${batchNumber}`);
+      sendResponse({ success: true, selected: false, reason: 'Screenshot endpoint not configured' });
+      return;
+    }
+    if (!config.anthropicKey) {
+      sendResponse({ success: false, error: 'Anthropic API key required for screenshot classifier' });
+      return;
+    }
+
+    if (!screenshots.length) {
+      sendResponse({ success: true, selected: false, reason: 'No screenshots in batch' });
+      return;
+    }
+
+    const messageContent = [];
+    const userLines = [];
+    if (request.meetingObjective) {
+      userLines.push(`Meeting objective: ${request.meetingObjective}`);
+      userLines.push('');
+    }
+    userLines.push(`Batch transcript:\n${request.transcript || ''}`);
+    userLines.push('');
+    userLines.push(`Batch number: ${request.batchNumber || 0}`);
+    userLines.push(`Screenshot count: ${screenshots.length}`);
+    userLines.push('Return JSON only.');
+
+    messageContent.push({
+      type: 'text',
+      text: userLines.join('\n')
+    });
+
+    screenshots.forEach((screenshot, idx) => {
+      const match = screenshot.dataUrl?.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        messageContent.push({
+          type: 'text',
+          text: `Screenshot index ${idx}`
+        });
+        messageContent.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: match[1],
+            data: match[2]
+          }
+        });
+      }
+    });
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': config.anthropicKey,
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: config.screenshotClassifierModel || DEFAULT_CONFIG.screenshotClassifierModel,
+        max_tokens: 300,
+        system: KT_SCREENSHOT_CLASSIFIER_PROMPT,
+        messages: [{
+          role: 'user',
+          content: messageContent
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      let errorData;
+      try { errorData = await response.json(); } catch (_e) {}
+      throw new Error(errorData?.error?.message || `Classifier HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const rawText = data.content?.find((item) => item.type === 'text')?.text || '';
+    let parsed;
+    try {
+      parsed = JSON.parse(stripMarkdownCodeFence(rawText));
+    } catch (_error) {
+      console.warn('Classifier returned non-JSON output:', rawText);
+      sendResponse({ success: true, selected: false, reason: 'Classifier returned invalid JSON' });
+      return;
+    }
+
+    const save = Boolean(parsed?.save);
+    const index = Number(parsed?.index);
+    const reason = parsed?.reason ? String(parsed.reason) : '';
+    console.log(
+      `🧠 KT classifier decision: batch #${batchNumber}, save=${save}, index=${index}, reason="${reason || 'n/a'}"`
+    );
+    if (!save || !Number.isInteger(index) || index < 0 || index >= screenshots.length) {
+      sendResponse({ success: true, selected: false, reason: reason || 'No suitable screenshot' });
+      return;
+    }
+
+    const imageUrl = await uploadScreenshotToS3(
+      screenshots[index].dataUrl,
+      extractMeetCodeFromUrl(request.meetUrl),
+      request.batchNumber,
+      config
+    );
+    console.log(`☁️ KT classifier uploaded screenshot: batch #${batchNumber}, index=${index}, url=${imageUrl}`);
+
+    sendResponse({
+      success: true,
+      selected: true,
+      imageUrl,
+      reason,
+      selectedIndex: index
+    });
+  } catch (error) {
+    console.error('❌ Screenshot classifier failed:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+async function uploadScreenshotToS3(dataUrl, meetCode, batchNumber, config) {
+  const endpoint = config.s3ScreenshotEndpoint || config.s3UploadEndpoint || DEFAULT_CONFIG.s3ScreenshotEndpoint;
+  if (!endpoint) {
+    throw new Error('Missing screenshot S3 endpoint');
+  }
+  console.log(`☁️ Requesting screenshot presigned URL: meetCode=${meetCode}, batch=${batchNumber}`);
+
+  const tryPayloads = [
+    { action: 'getImageUploadUrl', meetCode, batchNumber },
+    { action: 'getUploadUrl', meetCode, batchNumber, fileType: 'image' }
+  ];
+  let uploadUrl = '';
+  let downloadUrl = '';
+  let lastError = null;
+  for (const payload of tryPayloads) {
+    try {
+      const presignResponse = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!presignResponse.ok) {
+        const text = await presignResponse.text();
+        throw new Error(`HTTP ${presignResponse.status} - ${text}`);
+      }
+      const parsed = await presignResponse.json();
+      if (parsed?.uploadUrl && parsed?.downloadUrl) {
+        uploadUrl = parsed.uploadUrl;
+        downloadUrl = parsed.downloadUrl;
+        break;
+      }
+      throw new Error('Response missing uploadUrl/downloadUrl');
+    } catch (error) {
+      lastError = error;
+      console.warn(`Screenshot presign fallback failed for action=${payload.action}:`, error.message);
+    }
+  }
+  if (!uploadUrl || !downloadUrl) {
+    throw new Error(`Failed to get image upload URL: ${lastError?.message || 'unknown error'}`);
+  }
+
+  if (!uploadUrl || !downloadUrl) {
+    throw new Error('Invalid screenshot upload response');
+  }
+
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('Invalid screenshot data URL');
+  }
+
+  const mime = match[1];
+  const base64 = match[2];
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: mime || 'image/jpeg' });
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'image/jpeg' },
+    body: blob
+  });
+  if (!uploadResponse.ok) {
+    const text = await uploadResponse.text();
+    throw new Error(`Image upload failed: ${uploadResponse.status} - ${text}`);
+  }
+  console.log(`☁️ Screenshot uploaded to S3 for batch ${batchNumber}`);
+
+  return downloadUrl;
+}
 
 /** Upload transcript to S3 via serverless endpoint and return presigned URL */
 async function handleUploadToS3(transcript, meetUrl, sendResponse) {

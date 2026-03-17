@@ -20,6 +20,7 @@ const DEFAULTS = {
   outputDir: path.resolve(process.cwd(), 'bot-output'),
   awsRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
   s3Bucket: '',
+  artifactUploadEndpoint: 'https://623peylizt4pa4hjiwsfcvh56m0bwkgn.lambda-url.us-east-1.on.aws/',
   s3Prefix: 'meet-bot',
   snsTopicArn: '',
   headless: false,
@@ -30,6 +31,9 @@ const DEFAULTS = {
   enableStealth: true,
   checkpointUploadEnabled: true,
   checkpointUploadMinutes: 5,
+  enableScreenshotClassifier: false,
+  screenshotClassifierModel: 'claude-haiku-4-5',
+  meetingObjective: '',
   strictPromptParity: true,
   allowPromptFallback: false,
   notifyEmail: 'pablo.ambram@trilogy.com',
@@ -94,6 +98,9 @@ export function loadConfig(cliArgs = {}, options = {}) {
     outputDir: path.resolve(cliArgs['output-dir'] || process.env.OUTPUT_DIR || DEFAULTS.outputDir),
     awsRegion: cliArgs.region || process.env.AWS_REGION || DEFAULTS.awsRegion,
     s3Bucket: cliArgs['s3-bucket'] || process.env.S3_BUCKET || DEFAULTS.s3Bucket,
+    artifactUploadEndpoint: cliArgs['artifact-upload-endpoint']
+      || process.env.ARTIFACT_UPLOAD_ENDPOINT
+      || DEFAULTS.artifactUploadEndpoint,
     s3Prefix: cliArgs['s3-prefix'] || process.env.S3_PREFIX || DEFAULTS.s3Prefix,
     snsTopicArn: cliArgs['sns-topic-arn'] || process.env.SNS_TOPIC_ARN || DEFAULTS.snsTopicArn,
     headless: parseBoolean(cliArgs.headless || process.env.HEADLESS, DEFAULTS.headless),
@@ -113,6 +120,14 @@ export function loadConfig(cliArgs = {}, options = {}) {
       cliArgs['checkpoint-upload-minutes'] || process.env.CHECKPOINT_UPLOAD_MINUTES,
       DEFAULTS.checkpointUploadMinutes
     ),
+    enableScreenshotClassifier: parseBoolean(
+      cliArgs['enable-screenshot-classifier'] || process.env.ENABLE_SCREENSHOT_CLASSIFIER,
+      DEFAULTS.enableScreenshotClassifier
+    ),
+    screenshotClassifierModel: cliArgs['screenshot-classifier-model']
+      || process.env.SCREENSHOT_CLASSIFIER_MODEL
+      || DEFAULTS.screenshotClassifierModel,
+    meetingObjective: cliArgs['meeting-objective'] || process.env.MEETING_OBJECTIVE || DEFAULTS.meetingObjective,
     strictPromptParity: parseBoolean(
       cliArgs['strict-prompt-parity'] || process.env.STRICT_PROMPT_PARITY,
       DEFAULTS.strictPromptParity
@@ -135,6 +150,11 @@ export function loadConfig(cliArgs = {}, options = {}) {
   config.tldrModel = normalizeAnthropicModel(config.tldrModel, DEFAULTS.tldrModel, 'tldr');
   config.arcModel = normalizeAnthropicModel(config.arcModel, DEFAULTS.arcModel, 'story arc');
   config.bulletsModel = normalizeAnthropicModel(config.bulletsModel, DEFAULTS.bulletsModel, 'bullet points');
+  config.screenshotClassifierModel = normalizeAnthropicModel(
+    config.screenshotClassifierModel,
+    DEFAULTS.screenshotClassifierModel,
+    'screenshot classifier'
+  );
 
   if (requireMeetUrl && !config.meetUrl) {
     throw new Error('Missing MEET_URL. Pass --meet-url or set MEET_URL.');

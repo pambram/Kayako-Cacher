@@ -3,6 +3,7 @@ import path from 'node:path';
 import { startMeetSession } from './meet-session.js';
 import { startCaptureLoop } from './capture.js';
 import { analyzeBatch } from './analysis.js';
+import { classifyAndUploadKtScreenshot } from './screenshot-classifier.js';
 import { generateTldr, generateStoryArc, generateBulletPoints } from './summarize.js';
 import { uploadArtifacts, notifyDelivery, uploadCheckpointArtifacts, sendLifecycleEmail } from './delivery.js';
 import { loadExtensionPromptSet } from './extension-compat.js';
@@ -179,6 +180,7 @@ export async function runMeetingBot(config, hooks = {}) {
   let lastCheckpointUploadAt = 0;
   const checkpointIntervalMs = Math.max(1, config.checkpointUploadMinutes || 5) * 60 * 1000;
   let latestCheckpointUpload = null;
+  const selectedScreenshotHistory = [];
 
   let resolveAbort;
   const abortPromise = new Promise((resolve) => {
@@ -210,7 +212,9 @@ export async function runMeetingBot(config, hooks = {}) {
   try {
     ensureNotAborted(abortSignal);
     emit(hooks, 'joining', { meetUrl: config.meetUrl });
-    session = await startMeetSession(config);
+    session = await startMeetSession(config, {
+      onStatus: (event, payload) => emit(hooks, event, payload)
+    });
     emit(hooks, 'joined', { meetUrl: config.meetUrl, ...(session.diagnostics || {}) });
     await sendLifecycleEmail(
       config,
@@ -240,10 +244,47 @@ export async function runMeetingBot(config, hooks = {}) {
         try {
           const analysis = await analyzeBatch(batch, previousContext, config);
           const timestampLabel = formatTimeLabel(batch.endedAtIso);
+          let finalContent = analysis.text;
+          if (config.enableScreenshotClassifier) {
+            try {
+              emit(hooks, 'screenshot_classifier_running', {
+                batchNumber: entries.length + 1,
+                screenshots: (batch.screenshots || []).length
+              });
+              const classifierResult = await classifyAndUploadKtScreenshot(batch, analysis.text, config, {
+                batchNumber: entries.length + 1,
+                runId,
+                previousSelections: selectedScreenshotHistory
+              });
+              if (classifierResult.selected && classifierResult.imageUrl) {
+                selectedScreenshotHistory.push({
+                  batchNumber: entries.length + 1,
+                  reason: classifierResult.reason || ''
+                });
+                finalContent += `\n\n![Screenshot batch ${entries.length + 1}](${classifierResult.imageUrl})`;
+                emit(hooks, 'screenshot_classifier_selected', {
+                  batchNumber: entries.length + 1,
+                  selectedIndex: classifierResult.selectedIndex,
+                  reason: classifierResult.reason,
+                  imageUrl: classifierResult.imageUrl
+                });
+              } else {
+                emit(hooks, 'screenshot_classifier_skipped', {
+                  batchNumber: entries.length + 1,
+                  reason: classifierResult.reason || 'No screenshot selected'
+                });
+              }
+            } catch (classifierError) {
+              emit(hooks, 'screenshot_classifier_error', {
+                batchNumber: entries.length + 1,
+                error: classifierError.message
+              });
+            }
+          }
           const entry = {
             timestamp: batch.endedAtIso,
             timestampLabel,
-            content: analysis.text
+            content: finalContent
           };
           entries.push(entry);
           await appendLiveTranscriptEntry(checkpoint.liveTranscriptPath, entry);

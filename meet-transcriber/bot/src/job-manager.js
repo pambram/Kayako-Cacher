@@ -162,6 +162,7 @@ export class JobManager {
       summaryFlags: { enableTldr: false, enableBullets: false, enableStoryArc: false },
       summaryArtifacts: {},
       summaryTasks: {},
+      classifierConfig: null,
       latestCheckpointLinks: [],
       finalLinks: [],
       localPaths: null,
@@ -372,6 +373,11 @@ export class JobManager {
       enableTldr: false,
       enableBullets: false,
       enableStoryArc: false
+    };
+    job.classifierConfig = {
+      enabled: Boolean(config.enableScreenshotClassifier),
+      model: config.screenshotClassifierModel || '',
+      meetingObjective: config.meetingObjective || ''
     };
     const abortController = new AbortController();
     job.abortController = abortController;

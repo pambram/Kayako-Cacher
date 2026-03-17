@@ -43,6 +43,12 @@
       <button id="joinNow">Join now</button>
       <button id="toggleScheduleBtn" type="button">Show schedule</button>
     </div>
+    <div class="row">
+      <label><input id="liveEnableScreenshotClassifier" type="checkbox"> Save captured screenshots intelligently</label>
+      <label for="liveMeetingObjective">Meeting objective</label>
+      <input id="liveMeetingObjective" style="min-width:420px" placeholder="Optional objective to guide screenshot selection">
+      <button id="saveObjectiveBtn" type="button">Save objective</button>
+    </div>
     <div class="row" id="scheduleRow" style="display:none">
       <label for="scheduledAt">Schedule (optional)</label>
       <input id="scheduledAt" type="datetime-local">
@@ -64,6 +70,9 @@
       <label>Image quality</label><input id="cfgScreenshotQuality" type="number" min="5" max="100" step="5" style="width:90px">
     </div>
     <div class="row">
+      <label>Artifact upload endpoint</label><input id="cfgArtifactUploadEndpoint" style="min-width:420px" placeholder="https://...lambda-url.../">
+    </div>
+    <div class="row">
       <label>Guest name</label><input id="cfgGuestName" style="width:180px">
       <label>Analysis model</label><select id="cfgAnalysisModel" style="width:170px"></select>
       <label>Summary model</label><select id="cfgSummaryModel" style="width:170px"></select>
@@ -73,12 +82,18 @@
       <label>Arc model</label><select id="cfgArcModel" style="width:170px"></select>
       <label>Bullets model</label><select id="cfgBulletsModel" style="width:170px"></select>
     </div>
+    <div class="row">
+      <label>Classifier model</label><select id="cfgScreenshotClassifierModel" style="width:170px"></select>
+    </div>
     <div class="row"><button id="saveConfigBtn">Save config</button></div>
     </div>
   </div>
 
   <div class="panel">
     <h2>Jobs</h2>
+    <div class="row">
+      <label><input id="hideFailedJobs" type="checkbox" checked> Hide failed/cancelled jobs</label>
+    </div>
     <div id="jobs" class="jobsList"></div>
   </div>
 
