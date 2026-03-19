@@ -3014,107 +3014,160 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
 
   extractTicketContext() {
     try {
-      // Find all message/note items in the timeline
-      const messageItems = document.querySelectorAll('.message-or-note .ko-timeline-2_list_item__post_1oksrd, .message-or-note .ko-timeline-2_list_item__note_1oksrd');
+      // Single unified pass over ALL timeline list items in DOM order (= chronological).
+      // This captures both message/note bubbles AND activity/status-change events in
+      // their correct temporal position, so the AI sees a coherent narrative.
       
-      console.log(`🔍 Found ${messageItems.length} messages/notes in timeline`);
-      
-      const messages = [];
-      const timelineImages = []; // Collect images from timeline
-      
-      messageItems.forEach((item, index) => {
+      // Find the timeline list container first (try multiple selector patterns)
+      const timelineContainer =
+        document.querySelector('.ko-timeline-2_list_1oksrd') ||
+        document.querySelector('[class*="timeline-2_list"]') ||
+        document.querySelector('[class*="timeline_list"]') ||
+        document.querySelector('.ko-conversation-timeline');
+
+      // Collect all direct child list items in DOM order
+      const allItems = timelineContainer
+        ? Array.from(timelineContainer.children)
+        : Array.from(document.querySelectorAll('.ko-timeline-2_list_item_1oksrd, [class*="timeline-2_list_item"], .message-or-note'));
+
+      console.log(`🔍 Found ${allItems.length} timeline items (messages + activity events)`);
+
+      const entries = []; // unified list: messages and activity events in order
+      const timelineImages = [];
+      let msgCount = 0;
+      let activityCount = 0;
+
+      allItems.forEach((item, domIndex) => {
         try {
-          // Detect if this is an internal note (agent) vs public message
-          const isNote = item.classList.contains('ko-timeline-2_list_item__note_1oksrd') || 
-                         item.closest('.ko-timeline-2_list_item__note_1oksrd') !== null;
-          
-          // Extract author
-          const authorElement = item.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
-          const author = authorElement ? authorElement.textContent.trim() : 'Unknown';
-          
-          // Detect system/automated messages
-          const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 
-            'Lachesis', 'Phronesis', 'centralsupport-ai-acc', 
-            'Centralsupport-ai-acc', 'System', 'Automation', 'AI-CS Integration',
-            'Wise Old Man'].includes(author);
-          
-          // Extract content
-          const contentElement = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
-          let content = '';
-          let hasImages = false;
-          
-          if (contentElement) {
-            // Check for images in this message and collect them
-            const images = contentElement.querySelectorAll('img');
-            if (images.length > 0) {
-              hasImages = true;
-              // Get time for this message to include with images
-              const timeElement = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
-              const msgTime = timeElement ? timeElement.textContent.trim() : '';
-              images.forEach((img, imgIdx) => {
-                const src = img.getAttribute('src');
-                if (src) {
-                  timelineImages.push({
-                    src,
-                    author,
-                    time: msgTime,
-                    isNote,
-                    messageIndex: index,
-                    imgIndex: imgIdx
-                  });
-                }
-              });
+          const isMessageOrNote = item.classList.contains('message-or-note') ||
+            item.querySelector('.ko-timeline-2_list_item__post_1oksrd, .ko-timeline-2_list_item__note_1oksrd') !== null;
+
+          if (isMessageOrNote) {
+            // ── Message / note bubble ──────────────────────────────────────────
+            const inner = item.querySelector('.ko-timeline-2_list_item__post_1oksrd, .ko-timeline-2_list_item__note_1oksrd') || item;
+            const isNote = inner.classList.contains('ko-timeline-2_list_item__note_1oksrd') ||
+                           inner.closest('.ko-timeline-2_list_item__note_1oksrd') !== null;
+
+            const authorEl = inner.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+            const author = authorEl ? authorEl.textContent.trim() : 'Unknown';
+
+            const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes',
+              'Lachesis', 'Phronesis', 'centralsupport-ai-acc',
+              'Centralsupport-ai-acc', 'System', 'Automation', 'AI-CS Integration',
+              'Wise Old Man'].includes(author);
+
+            const contentEl = inner.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
+            let content = '';
+            let hasImages = false;
+
+            if (contentEl) {
+              const imgs = contentEl.querySelectorAll('img');
+              if (imgs.length > 0) {
+                hasImages = true;
+                const timeEl2 = inner.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+                const msgTime = timeEl2 ? timeEl2.textContent.trim() : '';
+                imgs.forEach((img, imgIdx) => {
+                  const src = img.getAttribute('src');
+                  if (src) timelineImages.push({ src, author, time: msgTime, isNote, messageIndex: domIndex, imgIndex: imgIdx });
+                });
+              }
+              const tmp = document.createElement('div');
+              tmp.innerHTML = contentEl.innerHTML;
+              content = (tmp.textContent || tmp.innerText || '').trim().replace(/\s+/g, ' ');
             }
-            
-            // Get clean text content, removing HTML
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = contentElement.innerHTML;
-            content = tempDiv.textContent || tempDiv.innerText || '';
-            content = content.trim().replace(/\s+/g, ' '); // Normalize whitespace
+
+            const timeEl = inner.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+            const time = timeEl ? timeEl.textContent.trim() : '';
+
+            if (content && content.length > 10) {
+              entries.push({ type: 'message', author, content, time, hasImages, isNote, isSystemMessage, domIndex });
+              msgCount++;
+            }
+
+          } else {
+            // ── Activity / status-change event ────────────────────────────────
+            const rawText = (item.textContent || '').trim().replace(/\s+/g, ' ');
+            if (!rawText || rawText.length < 5) return;
+
+            // Only keep meaningful state changes; discard pure noise
+            const isRelevant = /changed|closed|completed|opened|reopened|resolved|escalated|GHI|github/i.test(rawText);
+            if (!isRelevant) return;
+
+            const timeEl = item.querySelector('[class*="time"], time, [title]');
+            const time = timeEl ? (timeEl.getAttribute('title') || timeEl.textContent.trim()) : '';
+
+            entries.push({ type: 'activity', content: rawText.slice(0, 250), time, domIndex });
+            activityCount++;
           }
-          
-          // Extract time (optional)
-          const timeElement = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
-          const time = timeElement ? timeElement.textContent.trim() : '';
-          
-          if (content && content.length > 10) { // Only include substantial messages
-            messages.push({
-              author,
-              content, // Full content - overall context is clamped later (MAX_CTX=8000)
-              time,
-              index,
-              hasImages,
-              isNote,
-              isSystemMessage
-            });
-          }
-        } catch (error) {
-          console.warn('Error extracting message at index', index, error);
+        } catch (err) {
+          console.warn('Error processing timeline item at DOM index', domIndex, err);
         }
       });
-      
-      console.log(`📋 Extracted ${messages.length} substantial messages for context`);
+
+      // Fallback: if no entries found (container selector missed), fall back to old message-only query
+      if (entries.length === 0) {
+        const fallbackItems = document.querySelectorAll('.message-or-note .ko-timeline-2_list_item__post_1oksrd, .message-or-note .ko-timeline-2_list_item__note_1oksrd');
+        fallbackItems.forEach((item, index) => {
+          try {
+            const isNote = item.classList.contains('ko-timeline-2_list_item__note_1oksrd');
+            const authorEl = item.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+            const author = authorEl ? authorEl.textContent.trim() : 'Unknown';
+            const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis',
+              'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'System', 'Automation', 'AI-CS Integration', 'Wise Old Man'].includes(author);
+            const contentEl = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
+            let content = '';
+            let hasImages = false;
+            if (contentEl) {
+              const imgs = contentEl.querySelectorAll('img');
+              if (imgs.length > 0) {
+                hasImages = true;
+                const te = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+                const mt = te ? te.textContent.trim() : '';
+                imgs.forEach((img, ii) => { const src = img.getAttribute('src'); if (src) timelineImages.push({ src, author, time: mt, isNote, messageIndex: index, imgIndex: ii }); });
+              }
+              const tmp = document.createElement('div');
+              tmp.innerHTML = contentEl.innerHTML;
+              content = (tmp.textContent || tmp.innerText || '').trim().replace(/\s+/g, ' ');
+            }
+            const te = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
+            const time = te ? te.textContent.trim() : '';
+            if (content && content.length > 10) { entries.push({ type: 'message', author, content, time, hasImages, isNote, isSystemMessage, domIndex: index }); msgCount++; }
+          } catch (e) { console.warn('Fallback message extraction error', index, e); }
+        });
+        console.log(`📋 Fallback extraction: ${msgCount} messages`);
+      } else {
+        console.log(`📋 Unified extraction: ${msgCount} messages + ${activityCount} activity events = ${entries.length} total entries`);
+      }
+
+      // Separate message entries for "last 2" and numbering
+      const messages = entries.filter(e => e.type === 'message');
       console.log(`🖼️ Found ${timelineImages.length} images in timeline messages`);
-      // Debug: log each extracted message author, type, and content preview
       messages.forEach((m, i) => {
         const type = m.isNote ? '📝NOTE' : m.isSystemMessage ? '🤖SYS' : '👤CUST';
         console.log(`  📨 [${i+1}] ${type} ${m.author}: "${m.content.slice(0,100)}..."`);
       });
-      
+
       if (messages.length === 0) {
         return { text: '', images: timelineImages };
       }
-      
-      // Number messages chronologically (DOM order = oldest first in Kayako timeline)
-      const numberedMessages = messages.map((msg, i) => {
-        const recency = messages.length - i; // 1 = most recent
+
+      // Build the unified full history in DOM order (oldest → newest),
+      // with activity events interleaved at their correct chronological position.
+      let entryCounter = 0;
+      const fullHistoryLines = entries.map(entry => {
+        if (entry.type === 'activity') {
+          return `[STATUS CHANGE${entry.time ? ` at ${entry.time}` : ''}]: ${entry.content}`;
+        }
+        entryCounter++;
+        const i = messages.indexOf(entry);
+        const recency = messages.length - i;
         const recencyLabel = recency === 1 ? '[MOST RECENT]' : recency === 2 ? '[2nd most recent]' : `[#${i + 1} of ${messages.length}]`;
-        const imgNote = msg.hasImages ? ' [contains image(s)]' : '';
-        const typeLabel = msg.isNote ? '[AGENT NOTE]' : msg.isSystemMessage ? '[SYSTEM]' : '[CUSTOMER/PUBLIC]';
-        return `${recencyLabel} ${typeLabel} ${msg.author}${msg.time ? ` (${msg.time})` : ''}${imgNote}: ${msg.content}`;
+        const imgNote = entry.hasImages ? ' [contains image(s)]' : '';
+        const typeLabel = entry.isNote ? '[AGENT NOTE]' : entry.isSystemMessage ? '[SYSTEM]' : '[CUSTOMER/PUBLIC]';
+        return `${recencyLabel} ${typeLabel} ${entry.author}${entry.time ? ` (${entry.time})` : ''}${imgNote}: ${entry.content}`;
       });
-      
-      // Highlight the last 2 messages as THE current conversation state
+
+      // Highlight the last 2 actual messages as the current conversation state
       const last2 = messages.slice(-2);
       const currentExchangeLines = last2.map((msg, i) => {
         const label = i === last2.length - 1 ? '>>> [MOST RECENT MESSAGE]' : '>>> [PREVIOUS MESSAGE]';
@@ -3124,14 +3177,15 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
       }).join('\n\n');
 
       const text = `[TICKET CONVERSATION - HISTORICAL BACKGROUND]
-This is the ticket history (${messages.length} messages). Use this for BACKGROUND CONTEXT only.
+This is the ticket history (${messages.length} messages + ${activityCount} status events). Use this for BACKGROUND CONTEXT only.
 ⚠️ IMPORTANT: If AGENT WORK NOTES indicate a different current state (e.g., "resolved", "fixed"), the agent notes are CORRECT and this history may be outdated.
+STATUS CHANGE entries reflect real ticket state at that moment in time — treat them as ground truth.
 
 === MOST RECENT MESSAGES (for tone/context) ===
 ${currentExchangeLines}
 
-=== FULL HISTORY (oldest → newest) ===
-${numberedMessages.join('\n\n')}
+=== FULL HISTORY (oldest → newest, status changes interleaved) ===
+${fullHistoryLines.join('\n\n')}
 
 [END TICKET HISTORY]
 
