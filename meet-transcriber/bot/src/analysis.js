@@ -39,16 +39,31 @@ async function anthropicRequest(apiKey, payload) {
   return response.json();
 }
 
+// Appended to the system prompt when running in bot mode.
+// The extension's system prompt references "captions" as text visible in screenshots;
+// the bot additionally supplies verbatim caption text in the user message, so we tell
+// the model to treat that block as high-signal spoken dialogue.
+const BOT_CAPTION_SUFFIX = `
+
+The user message also includes caption text scraped live from the meeting ("Captions from this period"). Treat this as verbatim spoken dialogue — it is the primary source of conversation content. Give it equal or higher weight than what is visible in screenshots.`;
+
 export async function analyzeBatch(batch, previousContext, config) {
-  const systemPrompt = config.technicalMode
+  // Mirror the extension's system prompt exactly, then append the bot-specific caption note.
+  const baseSystemPrompt = config.technicalMode
     ? (config.promptSet?.analysisTechnical || ANALYSIS_SYSTEM_PROMPT_TECHNICAL)
     : (config.promptSet?.analysisStandard || ANALYSIS_SYSTEM_PROMPT_STANDARD);
+  const systemPrompt = baseSystemPrompt + BOT_CAPTION_SUFFIX;
+
+  // User message mirrors background.js lines 448-450 exactly, then prepends capture metadata.
+  const instruction = previousContext
+    ? 'Analyze these new screenshots. Focus on NEW technical details, commands, resources, or changes not mentioned in previous context:'
+    : 'This is the first batch of screenshots. Perform a detailed technical analysis of this Google Meet call:';
 
   const textPrelude = [
     `Capture window: ${batch.startedAtIso} -> ${batch.endedAtIso}`,
     previousContext ? `Previous context:\n${previousContext}` : '',
     batch.captions ? `Captions from this period:\n${batch.captions}` : 'Captions from this period: (none detected)',
-    'Analyze this batch and produce a transcript entry.'
+    instruction
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -78,7 +93,7 @@ export async function analyzeBatch(batch, previousContext, config) {
 
   const body = {
     model: config.analysisModel,
-    max_tokens: 3000,
+    max_tokens: 4000,
     system: systemPrompt,
     messages: [{ role: 'user', content }]
   };

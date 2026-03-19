@@ -15,14 +15,27 @@ function uniqueNonEmptyLines(lines) {
   return out;
 }
 
+/**
+ * Scrapes live speech captions from Google Meet's DOM.
+ * Tries specific caption container selectors first, falls back to aria-live="polite"
+ * only as a last resort, with a noise filter to reject short UI strings (dropdowns, labels).
+ */
 async function scrapeCaptions(page) {
   const candidates = await page.evaluate(() => {
+    // Minimum length to reject short UI noise (language names, labels, single words).
+    const MIN_CAPTION_LENGTH = 15;
+
+    // Priority order: most specific Meet caption selectors first.
+    // [aria-live="polite"] is last-resort only — it also fires on language dropdowns.
     const selectors = [
-      '[aria-live="polite"]',
-      '[data-self-name][data-is-muted]',
-      '[jsname="YSxPC"]',
+      'div[jsname="tgaKEf"]',           // live caption transcript region
+      '[data-speaker-id]',               // individual speaker caption lines
+      '.iOzk7',                          // caption speaker name + text container
+      '.bh44bd',                         // caption text line
+      '[jsname="YSxPC"]',                // known Meet caption jsname
       '.TBMuR.byzRgd',
-      '.a4cQT'
+      '.a4cQT',
+      '[aria-live="polite"]'             // last resort only
     ];
 
     const text = [];
@@ -30,7 +43,7 @@ async function scrapeCaptions(page) {
       const nodes = document.querySelectorAll(selector);
       nodes.forEach((node) => {
         const value = (node.textContent || '').trim();
-        if (value) text.push(value);
+        if (value.length >= MIN_CAPTION_LENGTH) text.push(value);
       });
       if (text.length > 0) break;
     }
