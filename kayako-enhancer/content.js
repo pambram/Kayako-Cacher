@@ -113,6 +113,8 @@ function applyAllEditorSizes() {
                 resizeEditor(defaultMinHeight, defaultMaxHeight);
                 return;
             }
+            // Cache configured min height for collapsed-state detection
+            try { window.__kayakoConfiguredMinHeight = data.editorMinHeight || defaultMinHeight; } catch(_) {}
             resizeEditor(data.editorMinHeight || defaultMinHeight, data.editorMaxHeight || defaultMaxHeight);
         });
         if (!isStorageAvailable()) {
@@ -2673,37 +2675,68 @@ function setupToolbarButtonListeners(editor) {
         `);
     };
 
-    const delegatedHandler = (e) => {
-        if (isInteractive(e.target)) {
-            // Ensure the editor stays expanded even if it blurs
-            setTimeout(() => {
-                activateEditor(editor);
-                // Froala/Kayako may re-render the editor on macro/app actions; re-attach auto-sizing shortly after
-                setTimeout(() => {
-                    try { setupEditorAutoSizing(); } catch(_) {}
-                }, 50);
-            }, 0);
+    // Buttons whose dropdowns/menus get clipped when the editor is collapsed.
+    // When clicked while collapsed, we stop the click, expand, then re-fire it.
+    const NEEDS_EXPAND_FIRST_SELECTOR = '.kayako-ai-dropdown, .kayako-ai-chat-btn, [class*="kayako-ai-chat"], .ko-case_macro-selector__trigger_ltxhiw, .ko-case_macro-selector_trigger__trigger_7wpnlb';
 
-            // If this is the Macro trigger/dropdown trigger, mark macro as active so blur won't shrink
-            const isMacroTrigger = !!e.target.closest('.ko-case_macro-selector__trigger_ltxhiw, .ko-case_macro-selector_trigger__trigger_7wpnlb, .ember-basic-dropdown-trigger');
-            if (isMacroTrigger) {
-                window.__kayakoMacroActive = true;
-                window.__kayakoLastMacroEditor = editor;
-            }
-            // If this is an AI trigger/modal action, keep editor expanded while AI runs
-            const isAITrigger = !!e.target.closest('.kayako-ai-dropdown, [class*="kayako-ai"]');
-            if (isAITrigger) {
-                try {
-                    window.__kayakoAIActive = true;
-                    window.__kayakoLastAIEditor = editor;
-                } catch (_) {}
-            }
+    const isCollapsed = () => {
+        try {
+            const h = parseInt(editor.style.height || '0', 10);
+            const minH = parseInt(editor.dataset.autoSizeHeight || '0', 10);
+            // Consider collapsed if height is at or below configured min + small tolerance
+            const storedMin = window.__kayakoConfiguredMinHeight || 44;
+            return h <= (storedMin + 10);
+        } catch (_) { return false; }
+    };
+
+    const delegatedHandler = (e) => {
+        if (!isInteractive(e.target)) return;
+
+        const needsExpandFirst = !!e.target.closest(NEEDS_EXPAND_FIRST_SELECTOR);
+
+        // If collapsed and this button opens a dropdown that would be clipped, expand first then re-fire
+        if (needsExpandFirst && isCollapsed()) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            const clickedEl = e.target;
+            activateEditor(editor);
+            // Wait for the CSS transition (300ms) + buffer, then re-fire the click
+            setTimeout(() => {
+                try { clickedEl.click(); } catch(_) {}
+                try { setupEditorAutoSizing(); } catch(_) {}
+            }, 340);
+            // Set flags right away so blur doesn't collapse mid-animation
+            const isAITrigger2 = !!clickedEl.closest('.kayako-ai-dropdown, [class*="kayako-ai"]');
+            if (isAITrigger2) { window.__kayakoAIActive = true; window.__kayakoLastAIEditor = editor; }
+            const isMacroTrigger2 = !!clickedEl.closest('.ko-case_macro-selector__trigger_ltxhiw, .ko-case_macro-selector_trigger__trigger_7wpnlb');
+            if (isMacroTrigger2) { window.__kayakoMacroActive = true; window.__kayakoLastMacroEditor = editor; }
+            return;
+        }
+
+        // Already expanded (or doesn't need expand-first): just keep editor expanded
+        setTimeout(() => {
+            activateEditor(editor);
+            setTimeout(() => { try { setupEditorAutoSizing(); } catch(_) {} }, 50);
+        }, 0);
+
+        // If this is the Macro trigger/dropdown trigger, mark macro as active so blur won't shrink
+        const isMacroTrigger = !!e.target.closest('.ko-case_macro-selector__trigger_ltxhiw, .ko-case_macro-selector_trigger__trigger_7wpnlb, .ember-basic-dropdown-trigger');
+        if (isMacroTrigger) {
+            window.__kayakoMacroActive = true;
+            window.__kayakoLastMacroEditor = editor;
+        }
+        // If this is an AI trigger/modal action, keep editor expanded while AI runs
+        const isAITrigger = !!e.target.closest('.kayako-ai-dropdown, [class*="kayako-ai"]');
+        if (isAITrigger) {
+            try {
+                window.__kayakoAIActive = true;
+                window.__kayakoLastAIEditor = editor;
+            } catch (_) {}
         }
     };
 
-    // Use a non-capturing click listener so we don't interfere with the button's own handlers.
-    // Previously mousedown+capture was swallowing clicks on new toolbar buttons (AI chat, etc.).
-    toolbar.addEventListener('click', delegatedHandler, false);
+    // Use capture so we can intercept clicks on collapsed-editor buttons before they open clipped dropdowns
+    toolbar.addEventListener('click', delegatedHandler, true);
 
     toolbar.dataset.autoSizeListenersSetup = 'true';
 }
