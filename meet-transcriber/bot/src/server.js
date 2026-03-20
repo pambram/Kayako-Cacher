@@ -6,7 +6,7 @@ import { parseCliArgs, loadConfig } from './config.js';
 import { JobManager } from './job-manager.js';
 
 const cliArgs = parseCliArgs(process.argv.slice(2));
-const config = loadConfig(cliArgs, { requireMeetUrl: false });
+const config = loadConfig(cliArgs, { requireMeetUrl: false, requireSecrets: false });
 const app = express();
 const port = Number(process.env.BOT_UI_PORT || cliArgs.port || 3030);
 const jobManager = new JobManager(config);
