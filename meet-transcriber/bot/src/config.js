@@ -75,6 +75,7 @@ export function parseCliArgs(argv) {
 
 export function loadConfig(cliArgs = {}, options = {}) {
   const requireMeetUrl = options.requireMeetUrl !== false;
+  const requireSecrets = options.requireSecrets !== false;
   const explicitChromePath = cliArgs['chrome-path'] || process.env.CHROME_BIN || '';
   const resolvedChromePath = explicitChromePath || detectChromePath();
   const rawMeetUrl = cliArgs['meet-url'] || process.env.MEET_URL || DEFAULTS.meetUrl;
@@ -159,10 +160,10 @@ export function loadConfig(cliArgs = {}, options = {}) {
   if (requireMeetUrl && !config.meetUrl) {
     throw new Error('Missing MEET_URL. Pass --meet-url or set MEET_URL.');
   }
-  if (!config.anthropicApiKey) {
+  if (requireSecrets && !config.anthropicApiKey) {
     throw new Error('Missing ANTHROPIC_API_KEY.');
   }
-  if (!config.chromePath) {
+  if (requireSecrets && !config.chromePath) {
     throw new Error('Could not locate Chrome automatically. Set CHROME_BIN or pass --chrome-path.');
   }
 

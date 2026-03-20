@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meet Fleet — Bot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style-claude.css">
+</head>
+<body>
+
+  <!-- ─── Header ──────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="app-logo">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+          <rect width="26" height="26" rx="7" fill="#818cf8" fill-opacity="0.12"/>
+          <circle cx="13" cy="13" r="4.5" fill="#818cf8"/>
+          <circle cx="5"  cy="13" r="2.2" fill="#818cf8" opacity="0.45"/>
+          <circle cx="21" cy="13" r="2.2" fill="#818cf8" opacity="0.45"/>
+          <circle cx="13" cy="5"  r="2.2" fill="#818cf8" opacity="0.45"/>
+          <circle cx="13" cy="21" r="2.2" fill="#818cf8" opacity="0.45"/>
+        </svg>
+      </div>
+      <h1 class="app-title">Meet Fleet</h1>
+      <div class="health-indicator" aria-live="polite">
+        <span class="health-dot" id="healthDot"></span>
+        <span id="healthLabel">connecting…</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="refresh-info" id="refreshInfo"></span>
+      <span class="model-badge" title="Built by Claude Sonnet (claude-4.6-sonnet)">Claude Sonnet</span>
+    </div>
+  </header>
+
+  <!-- ─── Stats Bar ────────────────────────────────────────────── -->
+  <div class="stats-bar" role="status" aria-label="Fleet overview">
+    <div class="stat-item">
+      <span class="stat-value" id="statTotal">—</span>
+      <span class="stat-label">Total</span>
+    </div>
+    <div class="stat-item stat-running">
+      <span class="stat-value" id="statRunning">—</span>
+      <span class="stat-label">Running</span>
+    </div>
+    <div class="stat-item stat-success">
+      <span class="stat-value" id="statCompleted">—</span>
+      <span class="stat-label">Completed</span>
+    </div>
+    <div class="stat-item stat-warning">
+      <span class="stat-value" id="statPending">—</span>
+      <span class="stat-label">Pending</span>
+    </div>
+    <div class="stat-item stat-danger">
+      <span class="stat-value" id="statFailed">—</span>
+      <span class="stat-label">Failed</span>
+    </div>
+  </div>
+
+  <!-- ─── Tab Navigation ──────────────────────────────────────── -->
+  <nav class="tab-nav" role="tablist">
+    <button class="tab-btn tab-active" data-tab="fleet" role="tab" aria-selected="true">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <rect x="1" y="1" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="8" y="1" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="1" y="8" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="8" y="8" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+      <span>Fleet</span>
+    </button>
+    <button class="tab-btn" data-tab="new-meeting" role="tab" aria-selected="false">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M7 4v6M4 7h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span>New Meeting</span>
+    </button>
+    <button class="tab-btn" data-tab="configuration" role="tab" aria-selected="false">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.93 2.93l1.41 1.41M9.66 9.66l1.41 1.41M2.93 11.07l1.41-1.41M9.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>
+      <span>Configuration</span>
+    </button>
+    <button class="tab-btn" data-tab="event-log" role="tab" aria-selected="false">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M4 5h6M4 7h6M4 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>
+      <span>Event Log</span>
+    </button>
+  </nav>
+
+  <!-- ─── Main Content ─────────────────────────────────────────── -->
+  <main class="app-main">
+
+    <!-- Fleet Tab -->
+    <div class="tab-panel tab-active" data-panel="fleet" role="tabpanel">
+      <div class="fleet-controls">
+        <label class="toggle-label">
+          <input type="checkbox" id="hideFailedJobs" checked>
+          <span>Hide failed &amp; cancelled</span>
+        </label>
+      </div>
+      <div class="jobs-grid" id="jobs" aria-live="polite" aria-label="Bot fleet"></div>
+    </div>
+
+    <!-- New Meeting Tab -->
+    <div class="tab-panel" data-panel="new-meeting" role="tabpanel">
+      <div class="new-meeting-container">
+        <div class="form-card">
+          <h2>Deploy a Bot</h2>
+
+          <div class="form-group">
+            <label for="meetUrl">Meeting link</label>
+            <input id="meetUrl" type="url" class="input input-lg"
+                   placeholder="https://meet.google.com/xxx-yyy-zzz"
+                   autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="form-group">
+            <label class="toggle-label">
+              <input id="showScheduleToggle" type="checkbox">
+              <span>Schedule for later</span>
+            </label>
+          </div>
+          <div id="scheduleSection" style="display:none" class="form-group">
+            <label for="scheduledAt">Scheduled time</label>
+            <input id="scheduledAt" type="datetime-local" class="input">
+          </div>
+
+          <div class="divider"></div>
+
+          <h3>Capture Options</h3>
+
+          <div class="form-group">
+            <label class="toggle-label">
+              <input id="liveEnableScreenshotClassifier" type="checkbox">
+              <span>Intelligent screenshot capture</span>
+            </label>
+            <p class="form-hint">AI classifies frames and saves only the most relevant ones</p>
+          </div>
+
+          <div class="form-group">
+            <label for="liveMeetingObjective">
+              Meeting objective
+              <span class="label-optional">optional</span>
+            </label>
+            <input id="liveMeetingObjective" class="input"
+                   placeholder="e.g. capture key decisions and action items">
+          </div>
+
+          <div class="form-actions">
+            <button id="joinNow" class="btn btn-primary btn-lg">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              Join Meeting
+            </button>
+            <button id="saveObjectiveBtn" class="btn btn-ghost">Save objective</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Configuration Tab -->
+    <div class="tab-panel" data-panel="configuration" role="tabpanel">
+      <div class="config-grid">
+
+        <div class="form-card">
+          <h3>General</h3>
+          <div class="form-group">
+            <label class="toggle-label">
+              <input id="cfgTechnicalMode" type="checkbox">
+              <span>Ultra technical mode</span>
+            </label>
+            <p class="form-hint">Enables deep technical analysis in transcripts</p>
+          </div>
+          <div class="form-group">
+            <label class="toggle-label">
+              <input id="cfgForceGoogleSignIn" type="checkbox">
+              <span>Force Google sign-in</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="cfgGuestName">Bot display name</label>
+            <input id="cfgGuestName" class="input" style="max-width:220px">
+          </div>
+          <div class="form-group">
+            <label for="cfgArtifactUploadEndpoint">Artifact upload endpoint</label>
+            <input id="cfgArtifactUploadEndpoint" class="input"
+                   placeholder="https://…lambda-url…/">
+          </div>
+        </div>
+
+        <div class="form-card">
+          <h3>Capture</h3>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="cfgCaptureInterval">Interval (sec)</label>
+              <input id="cfgCaptureInterval" type="number" min="1" class="input input-sm">
+            </div>
+            <div class="form-group">
+              <label for="cfgBatchSize">Batch size</label>
+              <input id="cfgBatchSize" type="number" min="1" class="input input-sm">
+            </div>
+            <div class="form-group">
+              <label for="cfgScreenshotQuality">Quality (5–100)</label>
+              <input id="cfgScreenshotQuality" type="number" min="5" max="100" step="5" class="input input-sm">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <h3>AI Models</h3>
+          <div class="models-grid">
+            <div class="form-group">
+              <label for="cfgAnalysisModel">Analysis</label>
+              <select id="cfgAnalysisModel" class="select"></select>
+            </div>
+            <div class="form-group">
+              <label for="cfgSummaryModel">Summary</label>
+              <select id="cfgSummaryModel" class="select"></select>
+            </div>
+            <div class="form-group">
+              <label for="cfgTldrModel">TL;DR</label>
+              <select id="cfgTldrModel" class="select"></select>
+            </div>
+            <div class="form-group">
+              <label for="cfgArcModel">Story Arc</label>
+              <select id="cfgArcModel" class="select"></select>
+            </div>
+            <div class="form-group">
+              <label for="cfgBulletsModel">Bullets</label>
+              <select id="cfgBulletsModel" class="select"></select>
+            </div>
+            <div class="form-group">
+              <label for="cfgScreenshotClassifierModel">Classifier</label>
+              <select id="cfgScreenshotClassifierModel" class="select"></select>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="config-actions">
+        <button id="saveConfigBtn" class="btn btn-primary">Save configuration</button>
+      </div>
+    </div>
+
+    <!-- Event Log Tab -->
+    <div class="tab-panel" data-panel="event-log" role="tabpanel">
+      <div class="event-controls">
+        <input id="eventJobFilter"  class="input" placeholder="Filter by job ID…">
+        <input id="eventTextFilter" class="input" placeholder="Filter by event type…">
+        <button id="copyEventsBtn"   class="btn btn-ghost">Copy events</button>
+        <button id="clearFiltersBtn" class="btn btn-ghost">Clear filters</button>
+      </div>
+      <div class="event-log" id="events" aria-live="polite" aria-label="Event log"></div>
+    </div>
+
+  </main>
+
+  <!-- ─── Toast Container ───────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer" aria-live="assertive"></div>
+
+  <script src="./app-claude.js"></script>
+</body>
+</html>
