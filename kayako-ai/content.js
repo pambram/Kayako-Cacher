@@ -2302,9 +2302,35 @@ What investigation did CS carry out:`,
       // What the UI should show as "Current text" and what REPLACE operates on: PR placeholder (or whole text when no template)
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
-      // Extract customer name for personalization
-      const customerName = this.extractCustomerName();
-      console.log('👤 Customer name:', customerName || '(not found)');
+      // Extract customer name for personalization.
+      // Prefer the author of the most recent PUBLIC (non-note) message over the sidebar requester,
+      // because the agent may be replying to someone other than the original ticket creator
+      // (e.g., a campus coordinator who joined the thread).
+      const sidebarName = this.extractCustomerName();
+      const mostRecentPublicAuthor = (() => {
+        try {
+          const publicMessages = document.querySelectorAll(
+            '.message-or-note .ko-timeline-2_list_item__post_1oksrd'
+          );
+          if (!publicMessages.length) return null;
+          const last = publicMessages[publicMessages.length - 1];
+          const authorEl = last.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+          const name = authorEl ? authorEl.textContent.trim() : null;
+          // Exclude known system/bot authors
+          const bots = ['ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis',
+            'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'Cu Chulainn AI Manager',
+            'CE Maintenance Bot', 'System', 'Automation'];
+          return name && !bots.some(b => name.includes(b)) ? name : null;
+        } catch (e) { return null; }
+      })();
+      // Use most-recent public author if it differs from the sidebar requester,
+      // but only when the user's prompt suggests addressing someone by name/role
+      // or when the last message author is clearly different (e.g., CC, coordinator)
+      const customerName = mostRecentPublicAuthor || sidebarName;
+      console.log('👤 Customer name:', customerName || '(not found)',
+        mostRecentPublicAuthor && mostRecentPublicAuthor !== sidebarName
+          ? `(using last public author: ${mostRecentPublicAuthor}, sidebar: ${sidebarName})`
+          : '');
 
       // Pass the template structure (up to Additional Context) so LLM can see any existing signature
       let rawTemplate = '';
@@ -2436,9 +2462,10 @@ INTERPRETATION GUIDE (common patterns):
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
       fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
       
-      // Final reminder about agent notes priority (placed after all context)
+      // Final reminder: agent notes provide current context but do NOT override the user's prompt.
+      // The prompt is the actual instruction; notes are supporting background.
       if (contextText) {
-        fullPrompt += `\n\n🔴 FINAL REMINDER: The AGENT WORK NOTES at the top say: "${contextText.slice(0, 200).replace(/\n/g, ' ').trim()}". Base your response on THIS, not on old timeline messages.`;
+        fullPrompt += `\n\n📌 CONTEXT NOTE: The agent has added these working notes: "${contextText.slice(0, 200).replace(/\n/g, ' ').trim()}". Use this as supporting context if relevant, but follow the agent's instruction above ("${customPrompt}") as the primary directive.`;
       }
 
 
