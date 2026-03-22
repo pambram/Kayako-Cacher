@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meet Bot Scheduler</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #111; color: #eee; }
+    h1 { margin-top: 0; }
+    .panel { background: #1c1c1c; border: 1px solid #333; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    input, button, select { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #222; color: #eee; }
+    input[type="checkbox"] { width: auto; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .job { border-top: 1px solid #333; padding: 10px 0; }
+    .links a { color: #80b8ff; display: inline-block; margin-right: 8px; }
+    .muted { color: #999; font-size: 12px; }
+    code { background: #222; padding: 2px 4px; border-radius: 4px; }
+    .events { max-height: 220px; overflow: auto; border: 1px solid #333; border-radius: 6px; padding: 8px; background: #151515; }
+    .jobsList { max-height: 520px; overflow-y: auto; }
+    .eventLine { font-family: monospace; font-size: 12px; margin-bottom: 4px; }
+    .eventTs { color: #8ab4f8; margin-right: 8px; }
+    .badge { padding: 2px 6px; border: 1px solid #555; border-radius: 999px; font-size: 11px; }
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>Meet Bot Scheduler (Local)</h1>
+  <div class="panel">
+    <div class="row">
+      <label for="meetUrl">Meet link</label>
+      <input id="meetUrl" style="min-width:420px" placeholder="https://meet.google.com/xxx-yyy-zzz">
+      <button id="joinNow">Join now</button>
+      <button id="toggleScheduleBtn" type="button">Show schedule</button>
+    </div>
+    <div class="row">
+      <label><input id="liveEnableScreenshotClassifier" type="checkbox"> Save captured screenshots intelligently</label>
+      <label for="liveMeetingObjective">Meeting objective</label>
+      <input id="liveMeetingObjective" style="min-width:420px" placeholder="Optional objective to guide screenshot selection">
+      <button id="saveObjectiveBtn" type="button">Save objective</button>
+    </div>
+    <div class="row" id="scheduleRow" style="display:none">
+      <label for="scheduledAt">Schedule (optional)</label>
+      <input id="scheduledAt" type="datetime-local">
+    </div>
+    <div class="muted">No auth by design for localhost iteration.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Configuration</h2>
+    <div class="row"><button id="toggleConfigBtn">Show config</button></div>
+    <div id="configBody" style="display:none">
+    <div class="row">
+      <label><input id="cfgTechnicalMode" type="checkbox"> Ultra technical mode</label>
+      <label><input id="cfgForceGoogleSignIn" type="checkbox"> Force Google sign-in</label>
+    </div>
+    <div class="row">
+      <label>Capture interval</label><input id="cfgCaptureInterval" type="number" min="1" style="width:90px">
+      <label>Batch size</label><input id="cfgBatchSize" type="number" min="1" style="width:90px">
+      <label>Image quality</label><input id="cfgScreenshotQuality" type="number" min="5" max="100" step="5" style="width:90px">
+    </div>
+    <div class="row">
+      <label>Artifact upload endpoint</label><input id="cfgArtifactUploadEndpoint" style="min-width:420px" placeholder="https://...lambda-url.../">
+    </div>
+    <div class="row">
+      <label>Guest name</label><input id="cfgGuestName" style="width:180px">
+      <label>Analysis model</label><select id="cfgAnalysisModel" style="width:170px"></select>
+      <label>Summary model</label><select id="cfgSummaryModel" style="width:170px"></select>
+      <label>TLDR model</label><select id="cfgTldrModel" style="width:170px"></select>
+    </div>
+    <div class="row">
+      <label>Arc model</label><select id="cfgArcModel" style="width:170px"></select>
+      <label>Bullets model</label><select id="cfgBulletsModel" style="width:170px"></select>
+    </div>
+    <div class="row">
+      <label>Classifier model</label><select id="cfgScreenshotClassifierModel" style="width:170px"></select>
+    </div>
+    <div class="row"><button id="saveConfigBtn">Save config</button></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Jobs</h2>
+    <div class="row">
+      <label><input id="hideFailedJobs" type="checkbox" checked> Hide failed/cancelled jobs</label>
+    </div>
+    <div id="jobs" class="jobsList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Live Event Stream</h2>
+    <div class="row">
+      <button id="copyEventsBtn" type="button">Copy visible events</button>
+    </div>
+    <div class="row">
+      <label for="eventJobFilter">Job</label>
+      <input id="eventJobFilter" placeholder="job-...">
+      <label for="eventTextFilter">Event contains</label>
+      <input id="eventTextFilter" placeholder="capturing / failed / checkpoint">
+    </div>
+    <div id="events" class="events"></div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

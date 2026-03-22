@@ -132,17 +132,20 @@ async function disableMicAndCamera(page) {
 
   try {
     // Strict safety: only click explicit OFF controls; never generic toggles.
+    // Covers both pre-join lobby labels and in-meeting toolbar labels.
     const micClicked = await clickOffControlByLabel([
       'turn off microphone',
-      'mute microphone'
+      'mute microphone',
+      'mute'
     ]);
     await sleep(500);
     const camClicked = await clickOffControlByLabel([
       'turn off camera',
-      'camera is on'
+      'camera is on',
+      'stop video'
     ]);
     if (micClicked || camClicked) {
-      console.log('Pre-join AV controls clicked:', { micClicked, camClicked });
+      console.log('AV controls clicked:', { micClicked, camClicked });
     }
   } catch (error) {
     console.warn('Warning: could not click explicit mic/cam OFF controls', error.message);

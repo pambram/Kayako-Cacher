@@ -637,10 +637,21 @@ label {
   display: flex;
   gap: var(--sp-3);
   align-items: center;
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--sp-2);
   flex-wrap: wrap;
 }
 .event-controls .input { width: 200px; flex-shrink: 0; }
+
+.event-filter-presets {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  margin-bottom: var(--sp-4);
+  flex-wrap: wrap;
+}
+.preset-label { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+.btn-xs { padding: 3px 10px; font-size: 0.72rem; }
+.btn-active { background: var(--accent-muted, rgba(129,140,248,0.18)); border-color: var(--accent, #818cf8); color: var(--accent, #818cf8); }
 
 .event-log {
   background: var(--bg-elevated);

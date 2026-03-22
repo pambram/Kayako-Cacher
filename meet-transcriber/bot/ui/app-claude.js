@@ -75,6 +75,7 @@ const STATUS_BADGE_CLASS = {
   scheduled:  'badge-warning',
   cancelling: 'badge-warning',
   completed:  'badge-success',
+  ended:      'badge-success',
   failed:     'badge-danger',
   cancelled:  'badge-neutral'
 };
@@ -91,7 +92,7 @@ function renderStatusDot(job) {
   if (['pending', 'scheduled', 'cancelling'].includes(job.status)) {
     return '<span class="status-dot dot-warning"></span>';
   }
-  if (job.status === 'completed') {
+  if (job.status === 'completed' || job.status === 'ended') {
     return '<span class="status-dot dot-success"></span>';
   }
   return '<span class="status-dot dot-danger"></span>';
@@ -194,7 +195,7 @@ function renderSummarySection(job) {
 
 function renderJobCard(job) {
   const duration = formatDuration(job.startedAt, job.endedAt);
-  const isInactive = job.status === 'failed' || job.status === 'cancelled';
+  const isInactive = job.status === 'failed' || job.status === 'cancelled' || job.status === 'ended';
 
   const classifierLine = job.classifierConfig?.enabled
     ? `<div class="meta-item">
@@ -257,6 +258,7 @@ function renderStats(jobs) {
     if (job.status === 'running' || job.status === 'cancelling') counts.running++;
     else if (job.status === 'completed')                          counts.completed++;
     else if (job.status === 'pending' || job.status === 'scheduled') counts.pending++;
+    else if (job.status === 'ended')                                 counts.completed++;
     else if (job.status === 'failed' || job.status === 'cancelled')  counts.failed++;
   }
   document.getElementById('statTotal').textContent     = counts.total;
@@ -274,8 +276,13 @@ function renderJobs(jobs) {
   const visible   = hideFailed
     ? jobs.filter(j => j.status !== 'failed' && j.status !== 'cancelled')
     : jobs;
+  // 'ended' (user-left) and 'completed' are always shown — they are past meetings.
 
   if (!visible.length) {
+    const hiddenCount = jobs.length - visible.length;
+    const hiddenMsg = hiddenCount > 0
+      ? `<p class="muted" style="margin-top:8px;font-size:0.82rem">${hiddenCount} past meeting${hiddenCount !== 1 ? 's' : ''} hidden by filter. <a href="#" id="showAllLink" style="color:var(--accent,#818cf8)">Show all</a></p>`
+      : '';
     root.innerHTML = `
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true">
@@ -286,8 +293,16 @@ function renderJobs(jobs) {
           <circle cx="24" cy="12" r="3.5" stroke="currentColor" stroke-width="2"/>
           <circle cx="24" cy="36" r="3.5" stroke="currentColor" stroke-width="2"/>
         </svg>
-        <p>No bots in the fleet yet.<br>Head to <strong>New Meeting</strong> to deploy one.</p>
+        <p>${hiddenCount > 0 ? 'All meetings are hidden by the current filter.' : 'No bots in the fleet yet.<br>Head to <strong>New Meeting</strong> to deploy one.'}</p>
+        ${hiddenMsg}
       </div>`;
+    if (hiddenCount > 0) {
+      root.querySelector('#showAllLink')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        const cb = document.getElementById('hideFailedJobs');
+        if (cb) { cb.checked = false; refresh(); }
+      });
+    }
     return;
   }
 
@@ -406,7 +421,10 @@ function renderEventPanel(jobs) {
 const MODEL_OPTIONS = [
   'claude-haiku-4-5',
   'claude-sonnet-4-6',
-  'claude-opus-4-6'
+  'claude-opus-4-6',
+  'gpt-5.4-nano',
+  'gpt-5.4-mini',
+  'gpt-5.4'
 ];
 
 function setModelOptions(selectId, currentValue) {
@@ -435,6 +453,9 @@ async function loadConfigIntoForm() {
   setModelOptions('cfgArcModel',                 cfg.arcModel ?? '');
   setModelOptions('cfgBulletsModel',             cfg.bulletsModel ?? '');
   setModelOptions('cfgScreenshotClassifierModel', cfg.screenshotClassifierModel ?? '');
+  document.getElementById('cfgEnableMetaAnalysis').checked   = Boolean(cfg.enableMetaAnalysis);
+  document.getElementById('cfgMetaAnalysisInterval').value  = cfg.metaAnalysisInterval ?? 5;
+  document.getElementById('cfgMetaAnalysisWindow').value    = cfg.metaAnalysisWindow ?? 5;
 }
 
 function collectConfigFromForm() {
@@ -452,7 +473,10 @@ function collectConfigFromForm() {
     tldrModel:                  document.getElementById('cfgTldrModel').value,
     arcModel:                   document.getElementById('cfgArcModel').value,
     bulletsModel:               document.getElementById('cfgBulletsModel').value,
-    screenshotClassifierModel:  document.getElementById('cfgScreenshotClassifierModel').value
+    screenshotClassifierModel:  document.getElementById('cfgScreenshotClassifierModel').value,
+    enableMetaAnalysis:         document.getElementById('cfgEnableMetaAnalysis').checked,
+    metaAnalysisInterval:       Number(document.getElementById('cfgMetaAnalysisInterval').value),
+    metaAnalysisWindow:         Number(document.getElementById('cfgMetaAnalysisWindow').value)
   };
 }
 
@@ -493,13 +517,38 @@ function switchTab(tabName) {
 /* ─── Refresh Loop ────────────────────────────────────────────── */
 
 let lastRefreshAt = null;
+let lastJobsHash = '';
+let configLoaded = false;
 
 async function refresh() {
-  const jobs = await fetchJobs();
+  let jobs = [];
+  try {
+    jobs = await fetchJobs();
+  } catch (_err) {
+    return;
+  }
+
+  const filterState = document.getElementById('hideFailedJobs')?.checked;
+  const hash = JSON.stringify({ filter: filterState, jobs: jobs.map(j => ({ id: j.id, status: j.status, lastEvent: j.lastEvent, updatedAt: j.updatedAt })) });
+  const jobsChanged = hash !== lastJobsHash;
+  lastJobsHash = hash;
+
   renderStats(jobs);
-  renderJobs(jobs);
+  if (jobsChanged) {
+    renderJobs(jobs);
+  }
   renderEventPanel(jobs);
   lastRefreshAt = Date.now();
+
+  // Re-attempt config load if server was down on initial page load.
+  if (!configLoaded) {
+    try {
+      await loadConfigIntoForm();
+      configLoaded = true;
+    } catch (_err) {
+      // Will retry next cycle.
+    }
+  }
 }
 
 /* ─── Objective Save (debounced) ──────────────────────────────── */
@@ -609,12 +658,32 @@ document.getElementById('copyEventsBtn').addEventListener('click', async () => {
 document.getElementById('clearFiltersBtn').addEventListener('click', () => {
   document.getElementById('eventJobFilter').value  = '';
   document.getElementById('eventTextFilter').value = '';
+  document.querySelectorAll('[data-preset]').forEach((btn) => btn.classList.remove('btn-active'));
   refresh();
+});
+
+document.querySelectorAll('[data-preset]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const preset = btn.getAttribute('data-preset');
+    const textInput = document.getElementById('eventTextFilter');
+    const isActive = btn.classList.contains('btn-active');
+    document.querySelectorAll('[data-preset]').forEach((b) => b.classList.remove('btn-active'));
+    if (isActive) {
+      textInput.value = '';
+    } else {
+      textInput.value = preset;
+      btn.classList.add('btn-active');
+    }
+    refresh();
+  });
 });
 
 document.getElementById('hideFailedJobs').addEventListener('change', () => refresh());
 document.getElementById('eventJobFilter').addEventListener('input',  () => refresh());
-document.getElementById('eventTextFilter').addEventListener('input', () => refresh());
+document.getElementById('eventTextFilter').addEventListener('input', () => {
+  document.querySelectorAll('[data-preset]').forEach((btn) => btn.classList.remove('btn-active'));
+  refresh();
+});
 
 /* ─── "Last refreshed" ticker ─────────────────────────────────── */
 
@@ -632,7 +701,7 @@ const savedTab = (() => { try { return localStorage.getItem('fleet-active-tab');
 if (savedTab) switchTab(savedTab);
 
 checkHealth();
-loadConfigIntoForm().catch(() => {});
+loadConfigIntoForm().then(() => { configLoaded = true; }).catch(() => { configLoaded = false; });
 refresh();
 setInterval(refresh,      3000);
 setInterval(checkHealth, 15000);

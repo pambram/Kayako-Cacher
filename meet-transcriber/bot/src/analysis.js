@@ -3,6 +3,10 @@ import {
   ANALYSIS_SYSTEM_PROMPT_TECHNICAL
 } from './prompts.js';
 
+function isOpenAIModel(model) {
+  return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o1') || String(model || '').startsWith('o3');
+}
+
 function toAnthropicImagePayload(base64Jpeg) {
   return {
     type: 'image',
@@ -10,6 +14,16 @@ function toAnthropicImagePayload(base64Jpeg) {
       type: 'base64',
       media_type: 'image/jpeg',
       data: base64Jpeg
+    }
+  };
+}
+
+function toOpenAIImagePayload(base64Jpeg) {
+  return {
+    type: 'image_url',
+    image_url: {
+      url: `data:image/jpeg;base64,${base64Jpeg}`,
+      detail: 'low'
     }
   };
 }
@@ -34,6 +48,30 @@ async function anthropicRequest(apiKey, payload) {
       errorBody = await response.text();
     }
     throw new Error(`Anthropic request failed (${response.status}): ${errorBody}`);
+  }
+
+  return response.json();
+}
+
+async function openaiRequest(apiKey, payload) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    let errorBody = '';
+    try {
+      const parsed = await response.json();
+      errorBody = parsed?.error?.message || JSON.stringify(parsed);
+    } catch (error) {
+      errorBody = await response.text();
+    }
+    throw new Error(`OpenAI request failed (${response.status}): ${errorBody}`);
   }
 
   return response.json();
@@ -84,6 +122,24 @@ export async function analyzeBatch(batch, previousContext, config) {
 
   if (validScreenshots.length === 0) {
     throw new Error('No valid screenshots available for analysis batch.');
+  }
+
+  if (isOpenAIModel(config.analysisModel)) {
+    const messageContent = [
+      { type: 'text', text: textPrelude },
+      ...validScreenshots.map(toOpenAIImagePayload)
+    ];
+    const body = {
+      model: config.analysisModel,
+      max_tokens: 4000,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: messageContent }
+      ]
+    };
+    const data = await openaiRequest(config.openaiApiKey, body);
+    const analysisText = data.choices?.[0]?.message?.content?.trim() || '';
+    return { text: analysisText, raw: data };
   }
 
   const content = [

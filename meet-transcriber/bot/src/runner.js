@@ -4,7 +4,7 @@ import { startMeetSession } from './meet-session.js';
 import { startCaptureLoop } from './capture.js';
 import { analyzeBatch } from './analysis.js';
 import { classifyAndUploadKtScreenshot } from './screenshot-classifier.js';
-import { generateTldr, generateStoryArc, generateBulletPoints } from './summarize.js';
+import { generateTldr, generateStoryArc, generateBulletPoints, generateMetaSummary } from './summarize.js';
 import { uploadArtifacts, notifyDelivery, uploadCheckpointArtifacts, sendLifecycleEmail } from './delivery.js';
 import { loadExtensionPromptSet } from './extension-compat.js';
 
@@ -167,6 +167,7 @@ export async function runMeetingBot(config, hooks = {}) {
 
   const entries = [];
   let previousContext = '';
+  let batchCounter = 0;
   let session;
   let capture;
   let captureFatalError = null;
@@ -287,14 +288,57 @@ export async function runMeetingBot(config, hooks = {}) {
             content: finalContent
           };
           entries.push(entry);
+          batchCounter += 1;
           await appendLiveTranscriptEntry(checkpoint.liveTranscriptPath, entry);
           await writeLiveState(checkpoint.statePath, entries, config.meetUrl);
           previousContext = analysis.text;
           emit(hooks, 'batch_analyzed', { entriesCount: entries.length, batchEnd: batch.endedAtIso });
           await maybeUploadCheckpoint(false);
+
+          // Periodic meta-summary — mirrors extension's Auto-Summary Generation.
+          if (
+            config.enableMetaAnalysis &&
+            batchCounter % (config.metaAnalysisInterval || 5) === 0 &&
+            entries.length > 0
+          ) {
+            const windowMs = (config.metaAnalysisWindow || 5) * 60 * 1000;
+            const windowStart = new Date(Date.now() - windowMs).toISOString();
+            const recentEntries = entries.filter((e) => e.timestamp >= windowStart);
+            if (recentEntries.length > 0) {
+              try {
+                emit(hooks, 'meta_summary_running', {
+                  batch: batchCounter,
+                  window: config.metaAnalysisWindow || 5,
+                  entryCount: recentEntries.length
+                });
+                const metaSummary = await generateMetaSummary(recentEntries, config);
+                emit(hooks, 'meta_summary', {
+                  batch: batchCounter,
+                  window: config.metaAnalysisWindow || 5,
+                  summary: metaSummary
+                });
+                await fs.appendFile(
+                  checkpoint.liveTranscriptPath,
+                  `\n--- Auto-Summary (batch ${batchCounter}) ---\n${metaSummary}\n`,
+                  'utf8'
+                );
+              } catch (metaError) {
+                emit(hooks, 'meta_summary_error', { error: metaError.message });
+              }
+            }
+          }
         } catch (error) {
           if (error instanceof RunAbortedError) {
             resolveCaptureFatal('aborted');
+            return;
+          }
+          // Hard quota limit (400) — stop analysis for this run rather than keep hammering.
+          const isHardQuota = error.message.includes('(400)') && error.message.toLowerCase().includes('usage limits');
+          if (isHardQuota) {
+            console.error('Anthropic hard quota limit reached; analysis disabled for this run:', error.message);
+            emit(hooks, 'analysis_quota_exceeded', { error: error.message });
+            // Disable analysis for remaining batches by replacing onBatch with a no-op.
+            capture?.disableAnalysis?.();
             return;
           }
           emit(hooks, 'analysis_error', { error: error.message });
@@ -324,9 +368,9 @@ export async function runMeetingBot(config, hooks = {}) {
     }
   }
 
-  if (!abortSignal?.aborted) {
-    await maybeUploadCheckpoint(true);
-  }
+  // Always force final checkpoint upload so S3 has the latest transcript
+  // even when the user leaves or the session is aborted.
+  await maybeUploadCheckpoint(true);
 
   if (captureFatalError) {
     emit(hooks, 'warning', { message: 'Capture fatal stop occurred; using partial transcript.' });

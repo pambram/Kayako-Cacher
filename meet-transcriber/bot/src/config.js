@@ -31,6 +31,9 @@ const DEFAULTS = {
   enableStealth: true,
   checkpointUploadEnabled: true,
   checkpointUploadMinutes: 5,
+  enableMetaAnalysis: false,
+  metaAnalysisInterval: 5,
+  metaAnalysisWindow: 5,
   enableScreenshotClassifier: false,
   screenshotClassifierModel: 'claude-haiku-4-5',
   meetingObjective: '',
@@ -86,6 +89,7 @@ export function loadConfig(cliArgs = {}, options = {}) {
     googleEmail: cliArgs['google-email'] || process.env.GOOGLE_EMAIL || DEFAULTS.googleEmail,
     googlePassword: cliArgs['google-password'] || process.env.GOOGLE_PASSWORD || DEFAULTS.googlePassword,
     anthropicApiKey: cliArgs['anthropic-api-key'] || process.env.ANTHROPIC_API_KEY || DEFAULTS.anthropicApiKey,
+    openaiApiKey: cliArgs['openai-api-key'] || process.env.OPENAI_API_KEY || '',
     analysisModel: cliArgs['analysis-model'] || process.env.ANALYSIS_MODEL || DEFAULTS.analysisModel,
     summaryModel: cliArgs['summary-model'] || process.env.SUMMARY_MODEL || DEFAULTS.summaryModel,
     tldrModel: cliArgs['tldr-model'] || process.env.TLDR_MODEL || DEFAULTS.tldrModel,
@@ -120,6 +124,18 @@ export function loadConfig(cliArgs = {}, options = {}) {
     checkpointUploadMinutes: parseNumber(
       cliArgs['checkpoint-upload-minutes'] || process.env.CHECKPOINT_UPLOAD_MINUTES,
       DEFAULTS.checkpointUploadMinutes
+    ),
+    enableMetaAnalysis: parseBoolean(
+      cliArgs['enable-meta-analysis'] || process.env.ENABLE_META_ANALYSIS,
+      DEFAULTS.enableMetaAnalysis
+    ),
+    metaAnalysisInterval: parseNumber(
+      cliArgs['meta-analysis-interval'] || process.env.META_ANALYSIS_INTERVAL,
+      DEFAULTS.metaAnalysisInterval
+    ),
+    metaAnalysisWindow: parseNumber(
+      cliArgs['meta-analysis-window'] || process.env.META_ANALYSIS_WINDOW,
+      DEFAULTS.metaAnalysisWindow
     ),
     enableScreenshotClassifier: parseBoolean(
       cliArgs['enable-screenshot-classifier'] || process.env.ENABLE_SCREENSHOT_CLASSIFIER,

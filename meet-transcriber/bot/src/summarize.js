@@ -13,6 +13,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isOpenAIModel(model) {
+  return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o1') || String(model || '').startsWith('o3');
+}
+
 async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
   for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt += 1) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -59,6 +63,45 @@ async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
   }
 
   throw new Error('Anthropic request failed after rate-limit retries');
+}
+
+async function openaiText(apiKey, model, system, user, maxTokens = 4000) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      max_completion_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    let errorBody = '';
+    try {
+      const parsed = await response.json();
+      errorBody = parsed?.error?.message || JSON.stringify(parsed);
+    } catch (error) {
+      errorBody = await response.text();
+    }
+    throw new Error(`OpenAI request failed (${response.status}): ${errorBody}`);
+  }
+
+  const json = await response.json();
+  return json.choices?.[0]?.message?.content?.trim() || '';
+}
+
+function llmText(config, model, system, user, maxTokens = 4000) {
+  if (isOpenAIModel(model)) {
+    return openaiText(config.openaiApiKey, model, system, user, maxTokens);
+  }
+  return anthropicText(config.anthropicApiKey, model, system, user, maxTokens);
 }
 
 export function estimateTokenCount(text) {
@@ -116,9 +159,45 @@ function formatChunk(chunk) {
     .join('\n\n');
 }
 
+const META_SUMMARY_PROMPT_TEMPLATE = (timeWindow) => `You are summarizing technical meeting activity from recent transcript logs.
+
+TIME WINDOW: Last ${timeWindow} minutes
+
+STRICT RULES:
+- IGNORE anything about "AI Transcriber", "Batches", "Screenshots", "Recording status"
+- ONLY extract actual technical work performed
+- If nothing technical happened, say "No significant technical activity in this window"
+- Be FACTUAL - no speculation, no severity assessments, no narratives
+
+EXTRACT:
+- Commands executed (verbatim)
+- Metrics/values observed (exact numbers)
+- Resources accessed (AWS accounts, services, specific IDs)
+- Errors/logs investigated (actual error messages)
+- Changes made (deployments, configs, etc.)
+- Findings from investigations (what was discovered)
+
+FORMAT:
+**Last ${timeWindow} Minutes**
+
+🔧 **Actions & Findings:**
+• [HH:MM] - [Factual observation with specific details]
+• [HH:MM] - [Command/metric/resource/error - be specific]
+
+If nothing technical: "No significant technical activity in this window"`;
+
+export async function generateMetaSummary(recentEntries, config) {
+  const timeWindow = config.metaAnalysisWindow || 5;
+  const system = META_SUMMARY_PROMPT_TEMPLATE(timeWindow);
+  const user = recentEntries
+    .map((e, i) => `\n--- Batch ${i + 1} (${e.timestampLabel}) ---\n${e.content}`)
+    .join('\n\n');
+  return llmText(config, config.summaryModel, system, user, 2000);
+}
+
 export async function generateTldr(fullTranscript, config) {
-  return anthropicText(
-    config.anthropicApiKey,
+  return llmText(
+    config,
     config.tldrModel,
     config.promptSet?.tldrSystem || TLDR_SYSTEM_PROMPT,
     `Generate a TL;DR for this meeting transcript:\n\n${fullTranscript}`,
@@ -135,8 +214,8 @@ export async function generateTldrMapReduce(fullTranscript, config, onProgress) 
     const userPrompt = i === 0
       ? `Generate a TL;DR for this meeting transcript chunk:\n\n${chunk}`
       : `<current_tldr>\n${summary}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk into the existing TL;DR. Keep it concise and preserve key decisions, actions, and outcomes. Output only the updated TL;DR.`;
-    summary = await anthropicText(
-      config.anthropicApiKey,
+    summary = await llmText(
+      config,
       config.tldrModel,
       config.promptSet?.tldrSystem || TLDR_SYSTEM_PROMPT,
       userPrompt,
@@ -149,8 +228,8 @@ export async function generateTldrMapReduce(fullTranscript, config, onProgress) 
 }
 
 export async function generateBulletPoints(fullTranscript, config) {
-  return anthropicText(
-    config.anthropicApiKey,
+  return llmText(
+    config,
     config.bulletsModel,
     config.promptSet?.bulletSystem || BULLET_POINTS_SYSTEM_PROMPT,
     `Convert this meeting transcript into status update bullet points:\n\n${fullTranscript}`,
@@ -167,8 +246,8 @@ export async function generateBulletPointsMapReduce(fullTranscript, config, onPr
     const userPrompt = i === 0
       ? `Convert this meeting transcript chunk into status update bullet points:\n\n${chunk}`
       : `<current_bullets>\n${summary}\n</current_bullets>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the bullet-point status summary by incorporating new facts from the chunk while deduplicating repeated information. Output only the updated bullets.`;
-    summary = await anthropicText(
-      config.anthropicApiKey,
+    summary = await llmText(
+      config,
       config.bulletsModel,
       config.promptSet?.bulletSystem || BULLET_POINTS_SYSTEM_PROMPT,
       userPrompt,
@@ -190,8 +269,8 @@ export async function generateStoryArc(entries, config, onProgress) {
         ? `Write the opening of the story arc from these observation windows.\n\n${windows}`
         : `<existing_arc>\n${arc}\n</existing_arc>\n\n${windows}\n\nOutput the updated arc. Fold new info into existing sections when the topic fits. Only add a new section if the subject clearly changed. Compress earlier sections if the arc is getting too long. Target: 6-10 sections total. Output only the arc text.`;
 
-    arc = await anthropicText(
-      config.anthropicApiKey,
+    arc = await llmText(
+      config,
       config.arcModel,
       config.promptSet?.arcSystem || ARC_SYSTEM_PROMPT,
       prompt,
@@ -215,8 +294,8 @@ export async function generateStoryArcMapReduce(fullTranscript, config, onProgre
     const prompt = i === 0
       ? `Write the opening of the story arc from this transcript chunk.\n\n${chunk}`
       : `<existing_arc>\n${arc}\n</existing_arc>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the story arc by folding in new details from this chunk. Merge into existing sections where possible, only add new sections for clearly new themes. Keep it concise and chronological. Output only the updated arc.`;
-    arc = await anthropicText(
-      config.anthropicApiKey,
+    arc = await llmText(
+      config,
       config.arcModel,
       config.promptSet?.arcSystem || ARC_SYSTEM_PROMPT,
       prompt,

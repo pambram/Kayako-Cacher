@@ -55,6 +55,7 @@ async function scrapeCaptions(page) {
 
 export function startCaptureLoop({ page, config, onBatch, onTick, onFatal }) {
   let running = true;
+  let analysisEnabled = true;
   let screenshots = [];
   let captionLog = [];
   let windowStartedAt = new Date();
@@ -112,13 +113,15 @@ export function startCaptureLoop({ page, config, onBatch, onTick, onFatal }) {
 
       if (screenshots.length >= config.batchSize) {
         const endedAt = new Date();
-        const uniqueCaptions = uniqueNonEmptyLines(captionLog).join('\n');
-        await onBatch({
-          screenshots,
-          captions: uniqueCaptions,
-          startedAtIso: windowStartedAt.toISOString(),
-          endedAtIso: endedAt.toISOString()
-        });
+        if (analysisEnabled) {
+          const uniqueCaptions = uniqueNonEmptyLines(captionLog).join('\n');
+          await onBatch({
+            screenshots,
+            captions: uniqueCaptions,
+            startedAtIso: windowStartedAt.toISOString(),
+            endedAtIso: endedAt.toISOString()
+          });
+        }
         screenshots = [];
         captionLog = [];
         windowStartedAt = endedAt;
@@ -129,6 +132,9 @@ export function startCaptureLoop({ page, config, onBatch, onTick, onFatal }) {
   })();
 
   return {
+    disableAnalysis() {
+      analysisEnabled = false;
+    },
     async stop() {
       running = false;
       await loop.catch((error) => {

@@ -94,6 +94,9 @@ app.get('/api/config', (_req, res) => {
       bulletsModel: current.bulletsModel,
       guestName: current.guestName,
       forceGoogleSignIn: current.forceGoogleSignIn,
+      enableMetaAnalysis: current.enableMetaAnalysis,
+      metaAnalysisInterval: current.metaAnalysisInterval,
+      metaAnalysisWindow: current.metaAnalysisWindow,
       enableScreenshotClassifier: current.enableScreenshotClassifier,
       screenshotClassifierModel: current.screenshotClassifierModel,
       meetingObjective: current.meetingObjective
@@ -151,6 +154,9 @@ app.put('/api/config', async (req, res) => {
       bulletsModel: 'BULLETS_MODEL',
       guestName: 'GUEST_NAME',
       forceGoogleSignIn: 'FORCE_GOOGLE_SIGNIN',
+      enableMetaAnalysis: 'ENABLE_META_ANALYSIS',
+      metaAnalysisInterval: 'META_ANALYSIS_INTERVAL',
+      metaAnalysisWindow: 'META_ANALYSIS_WINDOW',
       enableScreenshotClassifier: 'ENABLE_SCREENSHOT_CLASSIFIER',
       screenshotClassifierModel: 'SCREENSHOT_CLASSIFIER_MODEL',
       meetingObjective: 'MEETING_OBJECTIVE'

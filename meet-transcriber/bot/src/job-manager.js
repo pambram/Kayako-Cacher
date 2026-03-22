@@ -335,6 +335,7 @@ export class JobManager {
       return true;
     }
     if (job.status === 'running' && job.abortController) {
+      job.userInitiatedLeave = true;
       job.abortController.abort();
       job.status = 'cancelling';
       job.updatedAt = new Date().toISOString();
@@ -417,14 +418,17 @@ export class JobManager {
       }
     })
       .then((result) => {
-        job.status = result.cancelled ? 'cancelled' : 'completed';
+        const finalStatus = !result.cancelled
+          ? 'completed'
+          : job.userInitiatedLeave ? 'ended' : 'cancelled';
+        job.status = finalStatus;
         job.endedAt = new Date().toISOString();
         job.updatedAt = job.endedAt;
         job.localPaths = result.localPaths;
         job.checkpoint = result.checkpoint || job.checkpoint;
         job.latestCheckpointLinks = result.latestCheckpointUpload?.files || job.latestCheckpointLinks;
         job.finalLinks = result.finalUpload?.files || job.finalLinks;
-        this.#pushEvent(job, result.cancelled ? 'cancelled' : 'completed', { entriesCount: result.entriesCount });
+        this.#pushEvent(job, finalStatus, { entriesCount: result.entriesCount });
       })
       .catch((error) => {
         const wasCancelled = job.lastEvent === 'cancelling';
