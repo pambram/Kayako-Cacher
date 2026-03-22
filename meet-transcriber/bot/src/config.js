@@ -36,6 +36,8 @@ const DEFAULTS = {
   metaAnalysisWindow: 5,
   enableScreenshotClassifier: false,
   screenshotClassifierModel: 'claude-haiku-4-5',
+  geminiApiKey: '',
+  ktModel: 'gemini-3.1-pro-preview',
   meetingObjective: '',
   strictPromptParity: true,
   allowPromptFallback: false,
@@ -144,6 +146,8 @@ export function loadConfig(cliArgs = {}, options = {}) {
     screenshotClassifierModel: cliArgs['screenshot-classifier-model']
       || process.env.SCREENSHOT_CLASSIFIER_MODEL
       || DEFAULTS.screenshotClassifierModel,
+    geminiApiKey: cliArgs['gemini-api-key'] || process.env.GEMINI_API_KEY || DEFAULTS.geminiApiKey,
+    ktModel: cliArgs['kt-model'] || process.env.KT_MODEL || DEFAULTS.ktModel,
     meetingObjective: cliArgs['meeting-objective'] || process.env.MEETING_OBJECTIVE || DEFAULTS.meetingObjective,
     strictPromptParity: parseBoolean(
       cliArgs['strict-prompt-parity'] || process.env.STRICT_PROMPT_PARITY,

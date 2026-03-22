@@ -148,12 +148,17 @@ function renderArtifactLinks(job) {
 
 function renderSummarySection(job) {
   const types = [
-    { key: 'tldr',     label: 'TL;DR' },
-    { key: 'bullets',  label: 'Bullets' },
-    { key: 'storyArc', label: 'Story Arc' }
+    { key: 'tldr',       label: 'TL;DR' },
+    { key: 'bullets',    label: 'Bullets' },
+    { key: 'storyArc',   label: 'Story Arc' }
   ];
 
-  const items = types.map(({ key, label }) => {
+  // KT Document only available when intelligent screenshot capture was enabled for this job.
+  if (job.classifierConfig?.enabled) {
+    types.push({ key: 'ktDocument', label: 'KT Document', isMarkdown: true });
+  }
+
+  const items = types.map(({ key, label, isMarkdown }) => {
     const task    = job.summaryTasks?.[key] || {};
     const status  = task.status || 'idle';
     const pct     = Number.isFinite(task.progress) ? task.progress : 0;
@@ -170,13 +175,17 @@ function renderSummarySection(job) {
       ? `<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`
       : '';
 
+    // Markdown files open inline; add download link too.
     const fileLink = ready
-      ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="btn-link">↗ ${label} file</a>`
+      ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="btn-link">↗ ${label} file${isMarkdown ? ' (.md)' : ''}</a>`
       : '';
+
+    // KT Document button gets a distinct style to signal it's a different operation.
+    const btnClass = key === 'ktDocument' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
 
     return `
       <div class="summary-action-item">
-        <button class="btn btn-ghost btn-sm" data-summary="${job.id}:${key}" ${running ? 'disabled' : ''}>
+        <button class="${btnClass}" data-summary="${job.id}:${key}" ${running ? 'disabled' : ''}>
           ${btnLabel}
         </button>
         ${progressBar}
@@ -405,13 +414,29 @@ function renderEventPanel(jobs) {
     .join('\n');
   root.setAttribute('data-copy-text', copyText);
 
+  // Events that should show inline detail from their payload.
+  const DETAIL_EVENTS = new Set([
+    'summary_failed', 'summary_generated', 'summary_plan',
+    'analysis_error', 'analysis_quota_exceeded',
+    'meta_summary_error', 'screenshot_classifier_error',
+    'failed', 'leave_warning'
+  ]);
+
   root.innerHTML = visible.map(line => {
     const shortId = line.jobId.length > 26 ? '…' + line.jobId.slice(-18) : line.jobId;
+    let detail = '';
+    if (DETAIL_EVENTS.has(line.event) && line.data) {
+      const msg = line.data.error || line.data.type || '';
+      if (msg) {
+        const safe = String(msg).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        detail = `<span class="event-detail" title="${safe}">${safe}</span>`;
+      }
+    }
     return `
       <div class="event-line">
         <span class="event-ts"  title="${line.ts}">${relativeTime(line.ts)}</span>
         <span class="event-job" title="${line.jobId}">${shortId}</span>
-        <span class="event-type ${eventClass(line.event)}">${line.event}</span>
+        <span class="event-type ${eventClass(line.event)}">${line.event}</span>${detail}
       </div>`;
   }).join('');
 }
@@ -427,13 +452,18 @@ const MODEL_OPTIONS = [
   'gpt-5.4'
 ];
 
-function setModelOptions(selectId, currentValue) {
+const KT_MODEL_OPTIONS = [
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-flash-lite-preview'
+];
+
+function setModelOptions(selectId, currentValue, options = MODEL_OPTIONS) {
   const select = document.getElementById(selectId);
   if (!select) return;
-  select.innerHTML = MODEL_OPTIONS
+  select.innerHTML = options
     .map(v => `<option value="${v}">${v}</option>`)
     .join('');
-  if (MODEL_OPTIONS.includes(currentValue)) select.value = currentValue;
+  if (options.includes(currentValue)) select.value = currentValue;
 }
 
 async function loadConfigIntoForm() {
@@ -453,6 +483,7 @@ async function loadConfigIntoForm() {
   setModelOptions('cfgArcModel',                 cfg.arcModel ?? '');
   setModelOptions('cfgBulletsModel',             cfg.bulletsModel ?? '');
   setModelOptions('cfgScreenshotClassifierModel', cfg.screenshotClassifierModel ?? '');
+  setModelOptions('cfgKtModel', cfg.ktModel ?? 'gemini-3.1-pro-preview', KT_MODEL_OPTIONS);
   document.getElementById('cfgEnableMetaAnalysis').checked   = Boolean(cfg.enableMetaAnalysis);
   document.getElementById('cfgMetaAnalysisInterval').value  = cfg.metaAnalysisInterval ?? 5;
   document.getElementById('cfgMetaAnalysisWindow').value    = cfg.metaAnalysisWindow ?? 5;
@@ -474,6 +505,7 @@ function collectConfigFromForm() {
     arcModel:                   document.getElementById('cfgArcModel').value,
     bulletsModel:               document.getElementById('cfgBulletsModel').value,
     screenshotClassifierModel:  document.getElementById('cfgScreenshotClassifierModel').value,
+    ktModel:                    document.getElementById('cfgKtModel').value,
     enableMetaAnalysis:         document.getElementById('cfgEnableMetaAnalysis').checked,
     metaAnalysisInterval:       Number(document.getElementById('cfgMetaAnalysisInterval').value),
     metaAnalysisWindow:         Number(document.getElementById('cfgMetaAnalysisWindow').value)

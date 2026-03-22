@@ -10,6 +10,7 @@ import {
   generateTldrMapReduce,
   generateBulletPointsMapReduce,
   generateStoryArcMapReduce,
+  generateKtDocument,
   estimateTokenCount,
   MAX_SINGLE_SUMMARY_INPUT_TOKENS
 } from './summarize.js';
@@ -185,7 +186,7 @@ export class JobManager {
     if (!job) {
       throw new Error('Job not found');
     }
-    const supported = ['tldr', 'bullets', 'storyArc'];
+    const supported = ['tldr', 'bullets', 'storyArc', 'ktDocument'];
     if (!supported.includes(type)) {
       throw new Error(`Unsupported summary type: ${type}`);
     }
@@ -211,6 +212,7 @@ export class JobManager {
   }
 
   async #runSummary(job, type) {
+    console.log(`[summary:${type}] Starting for job ${job.id}`);
     try {
       const entries = await this.#readJobEntries(job);
       if (!entries.length) {
@@ -231,6 +233,7 @@ export class JobManager {
       const useMapReduce = estimatedInputTokens > MAX_SINGLE_SUMMARY_INPUT_TOKENS;
       job.summaryTasks[type].estimatedInputTokens = estimatedInputTokens;
       job.summaryTasks[type].mode = useMapReduce ? 'map_reduce' : 'single_pass';
+      console.log(`[summary:${type}] ~${Math.round(estimatedInputTokens / 1000)}k tokens, mode=${job.summaryTasks[type].mode}, entries=${entries.length}`);
       this.#pushEvent(job, 'summary_plan', {
         type,
         estimatedInputTokens,
@@ -238,7 +241,12 @@ export class JobManager {
       });
 
       let text = '';
-      if (type === 'tldr') {
+      if (type === 'ktDocument') {
+        // KT document uses Gemini with URL context; no map-reduce (needs holistic view).
+        // Token limit enforced inside generateKtDocument.
+        job.summaryTasks[type].mode = 'single_pass';
+        text = await generateKtDocument(transcript, config);
+      } else if (type === 'tldr') {
         text = useMapReduce
           ? await generateTldrMapReduce(transcript, config, async (p) => {
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
@@ -265,16 +273,24 @@ export class JobManager {
       }
 
       await fs.mkdir(config.outputDir, { recursive: true });
-      const outPath = path.join(config.outputDir, `meet-${type}-${job.id}.txt`);
-      const title = type === 'storyArc' ? 'Story Arc' : type === 'tldr' ? 'TL;DR' : 'Bullet Points';
-      const header = [
-        `Google Meet - ${title}`,
-        '===========================',
-        `Generated: ${new Date().toISOString()}`,
-        `Meet URL: ${job.meetUrl}`,
-        ''
-      ].join('\n');
-      await fs.writeFile(outPath, `${header}\n${text}\n`, 'utf8');
+      const isMarkdown = type === 'ktDocument';
+      const ext = isMarkdown ? 'md' : 'txt';
+      const outPath = path.join(config.outputDir, `meet-${type}-${job.id}.${ext}`);
+      let fileContent;
+      if (isMarkdown) {
+        fileContent = text;
+      } else {
+        const title = type === 'storyArc' ? 'Story Arc' : type === 'tldr' ? 'TL;DR' : 'Bullet Points';
+        const header = [
+          `Google Meet - ${title}`,
+          '===========================',
+          `Generated: ${new Date().toISOString()}`,
+          `Meet URL: ${job.meetUrl}`,
+          ''
+        ].join('\n');
+        fileContent = `${header}\n${text}\n`;
+      }
+      await fs.writeFile(outPath, fileContent, 'utf8');
 
       job.summaryArtifacts[type] = {
         localPath: outPath,
@@ -289,9 +305,11 @@ export class JobManager {
         estimatedInputTokens: job.summaryTasks[type]?.estimatedInputTokens,
         mode: job.summaryTasks[type]?.mode || 'single_pass'
       };
+      console.log(`[summary:${type}] Done → ${outPath}`);
       this.#pushEvent(job, 'summary_generated', { type, localPath: outPath });
       job.updatedAt = new Date().toISOString();
     } catch (error) {
+      console.error(`[summary:${type}] FAILED for job ${job.id}: ${error.message}`);
       job.summaryTasks[type] = {
         status: 'failed',
         progress: job.summaryTasks[type]?.progress || 0,

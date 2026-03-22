@@ -681,6 +681,7 @@ label {
 .event-type.ev-danger  { color: var(--danger); }
 .event-type.ev-warning { color: var(--warning); }
 .event-type.ev-accent  { color: var(--accent); }
+.event-detail { color: var(--text-muted); margin-left: var(--sp-2); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; display: inline-block; vertical-align: bottom; }
 
 /* ─── Toast ─────────────────────────────────────────────────────── */
 .toast-container {

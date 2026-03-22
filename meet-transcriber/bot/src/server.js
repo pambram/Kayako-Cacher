@@ -99,6 +99,7 @@ app.get('/api/config', (_req, res) => {
       metaAnalysisWindow: current.metaAnalysisWindow,
       enableScreenshotClassifier: current.enableScreenshotClassifier,
       screenshotClassifierModel: current.screenshotClassifierModel,
+      ktModel: current.ktModel,
       meetingObjective: current.meetingObjective
     }
   });
@@ -159,6 +160,7 @@ app.put('/api/config', async (req, res) => {
       metaAnalysisWindow: 'META_ANALYSIS_WINDOW',
       enableScreenshotClassifier: 'ENABLE_SCREENSHOT_CLASSIFIER',
       screenshotClassifierModel: 'SCREENSHOT_CLASSIFIER_MODEL',
+      ktModel: 'KT_MODEL',
       meetingObjective: 'MEETING_OBJECTIVE'
     };
     for (const [k, envKey] of Object.entries(map)) {
@@ -214,7 +216,8 @@ app.get('/api/jobs/:id/summaries/:type/file', async (req, res) => {
     return;
   }
   const content = await fs.readFile(summary.localPath, 'utf8');
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  const isMarkdown = summary.localPath.endsWith('.md');
+  res.setHeader('Content-Type', isMarkdown ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8');
   res.setHeader('Content-Disposition', `inline; filename="${path.basename(summary.localPath)}"`);
   res.send(content);
 });

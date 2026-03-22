@@ -104,6 +104,155 @@ function llmText(config, model, system, user, maxTokens = 4000) {
   return anthropicText(config.anthropicApiKey, model, system, user, maxTokens);
 }
 
+// Maximum transcript tokens accepted for KT document generation (no map-reduce — needs holistic view).
+const KT_MAX_INPUT_TOKENS = 800000;
+
+const KT_SYSTEM_PROMPT = `You are an expert Technical Writer and Knowledge Management Specialist. Your primary task is to transform raw, timestamped session transcripts into highly structured, professional Knowledge Transfer (KT) documents and Standard Operating Procedures (SOPs).
+
+You will receive a detailed transcript of a technical session. This transcript will contain chronological logs of actions performed, systems accessed, verbal instructions, and links to screenshots captured during the session.
+
+Your objective is to synthesize this raw data into a clean, actionable, and easy-to-follow instructional document.
+
+### CRITICAL REQUIREMENTS:
+1. **Format as an SOP:** Organize the information logically rather than strictly chronologically. Group related actions into clear phases or steps.
+2. **Actionable Language:** Write step-by-step instructions using the imperative mood (e.g., "Click the submit button," "Navigate to the dashboard").
+3. **Embed Screenshots Inline:** This is an absolute requirement. You must embed the provided screenshot URLs inline directly below the corresponding instructional step using Markdown image syntax: \`![Descriptive Alt Text](URL)\`. Do not group all images at the bottom of the document. If an image shows a specific UI action, place it exactly where that action is described.
+4. **Filter the Noise:** Exclude unnecessary transcript metadata, conversational filler, and troubleshooting dead-ends unless they highlight an important edge case or known error.
+5. **Output format:** The entire response MUST be valid Markdown. Use headers, bold, bullet lists, and numbered steps as appropriate.
+
+### REQUIRED DOCUMENT STRUCTURE:
+Please use the following Markdown template for your output:
+
+# 📄 Knowledge Transfer (KT) Document: [Insert Clear Subject/Process Name]
+
+**Date:** [Extract Date]
+**Presenter/SME:** [Extract Presenter Name]
+**Subject:** [Brief description of the workflow]
+**Environment/Account:** [Note any specific accounts, test environments, or user profiles used]
+
+---
+
+## 🛠️ 1. Systems & Access Required
+[List all platforms, portals, URLs, and specific permission levels or credentials required to perform the workflow.]
+
+---
+
+## 📋 2. Prerequisites & Pre-Checks
+[List any checks, capacity limits, or configurations that must be verified *before* beginning the actual steps.]
+
+---
+
+## 🧑‍💻 3. Step-by-Step Instructions
+[Break down the core workflow into numbered steps. Group them logically using sub-headers (e.g., ### Phase A: Setup). Embed the relevant markdown screenshots directly beneath the step they illustrate.]
+
+---
+
+## 📓 4. Backend Configuration / Data Sync (If applicable)
+[List any secondary platforms, spreadsheets, or databases that must be manually updated to reflect the changes made in the main steps.]
+
+---
+
+## ✅ 5. Verification & Testing
+[Provide the exact steps required to verify that the process was completed successfully from the end-user or system perspective.]
+
+---
+
+## 🚨 6. Exceptions, Edge Cases & Escalation
+[Highlight any special scenarios (e.g., "If X happens, do Y"), known errors, or escalation contacts mentioned in the transcript.]
+
+---
+IMPORTANT: Read the transcript carefully to understand the context of each screenshot link. Match the visual evidence to the text instructions perfectly.`;
+
+async function geminiKtRequest(apiKey, model, transcript) {
+  // v1beta supports URL context; v1alpha is only needed for per-part media_resolution
+  // which doesn't apply here since we aren't sending inline images.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  const body = {
+    contents: [
+      {
+        parts: [
+          { text: `${KT_SYSTEM_PROMPT}\n\n---\n\nTRANSCRIPT:\n${transcript}` }
+        ]
+      }
+    ],
+    tools: [{ urlContext: {} }],
+    generationConfig: {
+      thinkingConfig: { thinkingLevel: 'high' },
+      maxOutputTokens: 16000
+    }
+  };
+
+  console.log(`[KT] Calling ${model} via Gemini API (attempt budget: ${RATE_LIMIT_MAX_RETRIES + 1})`);
+
+  for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt += 1) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (response.ok) {
+      const json = await response.json();
+      const parts = json.candidates?.[0]?.content?.parts || [];
+      // Collect all text parts (skip thought signatures and empty parts).
+      const text = parts
+        .filter((p) => typeof p.text === 'string' && p.text.trim())
+        .map((p) => p.text)
+        .join('');
+      console.log(`[KT] Gemini response ok; output length ${text.length} chars`);
+      return text.trim();
+    }
+
+    let errorBody = '';
+    try {
+      const parsed = await response.json();
+      errorBody = parsed?.error?.message || JSON.stringify(parsed);
+    } catch (_e) {
+      errorBody = await response.text();
+    }
+
+    console.error(`[KT] Gemini error (HTTP ${response.status}, attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES + 1}): ${errorBody}`);
+
+    // Detect hard quota/billing errors — don't retry those.
+    const isHardLimit = response.status === 400
+      && (errorBody.toLowerCase().includes('usage limits') || errorBody.toLowerCase().includes('quota'));
+    if (isHardLimit) {
+      throw new Error(`Gemini API quota/billing error: ${errorBody}`);
+    }
+
+    if ((response.status === 429 || response.status === 503) && attempt < RATE_LIMIT_MAX_RETRIES) {
+      const retryAfterSec = Number(response.headers.get('retry-after'));
+      const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? retryAfterSec * 1000
+        : RATE_LIMIT_BASE_WAIT_MS * (attempt + 1);
+      console.warn(`[KT] Rate limited; retrying in ${waitMs}ms (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES + 1})`);
+      await sleep(waitMs);
+      continue;
+    }
+
+    throw new Error(`Gemini request failed (${response.status}): ${errorBody}`);
+  }
+
+  throw new Error('Gemini request failed after retries');
+}
+
+export async function generateKtDocument(transcript, config) {
+  const estimatedTokens = estimateTokenCount(transcript);
+  if (estimatedTokens > KT_MAX_INPUT_TOKENS) {
+    throw new Error(
+      `Transcript is too large for KT document generation (~${Math.round(estimatedTokens / 1000)}k tokens; limit is ${KT_MAX_INPUT_TOKENS / 1000}k). ` +
+      'Use TL;DR or Bullets for very long meetings.'
+    );
+  }
+  if (!config.geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured. Set it in Configuration or .env to use KT document generation.');
+  }
+  const model = config.ktModel || 'gemini-3.1-pro-preview';
+  console.log(`Generating KT document with ${model} (~${Math.round(estimatedTokens / 1000)}k estimated tokens)`);
+  return geminiKtRequest(config.geminiApiKey, model, transcript);
+}
+
 export function estimateTokenCount(text) {
   if (!text) return 0;
   // Practical approximation for planning/chunking.
