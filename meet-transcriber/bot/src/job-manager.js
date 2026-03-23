@@ -178,11 +178,12 @@ export class JobManager {
       recentEvents: [],
       timer: null,
       runnerPromise: null,
-      abortController: null
+      abortController: null,
+      resumeFromJobId: request.resumeFromJobId || null
     };
 
     this.jobs.set(jobId, job);
-    this.#pushEvent(job, 'created', { meetUrl: job.meetUrl, scheduledAt: job.scheduledAt });
+    this.#pushEvent(job, 'created', { meetUrl: job.meetUrl, scheduledAt: job.scheduledAt, resumeFromJobId: job.resumeFromJobId });
     this.#scheduleOrRun(jobId);
     return this.getJob(jobId);
   }
@@ -475,7 +476,7 @@ export class JobManager {
     this.#startRun(id);
   }
 
-  #startRun(id) {
+  async #startRun(id) {
     const job = this.jobs.get(id);
     if (!job) return;
     if (job.timer) {
@@ -495,6 +496,22 @@ export class JobManager {
       model: config.screenshotClassifierModel || '',
       meetingObjective: config.meetingObjective || ''
     };
+
+    // Load prior entries if resuming a previous session.
+    let resumeEntries = null;
+    let resumePreviousContext = '';
+    if (job.resumeFromJobId) {
+      const priorJob = this.jobs.get(job.resumeFromJobId);
+      if (priorJob) {
+        const loadedEntries = await this.#readJobEntries(priorJob);
+        if (loadedEntries.length > 0) {
+          resumeEntries = loadedEntries;
+          resumePreviousContext = loadedEntries[loadedEntries.length - 1]?.content || '';
+          console.log(`Resuming job ${id} from ${job.resumeFromJobId} — ${resumeEntries.length} prior entries loaded.`);
+        }
+      }
+    }
+
     const abortController = new AbortController();
     job.abortController = abortController;
 
@@ -509,6 +526,9 @@ export class JobManager {
       checkpointPrefix: `jobs/${id}/checkpoints`,
       finalPrefix: `jobs/${id}/final`,
       abortSignal: abortController.signal,
+      resumeEntries,
+      resumePreviousContext,
+      resumeFromJobId: job.resumeFromJobId || null,
       onStatus: (event, payload) => {
         job.updatedAt = new Date().toISOString();
         job.heartbeatAt = job.updatedAt;
