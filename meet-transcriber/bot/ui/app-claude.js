@@ -75,7 +75,7 @@ const STATUS_BADGE_CLASS = {
   scheduled:  'badge-warning',
   cancelling: 'badge-warning',
   completed:  'badge-success',
-  ended:      'badge-success',
+  ended:      'badge-ended',
   failed:     'badge-danger',
   cancelled:  'badge-neutral'
 };
@@ -92,8 +92,11 @@ function renderStatusDot(job) {
   if (['pending', 'scheduled', 'cancelling'].includes(job.status)) {
     return '<span class="status-dot dot-warning"></span>';
   }
-  if (job.status === 'completed' || job.status === 'ended') {
+  if (job.status === 'completed') {
     return '<span class="status-dot dot-success"></span>';
+  }
+  if (job.status === 'ended') {
+    return '<span class="status-dot dot-ended"></span>';
   }
   return '<span class="status-dot dot-danger"></span>';
 }
@@ -167,9 +170,12 @@ function renderSummarySection(job) {
     const running = status === 'running';
     const mr      = task.mode === 'map_reduce';
 
+    const alreadyDone = ready && !running;
     const btnLabel = running
-      ? `<span class="spinner"></span>${label} (${pct}%)`
-      : `${label}${mr ? ' ↻' : ''}`;
+      ? `<span class="spinner"></span>${label} (${pct}%) ✕`
+      : alreadyDone
+        ? `↺ Regenerate ${label}`
+        : `${label}${mr ? ' ↻' : ''}`;
 
     const progressBar = running
       ? `<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`
@@ -203,12 +209,12 @@ function renderSummarySection(job) {
       }
     }
 
-    // KT Document button gets a distinct style to signal it's a different operation.
     const btnClass = key === 'ktDocument' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+    const dataAttr = running ? `data-cancel-summary="${job.id}:${key}"` : `data-summary="${job.id}:${key}"`;
 
     return `
       <div class="summary-action-item">
-        <button class="${btnClass}" data-summary="${job.id}:${key}" ${running ? 'disabled' : ''}>
+        <button class="${btnClass}" ${dataAttr}>
           ${btnLabel}
         </button>
         ${progressBar}
@@ -224,6 +230,36 @@ function renderSummarySection(job) {
     </div>`;
 }
 
+/* ─── Job List Row (compact) ──────────────────────────────────── */
+
+function renderJobRow(job) {
+  const duration = formatDuration(job.startedAt, job.endedAt);
+  const objective = job.classifierConfig?.meetingObjective;
+  const meetCode = (job.meetUrl || '').split('/').pop();
+  const summaryBadges = ['tldr', 'bullets', 'storyArc', 'ktDocument']
+    .filter(k => job.summaryArtifacts?.[k]?.localPath)
+    .map(k => `<span class="badge badge-neutral" style="font-size:0.68rem;padding:1px 5px">${k === 'ktDocument' ? 'KT' : k === 'storyArc' ? 'Arc' : k === 'tldr' ? 'TL;DR' : 'Bullets'}</span>`)
+    .join(' ');
+  return `
+    <div class="job-row ${job.status === 'running' ? 'job-running' : ''}" data-job-id="${job.id}">
+      <div class="job-row-status">${renderStatusDot(job)}</div>
+      <div class="job-row-main">
+        <a href="${job.meetUrl}" class="job-meet-url" target="_blank" rel="noopener">${meetCode}</a>
+        ${objective ? `<span class="muted" style="font-size:0.78rem;margin-left:6px">— ${objective}</span>` : ''}
+      </div>
+      <div class="job-row-meta muted">
+        ${duration} &middot; ${relativeTime(job.createdAt)}
+      </div>
+      <div class="job-row-badges">${summaryBadges}</div>
+      ${renderStatusBadge(job.status)}
+      <div class="job-row-actions">
+        <button class="btn btn-ghost btn-sm" data-filterjob="${job.id}">Events</button>
+        <a href="/api/jobs/${job.id}/live-transcript" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Transcript</a>
+        ${(job.status === 'running' || job.status === 'cancelling') ? `<button class="btn btn-danger btn-sm" data-cancel="${job.id}">Leave</button>` : ''}
+      </div>
+    </div>`;
+}
+
 /* ─── Job Card ────────────────────────────────────────────────── */
 
 function renderJobCard(job) {
@@ -232,10 +268,10 @@ function renderJobCard(job) {
 
   const classifierLine = job.classifierConfig?.enabled
     ? `<div class="meta-item">
-         <span class="meta-label">classifier:</span>
+         <span class="meta-label">📸 screenshots:</span>
          ${job.classifierConfig.model || 'on'}
-         ${job.classifierConfig.meetingObjective ? ` — ${job.classifierConfig.meetingObjective}` : ''}
-       </div>`
+       </div>
+       ${job.classifierConfig.meetingObjective ? `<div class="meta-item"><span class="meta-label">objective:</span> ${job.classifierConfig.meetingObjective}</div>` : ''}`
     : '';
 
   const errorBlock = job.error
@@ -304,11 +340,20 @@ function renderStats(jobs) {
 /* ─── Render Jobs ─────────────────────────────────────────────── */
 
 function renderJobs(jobs) {
-  const root      = document.getElementById('jobs');
+  const root       = document.getElementById('jobs');
   const hideFailed = document.getElementById('hideFailedJobs')?.checked !== false;
-  const visible   = hideFailed
-    ? jobs.filter(j => j.status !== 'failed' && j.status !== 'cancelled')
-    : jobs;
+  const searchQ    = (document.getElementById('fleetSearch')?.value || '').trim().toLowerCase();
+
+  const matchesSearch = (j) => {
+    if (!searchQ) return true;
+    const haystack = [j.meetUrl, j.status, j.id, j.classifierConfig?.meetingObjective, j.lastEvent].join(' ').toLowerCase();
+    return haystack.includes(searchQ);
+  };
+
+  const visible = jobs.filter(j => {
+    if (hideFailed && (j.status === 'failed' || j.status === 'cancelled')) return false;
+    return matchesSearch(j);
+  });
   // 'ended' (user-left) and 'completed' are always shown — they are past meetings.
 
   if (!visible.length) {
@@ -345,7 +390,8 @@ function renderJobs(jobs) {
     return bTs - aTs;
   });
 
-  root.innerHTML = sorted.map(renderJobCard).join('');
+  root.className = viewMode === 'list' ? 'jobs-list' : 'jobs-grid';
+  root.innerHTML = sorted.map(j => viewMode === 'list' ? renderJobRow(j) : renderJobCard(j)).join('');
 
   root.querySelectorAll('button[data-cancel]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -367,6 +413,25 @@ function renderJobs(jobs) {
       document.getElementById('eventJobFilter').value = id;
       switchTab('event-log');
       refresh();
+    });
+  });
+
+  root.querySelectorAll('button[data-cancel-summary]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const [id, type] = btn.getAttribute('data-cancel-summary').split(':');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/jobs/${id}/summaries/${type}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Could not cancel ${type}`);
+        }
+        showToast(`${type} generation cancelled`, 'info');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        await refresh();
+      }
     });
   });
 
@@ -597,6 +662,7 @@ function switchTab(tabName) {
 let lastRefreshAt = null;
 let lastJobsHash = '';
 let configLoaded = false;
+let viewMode = 'grid'; // 'grid' | 'list'
 
 async function refresh() {
   let jobs = [];
@@ -607,7 +673,8 @@ async function refresh() {
   }
 
   const filterState = document.getElementById('hideFailedJobs')?.checked;
-  const hash = JSON.stringify({ filter: filterState, jobs: jobs.map(j => ({ id: j.id, status: j.status, lastEvent: j.lastEvent, updatedAt: j.updatedAt })) });
+  const searchQuery = (document.getElementById('fleetSearch')?.value || '').trim().toLowerCase();
+  const hash = JSON.stringify({ filter: filterState, view: viewMode, search: searchQuery, jobs: jobs.map(j => ({ id: j.id, status: j.status, lastEvent: j.lastEvent, updatedAt: j.updatedAt })) });
   const jobsChanged = hash !== lastJobsHash;
   lastJobsHash = hash;
 
@@ -757,7 +824,20 @@ document.querySelectorAll('[data-preset]').forEach((btn) => {
 });
 
 document.getElementById('hideFailedJobs').addEventListener('change', () => refresh());
+document.getElementById('fleetSearch').addEventListener('input', () => refresh());
 document.getElementById('eventJobFilter').addEventListener('input',  () => refresh());
+document.getElementById('viewGrid').addEventListener('click', () => {
+  viewMode = 'grid';
+  document.getElementById('viewGrid').classList.add('view-btn-active');
+  document.getElementById('viewList').classList.remove('view-btn-active');
+  refresh();
+});
+document.getElementById('viewList').addEventListener('click', () => {
+  viewMode = 'list';
+  document.getElementById('viewList').classList.add('view-btn-active');
+  document.getElementById('viewGrid').classList.remove('view-btn-active');
+  refresh();
+});
 document.getElementById('eventTextFilter').addEventListener('input', () => {
   document.querySelectorAll('[data-preset]').forEach((btn) => btn.classList.remove('btn-active'));
   refresh();

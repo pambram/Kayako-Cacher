@@ -121,24 +121,29 @@ export class JobManager {
     }
   }
 
-  listJobs() {
-    return [...this.jobs.values()].map((job) => ({
+  #stripJob(job) {
+    const summaryTasks = job.summaryTasks
+      ? Object.fromEntries(
+          Object.entries(job.summaryTasks).map(([k, v]) => [k, { ...v, abortController: undefined }])
+        )
+      : job.summaryTasks;
+    return {
       ...job,
       timer: undefined,
       runnerPromise: undefined,
-      abortController: undefined
-    }));
+      abortController: undefined,
+      summaryTasks
+    };
+  }
+
+  listJobs() {
+    return [...this.jobs.values()].map((job) => this.#stripJob(job));
   }
 
   getJob(id) {
     const job = this.jobs.get(id);
     if (!job) return null;
-    return {
-      ...job,
-      timer: undefined,
-      runnerPromise: undefined,
-      abortController: undefined
-    };
+    return this.#stripJob(job);
   }
 
   createJob(request = {}) {
@@ -199,22 +204,44 @@ export class JobManager {
     if (current?.status === 'running') {
       throw new Error(`${type} summary already running`);
     }
+    const summaryAbort = new AbortController();
     job.summaryTasks[type] = {
       status: 'running',
       progress: 0,
       startedAt: new Date().toISOString(),
-      error: null
+      error: null,
+      abortController: summaryAbort
     };
     this.#pushEvent(job, 'summary_running', { type });
     job.updatedAt = new Date().toISOString();
 
-    this.#runSummary(job, type);
+    this.#runSummary(job, type, summaryAbort.signal);
     return { type, status: 'running' };
   }
 
-  async #runSummary(job, type) {
+  cancelSummary(id, type) {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    const task = job.summaryTasks?.[type];
+    if (task?.status !== 'running') return false;
+    task.abortController?.abort();
+    job.summaryTasks[type] = {
+      ...task,
+      status: 'cancelled',
+      endedAt: new Date().toISOString(),
+      error: 'Cancelled by user',
+      abortController: null
+    };
+    this.#pushEvent(job, 'summary_cancelled', { type });
+    job.updatedAt = new Date().toISOString();
+    this.#schedulePersist();
+    return true;
+  }
+
+  async #runSummary(job, type, abortSignal) {
     console.log(`[summary:${type}] Starting for job ${job.id}`);
     try {
+      if (abortSignal?.aborted) return;
       const entries = await this.#readJobEntries(job);
       if (!entries.length) {
         throw new Error('No transcript entries available yet');
@@ -241,15 +268,18 @@ export class JobManager {
         mode: job.summaryTasks[type].mode
       });
 
+      const checkAbort = () => {
+        if (abortSignal?.aborted) throw new Error('Cancelled by user');
+      };
+
       let text = '';
       if (type === 'ktDocument') {
-        // KT document uses Gemini with URL context; no map-reduce (needs holistic view).
-        // Token limit enforced inside generateKtDocument.
         job.summaryTasks[type].mode = 'single_pass';
         text = await generateKtDocument(transcript, config);
       } else if (type === 'tldr') {
         text = useMapReduce
           ? await generateTldrMapReduce(transcript, config, async (p) => {
+              checkAbort();
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
               job.updatedAt = new Date().toISOString();
             })
@@ -257,6 +287,7 @@ export class JobManager {
       } else if (type === 'bullets') {
         text = useMapReduce
           ? await generateBulletPointsMapReduce(transcript, config, async (p) => {
+              checkAbort();
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
               job.updatedAt = new Date().toISOString();
             })
@@ -264,14 +295,18 @@ export class JobManager {
       } else {
         text = useMapReduce
           ? await generateStoryArcMapReduce(transcript, config, async (p) => {
+              checkAbort();
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
               job.updatedAt = new Date().toISOString();
             })
           : await generateStoryArc(entries, config, async (p) => {
+              checkAbort();
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
               job.updatedAt = new Date().toISOString();
             });
       }
+
+      checkAbort();
 
       await fs.mkdir(config.outputDir, { recursive: true });
       const isMarkdown = type === 'ktDocument';

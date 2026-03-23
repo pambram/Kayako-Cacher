@@ -557,13 +557,13 @@ export async function startMeetSession(config, hooks = {}) {
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--no-sandbox',
-      '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--disable-blink-features=AutomationControlled',
       '--window-size=1920,1080',
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
+      '--mute-audio',
       '--autoplay-policy=no-user-gesture-required'
     ],
     defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 2 }

@@ -100,10 +100,15 @@
     <!-- Fleet Tab -->
     <div class="tab-panel tab-active" data-panel="fleet" role="tabpanel">
       <div class="fleet-controls">
+        <input id="fleetSearch" class="input" placeholder="Filter by URL, objective, status…" style="min-width:260px">
         <label class="toggle-label">
           <input type="checkbox" id="hideFailedJobs" checked>
           <span>Hide failed &amp; cancelled</span>
         </label>
+        <div class="view-toggle" role="group" aria-label="View mode">
+          <button id="viewGrid" class="btn btn-ghost btn-sm view-btn view-btn-active" title="Grid view">⊞</button>
+          <button id="viewList" class="btn btn-ghost btn-sm view-btn" title="List view">☰</button>
+        </div>
       </div>
       <div class="jobs-grid" id="jobs" aria-live="polite" aria-label="Bot fleet"></div>
     </div>

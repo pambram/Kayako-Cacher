@@ -213,6 +213,15 @@ app.post('/api/jobs/:id/summaries/:type', async (req, res) => {
   }
 });
 
+app.delete('/api/jobs/:id/summaries/:type', (req, res) => {
+  const cancelled = jobManager.cancelSummary(req.params.id, req.params.type);
+  if (!cancelled) {
+    res.status(409).json({ ok: false, error: 'Summary not running or not found' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 app.get('/api/jobs/:id/summaries/:type/file', async (req, res) => {
   const job = jobManager.getJob(req.params.id);
   if (!job) {

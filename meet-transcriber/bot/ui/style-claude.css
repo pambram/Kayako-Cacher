@@ -227,6 +227,31 @@ body {
   gap: var(--sp-4);
 }
 
+/* ─── Jobs List ─────────────────────────────────────────────────── */
+.jobs-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+  transition: border-color var(--transition);
+}
+.job-row:hover { border-color: var(--border-strong); }
+.job-row-status { flex-shrink: 0; }
+.job-row-main { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.job-row-meta { flex-shrink: 0; font-size: 0.78rem; white-space: nowrap; }
+.job-row-badges { flex-shrink: 0; display: flex; gap: var(--sp-1); }
+.job-row-actions { flex-shrink: 0; display: flex; gap: var(--sp-2); align-items: center; }
+
+/* ─── View Toggle ───────────────────────────────────────────────── */
+.view-toggle { display: flex; gap: 2px; }
+.view-btn { font-size: 1rem; padding: 4px 8px; }
+.view-btn-active { background: var(--accent-muted, rgba(129,140,248,0.18)); border-color: var(--accent, #818cf8); color: var(--accent, #818cf8); }
+
 /* ─── Job Card ──────────────────────────────────────────────────── */
 .job-card {
   background: var(--bg-card);
@@ -277,6 +302,7 @@ body {
 .status-dot.dot-success.dot-pulse { animation: pulse 2s ease-in-out infinite; }
 .status-dot.dot-warning { background: var(--warning); }
 .status-dot.dot-danger  { background: var(--danger); }
+.status-dot.dot-ended   { background: #38bdf8; box-shadow: 0 0 4px #38bdf866; }
 .status-dot.dot-muted   { background: var(--text-muted); }
 
 @keyframes pulse {
@@ -497,6 +523,7 @@ body {
 .badge-danger  { background: var(--danger-dim);  color: var(--danger); }
 .badge-info    { background: var(--info-dim);     color: var(--info); }
 .badge-neutral { background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); }
+.badge-ended   { background: rgba(56, 189, 248, 0.12); color: #38bdf8; }
 
 /* ─── Form Elements ─────────────────────────────────────────────── */
 .input, .select {
