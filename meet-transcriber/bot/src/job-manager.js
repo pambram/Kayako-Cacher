@@ -14,6 +14,7 @@ import {
   estimateTokenCount,
   MAX_SINGLE_SUMMARY_INPUT_TOKENS
 } from './summarize.js';
+import { createGoogleDocFromMarkdown } from './gdocs-export.js';
 import { normalizeMeetUrlInput } from './meet-url.js';
 
 function newJobId() {
@@ -308,6 +309,11 @@ export class JobManager {
       console.log(`[summary:${type}] Done → ${outPath}`);
       this.#pushEvent(job, 'summary_generated', { type, localPath: outPath });
       job.updatedAt = new Date().toISOString();
+
+      // After KT document md is written, create a Google Doc as a separate sequential step.
+      if (type === 'ktDocument') {
+        this.#createGoogleDocForKt(job, fileContent);
+      }
     } catch (error) {
       console.error(`[summary:${type}] FAILED for job ${job.id}: ${error.message}`);
       job.summaryTasks[type] = {
@@ -320,6 +326,62 @@ export class JobManager {
       this.#pushEvent(job, 'summary_failed', { type, error: error.message });
       job.updatedAt = new Date().toISOString();
     }
+  }
+
+  async #createGoogleDocForKt(job, markdownContent) {
+    job.gdocsStatus = 'creating';
+    this.#pushEvent(job, 'gdocs_creating', {});
+    job.updatedAt = new Date().toISOString();
+    this.#schedulePersist();
+    try {
+      const meetCode = (job.meetUrl || '').split('/').pop().split('?')[0] || job.id;
+      const dateStr = new Date(job.createdAt || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const title = `KT Document — ${meetCode} (${dateStr})`;
+
+      // Pass notify/ses emails as fallback share targets if "anyone" sharing is org-blocked.
+      const shareEmails = [this.baseConfig.notifyEmail, this.baseConfig.sesFromEmail].filter(Boolean);
+      const { docId, docUrl, sharedPublicly } = await createGoogleDocFromMarkdown(title, markdownContent, shareEmails);
+
+      job.summaryArtifacts.ktDocumentGoogleDoc = { docUrl, docId, sharedPublicly, createdAt: new Date().toISOString() };
+      job.gdocsStatus = 'done';
+      job.gdocsError = null;
+      job.updatedAt = new Date().toISOString();
+      this.#pushEvent(job, 'gdocs_created', { docUrl });
+      console.log(`[gdocs] KT Document available at ${docUrl}`);
+      this.#schedulePersist();
+    } catch (error) {
+      console.error(`[gdocs] Failed to create Google Doc: ${error.message}`);
+      job.gdocsStatus = 'failed';
+      job.gdocsError = error.message;
+      job.updatedAt = new Date().toISOString();
+      this.#pushEvent(job, 'gdocs_failed', { error: error.message });
+      this.#schedulePersist();
+    }
+  }
+
+  /** Public: retry Google Doc creation from the saved .md file without regenerating KT content. */
+  async retryGoogleDoc(id) {
+    const job = this.jobs.get(id);
+    if (!job) throw new Error('Job not found');
+
+    const md = job.summaryArtifacts?.ktDocument?.localPath;
+    if (!md) throw new Error('KT Document (.md) has not been generated yet');
+
+    // Verify the file still exists and log its size so we can confirm we're using the right content.
+    let mdContent;
+    try {
+      mdContent = await fs.readFile(md, 'utf8');
+    } catch (err) {
+      throw new Error(`KT Document file not readable at ${md}: ${err.message}`);
+    }
+    console.log(`[gdocs] Retry: reading from ${md} (${Math.round(mdContent.length / 1024)}KB)`);
+
+    // Reset prior Google Doc artifact so UI shows fresh state.
+    delete job.summaryArtifacts.ktDocumentGoogleDoc;
+    job.gdocsStatus = null;
+    job.gdocsError = null;
+    this.#createGoogleDocForKt(job, mdContent);
+    return { status: 'creating' };
   }
 
   async #readJobEntries(job) {

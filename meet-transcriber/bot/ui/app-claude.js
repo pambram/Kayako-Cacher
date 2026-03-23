@@ -180,6 +180,29 @@ function renderSummarySection(job) {
       ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="btn-link">↗ ${label} file${isMarkdown ? ' (.md)' : ''}</a>`
       : '';
 
+    // Google Doc link / status — driven by job.gdocsStatus set in job-manager.
+    let gdocLink = '';
+    if (key === 'ktDocument') {
+      const gdocUrl   = job.summaryArtifacts?.ktDocumentGoogleDoc?.docUrl || '';
+      const gdocState = job.gdocsStatus || (ready ? 'idle' : '');
+      const gdocError = job.gdocsError || '';
+
+      if (gdocUrl) {
+        const shareNote = job.summaryArtifacts?.ktDocumentGoogleDoc?.sharedPublicly === false
+          ? ' (shared with you)' : '';
+        gdocLink = `<a href="${gdocUrl}" target="_blank" rel="noopener" class="btn-link" style="color:#4285f4">↗ Open in Google Docs${shareNote}</a>
+          <button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px;margin-left:4px" title="Regenerate Google Doc from latest .md file">↺ Regenerate</button>`;
+      } else if (gdocState === 'creating') {
+        gdocLink = `<span class="muted" style="font-size:0.82em"><span class="spinner" style="width:10px;height:10px;margin-right:4px"></span>Creating Google Doc…</span>`;
+      } else if (gdocState === 'failed') {
+        const errShort = gdocError ? gdocError.slice(0, 80) : 'unknown error';
+        gdocLink = `<span class="muted" style="font-size:0.82em;color:var(--danger)" title="${gdocError.replace(/"/g, '&quot;')}">✕ Google Doc failed: ${errShort}</span>
+          <button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px;margin-left:4px">Retry</button>`;
+      } else if (ready && gdocState === 'idle') {
+        gdocLink = `<button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px">Create Google Doc</button>`;
+      }
+    }
+
     // KT Document button gets a distinct style to signal it's a different operation.
     const btnClass = key === 'ktDocument' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
 
@@ -190,6 +213,7 @@ function renderSummarySection(job) {
         </button>
         ${progressBar}
         ${fileLink}
+        ${gdocLink}
       </div>`;
   }).join('');
 
@@ -364,15 +388,36 @@ function renderJobs(jobs) {
       }
     });
   });
+
+  root.querySelectorAll('button[data-gdocs-retry]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-gdocs-retry');
+      btn.disabled = true;
+      btn.textContent = 'Retrying…';
+      try {
+        const res = await fetch(`/api/jobs/${id}/gdocs-retry`, { method: 'POST' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to create Google Doc');
+        }
+        showToast('Creating Google Doc…', 'info');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        await refresh();
+      }
+    });
+  });
 }
 
 /* ─── Event Log ───────────────────────────────────────────────── */
 
 const SUCCESS_EVENTS = new Set([
   'completed', 'checkpoint_uploaded', 'batch_analyzed', 'joined',
-  'local_output_written', 'final_upload_complete', 'summary_generated'
+  'local_output_written', 'final_upload_complete', 'summary_generated',
+  'gdocs_created'
 ]);
-const DANGER_EVENTS  = new Set(['failed', 'summary_failed']);
+const DANGER_EVENTS  = new Set(['failed', 'summary_failed', 'gdocs_failed']);
 const WARNING_EVENTS = new Set(['cancelling', 'cancelled']);
 const ACCENT_EVENTS  = new Set(['summarizing', 'summary_progress', 'summary_running', 'capturing']);
 
@@ -419,6 +464,7 @@ function renderEventPanel(jobs) {
     'summary_failed', 'summary_generated', 'summary_plan',
     'analysis_error', 'analysis_quota_exceeded',
     'meta_summary_error', 'screenshot_classifier_error',
+    'gdocs_created', 'gdocs_failed',
     'failed', 'leave_warning'
   ]);
 
@@ -426,7 +472,7 @@ function renderEventPanel(jobs) {
     const shortId = line.jobId.length > 26 ? '…' + line.jobId.slice(-18) : line.jobId;
     let detail = '';
     if (DETAIL_EVENTS.has(line.event) && line.data) {
-      const msg = line.data.error || line.data.type || '';
+      const msg = line.data.error || line.data.type || line.data.docUrl || '';
       if (msg) {
         const safe = String(msg).replace(/</g, '&lt;').replace(/>/g, '&gt;');
         detail = `<span class="event-detail" title="${safe}">${safe}</span>`;
@@ -436,7 +482,7 @@ function renderEventPanel(jobs) {
       <div class="event-line">
         <span class="event-ts"  title="${line.ts}">${relativeTime(line.ts)}</span>
         <span class="event-job" title="${line.jobId}">${shortId}</span>
-        <span class="event-type ${eventClass(line.event)}">${line.event}</span>${detail}
+        <span class="event-last"><span class="event-type ${eventClass(line.event)}">${line.event}</span>${detail}</span>
       </div>`;
   }).join('');
 }

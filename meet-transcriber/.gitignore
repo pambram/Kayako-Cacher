@@ -1,3 +1,4 @@
 tmp/
 bot/.env
 bot/bot-output/
+bot/*-sa.json

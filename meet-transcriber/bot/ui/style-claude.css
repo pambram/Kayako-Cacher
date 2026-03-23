@@ -666,7 +666,7 @@ label {
 
 .event-line {
   display: grid;
-  grid-template-columns: 90px 200px 1fr;
+  grid-template-columns: 90px 200px minmax(0, 1fr);
   gap: var(--sp-3);
   padding: 4px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
@@ -674,14 +674,16 @@ label {
 }
 .event-line:last-child { border-bottom: none; }
 
-.event-ts  { color: var(--text-muted); }
+.event-ts  { color: var(--text-muted); white-space: nowrap; }
 .event-job { color: var(--accent); opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.event-type { color: var(--text-secondary); }
+/* event-type and event-detail share the last grid cell */
+.event-last { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 6px; align-items: baseline; }
+.event-type { color: var(--text-secondary); flex-shrink: 0; }
 .event-type.ev-success { color: var(--success); }
 .event-type.ev-danger  { color: var(--danger); }
 .event-type.ev-warning { color: var(--warning); }
 .event-type.ev-accent  { color: var(--accent); }
-.event-detail { color: var(--text-muted); margin-left: var(--sp-2); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; display: inline-block; vertical-align: bottom; }
+.event-detail { color: var(--text-muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 0.82em; }
 
 /* ─── Toast ─────────────────────────────────────────────────────── */
 .toast-container {

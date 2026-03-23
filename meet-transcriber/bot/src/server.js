@@ -195,6 +195,15 @@ app.post('/api/jobs/:id/cancel', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/jobs/:id/gdocs-retry', async (req, res) => {
+  try {
+    const result = await jobManager.retryGoogleDoc(req.params.id);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post('/api/jobs/:id/summaries/:type', async (req, res) => {
   try {
     const result = await jobManager.generateSummary(req.params.id, req.params.type);
