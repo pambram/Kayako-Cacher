@@ -570,14 +570,25 @@ class KayakoAIEnhancer {
       return;
     }
 
-    // If there is a non-empty selection inside the editor, operate ONLY on the selection
+    // If there is a non-empty selection inside the editor, operate ONLY on the selection.
+    // Prefer _preSelectionRange (captured on mousedown before button click clears focus)
+    // over live window.getSelection() which is usually already gone by this point.
     let textData = null;
     try {
-      const selection = window.getSelection();
-      const hasRange = selection && selection.rangeCount > 0;
-      const range = hasRange ? selection.getRangeAt(0) : null;
-      const isInEditor = range && !range.collapsed && editorElement.contains(range.commonAncestorContainer);
-      if (isInEditor) {
+      const preRange = this._preSelectionRange ? this._preSelectionRange.cloneRange() : null;
+      this._preSelectionRange = null; // consume it
+
+      // Also try live selection as a fallback (works for keyboard shortcuts)
+      const liveSel = window.getSelection();
+      const liveRange = liveSel && liveSel.rangeCount > 0 ? liveSel.getRangeAt(0) : null;
+
+      const range = (preRange && !preRange.collapsed && editorElement.contains(preRange.commonAncestorContainer))
+        ? preRange
+        : (liveRange && !liveRange.collapsed && editorElement.contains(liveRange.commonAncestorContainer))
+          ? liveRange
+          : null;
+
+      if (range) {
         const cloned = range.cloneContents();
         const holder = document.createElement('div');
         holder.appendChild(cloned);
@@ -587,9 +598,11 @@ class KayakoAIEnhancer {
           extractedText: (tmpExtraction.textWithPlaceholders || '').trim(),
           fullText: tmpExtraction.textWithPlaceholders || '',
           linkMap: tmpExtraction.linkMap || {},
+          imgMap: tmpExtraction.imgMap || {},
           selectionRange: range,
           editorElement: editorElement
         };
+        console.log(`✂️ Operating on selection (${textData.extractedText.length} chars) via ${preRange && !preRange.collapsed ? 'pre-captured range' : 'live selection'}`);
       }
     } catch (e) {
       console.warn('Selection processing failed, falling back to editor extraction:', e?.message || e);
