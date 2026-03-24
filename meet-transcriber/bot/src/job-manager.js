@@ -22,15 +22,20 @@ function newJobId() {
 }
 
 export class JobManager {
-  constructor(baseConfig) {
+  constructor(baseConfig, s3Helpers = {}) {
     this.baseConfig = baseConfig;
     this.jobs = new Map();
     this.persistTimer = null;
+    this.s3Get = s3Helpers.s3Get || null;
+    this.s3Put = s3Helpers.s3Put || null;
+    this.jobsStateKey = s3Helpers.jobsStateKey || null;
     this.statePath = path.resolve(
       baseConfig.outputDir || path.resolve(process.cwd(), 'bot-output'),
       'jobs-state.json'
     );
     this.#restoreJobsFromDisk();
+    // Restore from S3 in the background; any new local disk state takes precedence.
+    this.#restoreJobsFromS3();
     this.#schedulePersist();
   }
 
@@ -114,10 +119,54 @@ export class JobManager {
         savedAt: new Date().toISOString(),
         jobs: [...this.jobs.values()].map((job) => this.#serializeJob(job))
       };
+      // Write local disk copy.
       await fs.mkdir(path.dirname(this.statePath), { recursive: true });
       await fs.writeFile(this.statePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      // Also write to S3 so state survives container restarts and redeploys.
+      if (this.s3Put && this.jobsStateKey) {
+        await this.s3Put(this.jobsStateKey, payload).catch((err) => {
+          console.warn('Failed to persist jobs-state.json to S3:', err.message);
+        });
+      }
     } catch (error) {
       console.warn('Failed to persist jobs-state.json:', error.message);
+    }
+  }
+
+  async #restoreJobsFromS3() {
+    if (!this.s3Get || !this.jobsStateKey) return;
+    try {
+      const payload = await this.s3Get(this.jobsStateKey);
+      if (!payload || !Array.isArray(payload.jobs)) return;
+      let restored = 0;
+      for (const item of payload.jobs) {
+        // Only add jobs not already present (disk restore takes precedence).
+        if (this.jobs.has(item.id)) continue;
+        const job = {
+          ...item,
+          timer: null,
+          runnerPromise: null,
+          abortController: null
+        };
+        if (['running', 'cancelling', 'pending', 'scheduled'].includes(job.status)) {
+          job.status = 'failed';
+          job.error = job.error || 'Bot server restarted before job completion';
+          job.endedAt = job.endedAt || new Date().toISOString();
+          job.lastEvent = 'failed';
+          job.recentEvents = [
+            ...(Array.isArray(job.recentEvents) ? job.recentEvents.slice(-39) : []),
+            { ts: new Date().toISOString(), event: 'failed', payload: { error: job.error } }
+          ];
+        }
+        this.jobs.set(job.id, job);
+        restored++;
+      }
+      if (restored > 0) {
+        console.log(`Restored ${restored} job(s) from S3.`);
+        this.#schedulePersist(); // write merged state back to disk
+      }
+    } catch (error) {
+      console.warn('Failed to restore jobs-state.json from S3:', error.message);
     }
   }
 

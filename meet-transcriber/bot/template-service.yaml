@@ -245,6 +245,14 @@ Resources:
               Value: "true"
             - Name: ALLOW_PROMPT_FALLBACK
               Value: "true"
+            # Seconds of grace period after all human participants leave before the bot exits.
+            # Default 60s; tune without rebuilding by updating this value and redeploying.
+            - Name: EMPTY_MEETING_GRACE_SEC
+              Value: "60"
+            - Name: COGNITO_CLIENT_ID
+              Value: !Ref MeetFleetAppClient
+            - Name: COGNITO_DOMAIN
+              Value: !Sub "meet-fleet-auth-${AWS::AccountId}.auth.us-east-1.amazoncognito.com"
             - Name: ENABLE_STEALTH
               Value: "true"
             - Name: CHECKPOINT_UPLOAD_ENABLED
@@ -303,6 +311,24 @@ Resources:
         HttpCode: "200"
 
   # ─── ALB Listener Rule (host-based routing + Cognito auth) ────
+
+  # Priority 95: serve the root path unauthenticated so we can show a landing page.
+  # Express checks for x-amzn-oidc-identity and renders the login screen when absent.
+  MeetFleetLandingPageRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbHttpsListenerArn
+      Priority: 95
+      Conditions:
+        - Field: host-header
+          Values:
+            - meet-fleet.csaiautomations.com
+        - Field: path-pattern
+          Values:
+            - /
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref MeetFleetTargetGroup
 
   MeetFleetListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule

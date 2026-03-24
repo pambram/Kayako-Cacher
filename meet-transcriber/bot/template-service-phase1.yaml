@@ -147,6 +147,8 @@ Resources:
               Value: "true"
             - Name: ALLOW_PROMPT_FALLBACK
               Value: "true"
+            - Name: EMPTY_MEETING_GRACE_SEC
+              Value: "60"
             - Name: ENABLE_STEALTH
               Value: "true"
             - Name: CHECKPOINT_UPLOAD_ENABLED

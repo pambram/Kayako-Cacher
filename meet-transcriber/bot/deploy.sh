@@ -34,19 +34,40 @@ WILDCARD_CERT_ARN="arn:aws:acm:us-east-1:899084202472:certificate/9c1a3ced-cab6-
 # Existing ALB HTTPS listener
 ALB_HTTPS_LISTENER_ARN="arn:aws:elasticloadbalancing:us-east-1:899084202472:listener/app/alb-mcp-oauth/1b879f9413ed8a71/4921e48343dd5863"
 
-# ─── Secrets (export these in your shell or set here) ──────────
-: "${GOOGLE_OAUTH_CLIENT_ID:?Need to set GOOGLE_OAUTH_CLIENT_ID}"
-: "${GOOGLE_OAUTH_CLIENT_SECRET:?Need to set GOOGLE_OAUTH_CLIENT_SECRET}"
-: "${GOOGLE_EMAIL:?Need to set GOOGLE_EMAIL}"
-: "${GOOGLE_PASSWORD:?Need to set GOOGLE_PASSWORD}"
-: "${ANTHROPIC_API_KEY:?Need to set ANTHROPIC_API_KEY}"
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+# ─── Secrets ────────────────────────────────────────────────────
+# All modes load missing values from .env automatically.
+# You can also export them in your shell before running.
 
 PUSH_ONLY="${1:-}"
 SAM_ONLY="${1:-}"
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
+
+# Load any missing values from the local .env file first.
+ENV_FILE="$SCRIPT_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  _env_val() { grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | sed "s/^${1}=//" | tr -d "'" | tr -d '"'; }
+  [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]    && GOOGLE_OAUTH_CLIENT_ID=$(_env_val GOOGLE_OAUTH_CLIENT_ID)
+  [[ -z "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]] && GOOGLE_OAUTH_CLIENT_SECRET=$(_env_val GOOGLE_OAUTH_CLIENT_SECRET)
+  [[ -z "${GOOGLE_EMAIL:-}" ]]              && GOOGLE_EMAIL=$(_env_val GOOGLE_EMAIL)
+  [[ -z "${GOOGLE_PASSWORD:-}" ]]           && GOOGLE_PASSWORD=$(_env_val GOOGLE_PASSWORD)
+  [[ -z "${ANTHROPIC_API_KEY:-}" ]]         && ANTHROPIC_API_KEY=$(_env_val ANTHROPIC_API_KEY)
+  [[ -z "${OPENAI_API_KEY:-}" ]]            && OPENAI_API_KEY=$(_env_val OPENAI_API_KEY)
+fi
+
+GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}"
+GOOGLE_OAUTH_CLIENT_SECRET="${GOOGLE_OAUTH_CLIENT_SECRET:-}"
+GOOGLE_EMAIL="${GOOGLE_EMAIL:-}"
+GOOGLE_PASSWORD="${GOOGLE_PASSWORD:-}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+
+# Validate that the minimum required secrets are present for modes that need them.
+if [[ "$PUSH_ONLY" != "--push-only" ]]; then
+  [[ -z "$GOOGLE_OAUTH_CLIENT_ID" ]]  && { echo "Error: GOOGLE_OAUTH_CLIENT_ID not set (add to .env or export)"; exit 1; }
+  [[ -z "$GOOGLE_EMAIL" ]]            && { echo "Error: GOOGLE_EMAIL not set (add to .env or export)"; exit 1; }
+  [[ -z "$ANTHROPIC_API_KEY" ]]       && { echo "Error: ANTHROPIC_API_KEY not set (add to .env or export)"; exit 1; }
+fi
 
 echo "==> Meet Fleet deploy  [region=${AWS_REGION}  account=${AWS_ACCOUNT}]"
 
@@ -103,7 +124,15 @@ if [[ "$SAM_ONLY" != "--sam-only" ]]; then
 
   if [[ "$PUSH_ONLY" == "--push-only" ]]; then
     echo ""
-    echo "==> Push complete. Skipping SAM deploy (--push-only)."
+    echo "── Push complete. Forcing ECS rolling update..."
+    aws ecs update-service \
+      --cluster meet-fleet-cluster \
+      --service meet-fleet \
+      --force-new-deployment \
+      --region "$AWS_REGION" \
+      --query 'service.{Running:runningCount,Desired:desiredCount}' \
+      --output json
+    echo "==> Done. ECS will pull the new image and roll over."
     exit 0
   fi
 fi

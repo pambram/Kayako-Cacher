@@ -790,24 +790,15 @@ document.getElementById('joinNow').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('saveObjectiveBtn').addEventListener('click', async () => {
-  try {
-    await saveConfig({
-      enableScreenshotClassifier: document.getElementById('liveEnableScreenshotClassifier').checked,
-      meetingObjective:           document.getElementById('liveMeetingObjective').value.trim()
-    });
-    showToast('Objective saved', 'success');
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-});
-
-document.getElementById('liveEnableScreenshotClassifier').addEventListener('change', queueObjectiveSave);
-document.getElementById('liveMeetingObjective').addEventListener('input', queueObjectiveSave);
-
-document.getElementById('showScheduleToggle').addEventListener('change', function () {
-  document.getElementById('scheduleSection').style.display = this.checked ? 'block' : 'none';
-});
+// Objective field animates in/out based on intelligent capture checkbox.
+function syncObjectiveVisibility() {
+  const on = document.getElementById('liveEnableScreenshotClassifier').checked;
+  const section = document.getElementById('objectiveSection');
+  section.classList.toggle('objective-expanded', on);
+  section.classList.toggle('objective-collapsed', !on);
+}
+document.getElementById('liveEnableScreenshotClassifier').addEventListener('change', syncObjectiveVisibility);
+syncObjectiveVisibility(); // apply initial state on load
 
 document.getElementById('saveConfigBtn').addEventListener('click', async () => {
   const btn = document.getElementById('saveConfigBtn');
