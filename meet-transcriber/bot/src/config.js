@@ -31,6 +31,7 @@ const DEFAULTS = {
   enableStealth: true,
   checkpointUploadEnabled: true,
   checkpointUploadMinutes: 5,
+  emptyMeetingGraceSec: 60,
   enableMetaAnalysis: false,
   metaAnalysisInterval: 5,
   metaAnalysisWindow: 5,
@@ -127,6 +128,10 @@ export function loadConfig(cliArgs = {}, options = {}) {
       cliArgs['checkpoint-upload-minutes'] || process.env.CHECKPOINT_UPLOAD_MINUTES,
       DEFAULTS.checkpointUploadMinutes
     ),
+    emptyMeetingGraceSec: parseNumber(
+      cliArgs['empty-meeting-grace-sec'] || process.env.EMPTY_MEETING_GRACE_SEC,
+      DEFAULTS.emptyMeetingGraceSec
+    ),
     enableMetaAnalysis: parseBoolean(
       cliArgs['enable-meta-analysis'] || process.env.ENABLE_META_ANALYSIS,
       DEFAULTS.enableMetaAnalysis
@@ -161,10 +166,8 @@ export function loadConfig(cliArgs = {}, options = {}) {
     sesFromEmail: cliArgs['ses-from-email'] || process.env.SES_FROM_EMAIL || DEFAULTS.sesFromEmail
   };
 
-  // Keep these fixed in UI mode for parity and stability.
+  // Stealth is always enforced; parity flags are controlled via env vars (STRICT_PROMPT_PARITY, ALLOW_PROMPT_FALLBACK).
   config.enableStealth = true;
-  config.strictPromptParity = true;
-  config.allowPromptFallback = false;
 
   config.analysisModel = normalizeAnthropicModel(config.analysisModel, DEFAULTS.analysisModel, 'analysis');
   config.summaryModel = normalizeAnthropicModel(config.summaryModel, DEFAULTS.summaryModel, 'summary');

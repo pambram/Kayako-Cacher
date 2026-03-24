@@ -282,6 +282,10 @@ function renderJobCard(job) {
     ? `<button class="btn btn-danger btn-sm" data-cancel="${job.id}">Leave meeting</button>`
     : '';
 
+  const rejoinBtn = ['ended', 'failed', 'cancelled'].includes(job.status)
+    ? `<button class="btn btn-ghost btn-sm" data-rejoin="${job.id}" title="Rejoin this meeting and continue from the last transcript">↩ Rejoin</button>`
+    : '';
+
   return `
     <div class="job-card ${job.status === 'running' ? 'job-running' : ''} ${isInactive ? 'job-inactive' : ''}"
          data-job-id="${job.id}">
@@ -315,6 +319,7 @@ function renderJobCard(job) {
         <a href="/api/jobs/${job.id}/live-transcript" target="_blank" rel="noopener"
            class="btn btn-ghost btn-sm">Live transcript</a>
         ${leaveBtn}
+        ${rejoinBtn}
       </div>
     </div>`;
 }
@@ -413,6 +418,32 @@ function renderJobs(jobs) {
       document.getElementById('eventJobFilter').value = id;
       switchTab('event-log');
       refresh();
+    });
+  });
+
+  root.querySelectorAll('button[data-rejoin]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-rejoin');
+      const priorJob = latestJobsCache?.find(j => j.id === id);
+      if (!priorJob) return;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Rejoining…';
+      try {
+        const res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ meetUrl: priorJob.meetUrl, resumeFromJobId: id })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to rejoin');
+        }
+        showToast(`Rejoining meeting, continuing from prior transcript…`, 'info');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        await refresh();
+      }
     });
   });
 
@@ -663,6 +694,7 @@ let lastRefreshAt = null;
 let lastJobsHash = '';
 let configLoaded = false;
 let viewMode = 'grid'; // 'grid' | 'list'
+let latestJobsCache = [];
 
 async function refresh() {
   let jobs = [];
@@ -678,6 +710,7 @@ async function refresh() {
   const jobsChanged = hash !== lastJobsHash;
   lastJobsHash = hash;
 
+  latestJobsCache = jobs;
   renderStats(jobs);
   if (jobsChanged) {
     renderJobs(jobs);

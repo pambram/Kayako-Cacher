@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Meet Fleet - ECS Fargate long-running service with Google OAuth via Cognito.
+  Reuses the existing alb-mcp-oauth ALB and meet-transcriber-uploads S3 bucket.
+  Deploy with deploy.sh, not directly with sam deploy.
+
+Parameters:
+
+  MeetBotImageUri:
+    Type: String
+    Description: Full ECR image URI (e.g. 899084202472.dkr.ecr.us-east-1.amazonaws.com/meet-fleet:latest)
+
+  GoogleOAuthClientId:
+    Type: String
+    NoEcho: true
+    Description: Google OAuth 2.0 client ID from Google Cloud Console
+
+  GoogleOAuthClientSecret:
+    Type: String
+    NoEcho: true
+    Description: Google OAuth 2.0 client secret from Google Cloud Console
+
+  GoogleEmail:
+    Type: String
+    Description: Google account email used by the bot to join meetings
+
+  GooglePassword:
+    Type: String
+    NoEcho: true
+    Description: Google account password
+
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+
+  # ─── Existing infrastructure (all have sane defaults) ─────────
+
+  VpcId:
+    Type: String
+    Default: vpc-01f48b79
+
+  PrivateSubnet1:
+    Type: String
+    Default: subnet-9ad3a6d1   # us-east-1a — has NAT route
+
+  PrivateSubnet2:
+    Type: String
+    Default: subnet-ee21528a   # us-east-1c — has NAT route
+
+  AlbSecurityGroupId:
+    Type: String
+    Default: sg-0e5126a9e5e91e71d  # alb-mcp-oauth SG
+
+  AlbHttpsListenerArn:
+    Type: String
+    Default: arn:aws:elasticloadbalancing:us-east-1:899084202472:listener/app/alb-mcp-oauth/1b879f9413ed8a71/4921e48343dd5863
+
+  S3Bucket:
+    Type: String
+    Default: meet-transcriber-uploads-899084202472
+
+  S3Prefix:
+    Type: String
+    Default: meet-transcriber/bot
+
+  NotifyEmail:
+    Type: String
+    Default: pablo.ambram@trilogy.com
+
+Resources:
+
+  # ─── Cognito User Pool (new, dedicated to Meet Fleet) ─────────
+
+  MeetFleetUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: meet-fleet-auth
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  MeetFleetGoogleIdP:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    DependsOn: MeetFleetUserPool
+    Properties:
+      UserPoolId: !Ref MeetFleetUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleOAuthClientId
+        client_secret: !Ref GoogleOAuthClientSecret
+        authorize_scopes: "email openid profile"
+      AttributeMapping:
+        email: email
+        given_name: given_name
+        family_name: family_name
+
+  MeetFleetUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    DependsOn: MeetFleetUserPool
+    Properties:
+      Domain: !Sub "meet-fleet-auth-${AWS::AccountId}"
+      UserPoolId: !Ref MeetFleetUserPool
+
+  MeetFleetAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: MeetFleetGoogleIdP
+    Properties:
+      UserPoolId: !Ref MeetFleetUserPool
+      ClientName: meet-fleet-alb-client
+      GenerateSecret: true             # ALB Cognito auth requires a client secret
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - Google
+      CallbackURLs:
+        - "https://meet-fleet.csaiautomations.com/oauth2/idpresponse"
+      LogoutURLs:
+        - "https://meet-fleet.csaiautomations.com/"
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # ─── ECS Cluster + IAM ────────────────────────────────────────
+
+  MeetFleetCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: meet-fleet-cluster
+
+  MeetFleetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/meet-fleet
+      RetentionInDays: 14
+
+  MeetFleetExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: meet-fleet-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  MeetFleetTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: meet-fleet-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MeetFleetDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3Access
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+              - Sid: SESAccess
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+
+  # ─── Task Definition ──────────────────────────────────────────
+
+  MeetFleetTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: meet-fleet-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '2048'       # 2 vCPU
+      Memory: '4096'    # 4 GB
+      ExecutionRoleArn: !GetAtt MeetFleetExecutionRole.Arn
+      TaskRoleArn: !GetAtt MeetFleetTaskRole.Arn
+      ContainerDefinitions:
+        - Name: meet-fleet
+          Image: !Ref MeetBotImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3030
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: HEADLESS
+              Value: "false"
+            - Name: CHROME_BIN
+              Value: /usr/bin/google-chrome
+            - Name: OUTPUT_DIR
+              Value: /tmp/bot-output
+            - Name: S3_BUCKET
+              Value: !Ref S3Bucket
+            - Name: S3_PREFIX
+              Value: !Ref S3Prefix
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: NOTIFY_EMAIL
+              Value: !Ref NotifyEmail
+            - Name: SES_FROM_EMAIL
+              Value: !Ref NotifyEmail
+            - Name: GOOGLE_EMAIL
+              Value: !Ref GoogleEmail
+            - Name: GOOGLE_PASSWORD
+              Value: !Ref GooglePassword
+            - Name: ANTHROPIC_API_KEY
+              Value: !Ref AnthropicApiKey
+            - Name: OPENAI_API_KEY
+              Value: !Ref OpenAIApiKey
+            # Prompt fallback enabled in production where background.js is baked in
+            - Name: STRICT_PROMPT_PARITY
+              Value: "true"
+            - Name: ALLOW_PROMPT_FALLBACK
+              Value: "true"
+            - Name: ENABLE_STEALTH
+              Value: "true"
+            - Name: CHECKPOINT_UPLOAD_ENABLED
+              Value: "true"
+            - Name: CHECKPOINT_UPLOAD_MINUTES
+              Value: "5"
+          # Note: Fargate does not support linuxParameters.sharedMemorySize.
+          # Chrome uses --disable-dev-shm-usage (already set in meet-session.js) to work around /dev/shm limits.
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MeetFleetLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -sf http://localhost:3030/api/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 90   # Xvfb + Chrome startup can take ~60s
+
+  # ─── Networking for ECS Service ───────────────────────────────
+
+  MeetFleetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Meet Fleet ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3030
+          ToPort: 3030
+          SourceSecurityGroupId: !Ref AlbSecurityGroupId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+
+  # ─── ALB Target Group ─────────────────────────────────────────
+
+  MeetFleetTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: meet-fleet-tg
+      Port: 3030
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+
+  # ─── ALB Listener Rule (host-based routing + Cognito auth) ────
+
+  MeetFleetListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbHttpsListenerArn
+      Priority: 100
+      Conditions:
+        - Field: host-header
+          Values:
+            - meet-fleet.csaiautomations.com
+      Actions:
+        - Type: authenticate-cognito
+          Order: 1
+          AuthenticateCognitoConfig:
+            UserPoolArn: !GetAtt MeetFleetUserPool.Arn
+            UserPoolClientId: !Ref MeetFleetAppClient
+            UserPoolDomain: !Sub "meet-fleet-auth-${AWS::AccountId}"
+            OnUnauthenticatedRequest: authenticate
+            SessionCookieName: AWSELBAuthSessionCookie
+            SessionTimeout: 86400
+        - Type: forward
+          Order: 2
+          TargetGroupArn: !Ref MeetFleetTargetGroup
+
+  # ─── ECS Service ──────────────────────────────────────────────
+
+  MeetFleetService:
+    Type: AWS::ECS::Service
+    DependsOn: MeetFleetListenerRule
+    Properties:
+      ServiceName: meet-fleet
+      Cluster: !Ref MeetFleetCluster
+      TaskDefinition: !Ref MeetFleetTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED   # Tasks use NAT gateway for outbound internet
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          SecurityGroups:
+            - !Ref MeetFleetSecurityGroup
+      LoadBalancers:
+        - ContainerName: meet-fleet
+          ContainerPort: 3030
+          TargetGroupArn: !Ref MeetFleetTargetGroup
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0    # Allow stopping the old task before starting new (1-task service)
+        MaximumPercent: 100
+
+Outputs:
+
+  ServiceUrl:
+    Value: "https://meet-fleet.csaiautomations.com"
+    Description: Public URL for the Meet Fleet dashboard
+
+  CognitoHostedUiDomain:
+    Value: !Sub "https://meet-fleet-auth-${AWS::AccountId}.auth.us-east-1.amazoncognito.com"
+    Description: Cognito hosted UI domain
+
+  GoogleCloudConsoleRedirectUri:
+    Value: !Sub "https://meet-fleet-auth-${AWS::AccountId}.auth.us-east-1.amazoncognito.com/oauth2/idpresponse"
+    Description: >
+      Add this URI to Google Cloud Console > OAuth 2.0 client > Authorized redirect URIs
+      BEFORE running deploy.sh (Cognito needs this in the Google app config)

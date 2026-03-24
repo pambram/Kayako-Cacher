@@ -350,6 +350,35 @@ async function detectMeetingEnded(page) {
   });
 }
 
+async function countNonBotParticipants(page, botName) {
+  try {
+    return await page.evaluate((ownName) => {
+      const botLower = (ownName || 'meet bot').toLowerCase();
+
+      // Try the participant count badge first — fast path.
+      const countBadge = document.querySelector('[data-participant-count], .uGOf1d, [jsname="r4nke"]');
+      if (countBadge) {
+        const n = parseInt(countBadge.textContent, 10);
+        if (!isNaN(n)) return Math.max(0, n - 1); // subtract ourselves
+      }
+
+      // Fall back to walking visible participant name elements.
+      const nameEls = Array.from(document.querySelectorAll(
+        '[jsname="A4nspb"], [jsname="GvcuGe"], .zWGUib'
+      ));
+      if (nameEls.length === 0) return null; // can't determine
+
+      const others = nameEls.filter((el) => {
+        const text = (el.textContent || '').toLowerCase().trim();
+        return text && !text.includes(botLower) && text !== 'you';
+      });
+      return others.length;
+    }, botName);
+  } catch (_error) {
+    return null; // page may be detached; caller should handle gracefully
+  }
+}
+
 async function leaveMeeting(page) {
   try {
     const clicked = await page.evaluate(() => {
@@ -556,7 +585,8 @@ export async function startMeetSession(config, hooks = {}) {
     headless: config.headless,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
-      '--no-sandbox',
+      // --no-sandbox is required on Linux (Docker/CI) but produces a warning on macOS.
+      ...(process.platform !== 'darwin' ? ['--no-sandbox'] : []),
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--disable-blink-features=AutomationControlled',
@@ -647,11 +677,43 @@ export async function startMeetSession(config, hooks = {}) {
       avState: av,
       captionsOn
     },
-    async waitForEnd() {
+    async waitForEnd(onStatus) {
+      const emptyGraceSec = config.emptyMeetingGraceSec ?? 60;
+      const emptyGraceMs  = emptyGraceSec * 1000;
+      let emptyStartedAt  = null;
+
       while (true) {
-        const ended = await detectMeetingEnded(page);
+        const ended = await detectMeetingEnded(page).catch(() => false);
         if (ended) return 'meeting-ended';
         if (Date.now() - startedAt > timeoutMs) return 'timeout';
+
+        // Detect when all humans have left — only bots remain.
+        const humanCount = await countNonBotParticipants(page, config.guestName).catch(() => null);
+        if (humanCount !== null) {
+          if (humanCount === 0) {
+            if (!emptyStartedAt) {
+              emptyStartedAt = Date.now();
+              console.log(`No human participants detected; grace period starts (${emptyGraceSec}s).`);
+              if (onStatus) onStatus('empty_meeting_grace', { graceSec: emptyGraceSec });
+            } else {
+              const elapsed = Math.floor((Date.now() - emptyStartedAt) / 1000);
+              const remaining = emptyGraceSec - elapsed;
+              console.log(`Still no humans; leaving in ${remaining}s.`);
+              if (onStatus) onStatus('empty_meeting_grace', { graceSec: emptyGraceSec, remainingSec: remaining });
+              if (Date.now() - emptyStartedAt >= emptyGraceMs) {
+                console.log('Grace period expired — leaving empty meeting.');
+                return 'participants-left';
+              }
+            }
+          } else {
+            if (emptyStartedAt) {
+              console.log(`${humanCount} human participant(s) back — grace period cancelled.`);
+              if (onStatus) onStatus('empty_meeting_grace_cancelled', { humanCount });
+            }
+            emptyStartedAt = null;
+          }
+        }
+
         await sleep(5000);
       }
     },

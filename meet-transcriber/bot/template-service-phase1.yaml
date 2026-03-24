@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Meet Fleet - Phase 1: ECS Fargate service WITHOUT Cognito auth.
+  Use this to validate Chrome/bot works in the container before adding OAuth.
+  Accessible only via the ALB (no public auth gate yet).
+
+Parameters:
+
+  MeetBotImageUri:
+    Type: String
+
+  GoogleEmail:
+    Type: String
+
+  GooglePassword:
+    Type: String
+    NoEcho: true
+
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+
+  VpcId:
+    Type: String
+    Default: vpc-01f48b79
+
+  PrivateSubnet1:
+    Type: String
+    Default: subnet-9ad3a6d1
+
+  PrivateSubnet2:
+    Type: String
+    Default: subnet-ee21528a
+
+  AlbSecurityGroupId:
+    Type: String
+    Default: sg-0e5126a9e5e91e71d
+
+  AlbHttpsListenerArn:
+    Type: String
+    Default: arn:aws:elasticloadbalancing:us-east-1:899084202472:listener/app/alb-mcp-oauth/1b879f9413ed8a71/4921e48343dd5863
+
+  S3Bucket:
+    Type: String
+    Default: meet-transcriber-uploads-899084202472
+
+Resources:
+
+  MeetFleetCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: meet-fleet-cluster
+
+  MeetFleetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/meet-fleet
+      RetentionInDays: 14
+
+  MeetFleetExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: meet-fleet-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  MeetFleetTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: meet-fleet-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MeetFleetDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+              - Effect: Allow
+                Action: [ses:SendEmail, ses:SendRawEmail]
+                Resource: "*"
+
+  MeetFleetTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: meet-fleet-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: '2048'
+      Memory: '4096'
+      ExecutionRoleArn: !GetAtt MeetFleetExecutionRole.Arn
+      TaskRoleArn: !GetAtt MeetFleetTaskRole.Arn
+      ContainerDefinitions:
+        - Name: meet-fleet
+          Image: !Ref MeetBotImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3030
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: HEADLESS
+              Value: "false"
+            - Name: CHROME_BIN
+              Value: /usr/bin/google-chrome
+            - Name: OUTPUT_DIR
+              Value: /tmp/bot-output
+            - Name: S3_BUCKET
+              Value: !Ref S3Bucket
+            - Name: S3_PREFIX
+              Value: meet-transcriber/bot
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: NOTIFY_EMAIL
+              Value: pablo.ambram@trilogy.com
+            - Name: SES_FROM_EMAIL
+              Value: pablo.ambram@trilogy.com
+            - Name: GOOGLE_EMAIL
+              Value: !Ref GoogleEmail
+            - Name: GOOGLE_PASSWORD
+              Value: !Ref GooglePassword
+            - Name: ANTHROPIC_API_KEY
+              Value: !Ref AnthropicApiKey
+            - Name: OPENAI_API_KEY
+              Value: !Ref OpenAIApiKey
+            - Name: STRICT_PROMPT_PARITY
+              Value: "true"
+            - Name: ALLOW_PROMPT_FALLBACK
+              Value: "true"
+            - Name: ENABLE_STEALTH
+              Value: "true"
+            - Name: CHECKPOINT_UPLOAD_ENABLED
+              Value: "true"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MeetFleetLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command: [CMD-SHELL, "curl -sf http://localhost:3030/api/health || exit 1"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 90
+
+  MeetFleetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Meet Fleet ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3030
+          ToPort: 3030
+          SourceSecurityGroupId: !Ref AlbSecurityGroupId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+
+  MeetFleetTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: meet-fleet-tg
+      Port: 3030
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+
+  MeetFleetListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbHttpsListenerArn
+      Priority: 100
+      Conditions:
+        - Field: host-header
+          Values: [meet-fleet.csaiautomations.com]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref MeetFleetTargetGroup
+
+  MeetFleetService:
+    Type: AWS::ECS::Service
+    DependsOn: MeetFleetListenerRule
+    Properties:
+      ServiceName: meet-fleet
+      Cluster: !Ref MeetFleetCluster
+      TaskDefinition: !Ref MeetFleetTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+          SecurityGroups: [!Ref MeetFleetSecurityGroup]
+      LoadBalancers:
+        - ContainerName: meet-fleet
+          ContainerPort: 3030
+          TargetGroupArn: !Ref MeetFleetTargetGroup
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+
+Outputs:
+  ServiceUrl:
+    Value: "https://meet-fleet.csaiautomations.com"

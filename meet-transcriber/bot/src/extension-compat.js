@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 
 function extractRegex(source, regex, label) {
@@ -10,7 +11,11 @@ function extractRegex(source, regex, label) {
 }
 
 export async function loadExtensionPromptSet() {
-  const backgroundPath = path.resolve(process.cwd(), '..', 'background.js');
+  // In Docker (WORKDIR /app, background.js copied to /app/background.js), check cwd first.
+  // In local dev (cwd = .../meet-transcriber/bot), fall back to ../background.js.
+  const cwdCandidate = path.resolve(process.cwd(), 'background.js');
+  const parentCandidate = path.resolve(process.cwd(), '..', 'background.js');
+  const backgroundPath = fsSync.existsSync(cwdCandidate) ? cwdCandidate : parentCandidate;
   const source = await fs.readFile(backgroundPath, 'utf8');
 
   const analysisPrompts = source.match(

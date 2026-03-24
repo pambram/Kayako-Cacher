@@ -40,7 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libxss1 \
     libxtst6 \
-    xdg-utils && \
+    xdg-utils \
+    xauth && \
     curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-linux-keyring.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
     apt-get update && apt-get install -y --no-install-recommends google-chrome-stable && \
@@ -52,8 +53,18 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY src ./src
+COPY ui ./ui
+# background.js is copied here by deploy.sh so extension-compat.js can load prompts at runtime
+COPY background.js ./background.js
 
 ENV CHROME_BIN=/usr/bin/google-chrome \
-    HEADLESS=false
+    HEADLESS=false \
+    DISPLAY=:99 \
+    OUTPUT_DIR=/tmp/bot-output
 
-CMD ["xvfb-run", "-a", "node", "src/index.js"]
+EXPOSE 3030
+
+# Start Xvfb as a background daemon then launch Node.js directly.
+# This way the Express server starts immediately (no Xvfb timeout dependency),
+# and Chrome finds the display when it needs it.
+CMD ["/bin/sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &\n  sleep 1\n  exec node src/start-server.js"]

@@ -165,9 +165,14 @@ export async function runMeetingBot(config, hooks = {}) {
   config.promptSet = promptResolution.promptSet;
   emit(hooks, 'prompt_source', { source: promptResolution.source });
 
-  const entries = [];
-  let previousContext = '';
+  // Resume from a prior session if provided.
+  const entries = hooks.resumeEntries ? [...hooks.resumeEntries] : [];
+  let previousContext = hooks.resumePreviousContext || '';
   let batchCounter = 0;
+  if (entries.length > 0) {
+    emit(hooks, 'resumed', { priorEntriesCount: entries.length, resumedFromJob: hooks.resumeFromJobId });
+  }
+
   let session;
   let capture;
   let captureFatalError = null;
@@ -176,6 +181,13 @@ export async function runMeetingBot(config, hooks = {}) {
     resolveCaptureFatal = resolve;
   });
   const checkpoint = await initializeLiveCheckpointFiles(config.outputDir, config.meetUrl, runId);
+  // Pre-populate the live transcript file with resumed entries so it's immediately complete.
+  if (entries.length > 0) {
+    for (const entry of entries) {
+      await appendLiveTranscriptEntry(checkpoint.liveTranscriptPath, entry);
+    }
+    await writeLiveState(checkpoint.statePath, entries, config.meetUrl);
+  }
   emit(hooks, 'checkpoint_initialized', { checkpoint });
 
   let lastCheckpointUploadAt = 0;
@@ -347,7 +359,7 @@ export async function runMeetingBot(config, hooks = {}) {
     });
 
     const endReason = await Promise.race([
-      session.waitForEnd(),
+      session.waitForEnd((event, payload) => emit(hooks, event, payload)),
       captureFatalPromise,
       abortPromise
     ]);
