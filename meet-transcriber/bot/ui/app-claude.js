@@ -147,86 +147,172 @@ function renderArtifactLinks(job) {
   return links.length ? `<div class="artifact-section">${links.join('')}</div>` : '';
 }
 
-/* ─── Summary Section ─────────────────────────────────────────── */
+/* ─── Summary Section (mini-cards) ───────────────────────────── */
+
+function renderSummaryStatusBadge(status, pct) {
+  if (status === 'running') {
+    return `<span class="smc-badge smc-badge-generating">generating ${pct}%</span>`;
+  }
+  if (status === 'completed' || status === 'idle') {
+    // 'idle' here means no task has ever run — "ready" is determined by artifact presence
+    return '';
+  }
+  if (status === 'failed') {
+    return `<span class="smc-badge smc-badge-failed">failed</span>`;
+  }
+  return '';
+}
+
+function renderSummaryMiniCard(job, { key, label, isMarkdown, description }) {
+  const task    = job.summaryTasks?.[key] || {};
+  const status  = task.status || 'idle';
+  const pct     = Number.isFinite(task.progress) ? task.progress : 0;
+  const ready   = Boolean(job.summaryArtifacts?.[key]?.localPath);
+  const fileUrl = ready ? `/api/jobs/${job.id}/summaries/${key}/file` : '';
+  const running = status === 'running';
+  const failed  = status === 'failed';
+
+  // Header: label + ready badge + generating badge
+  const readyBadge  = ready && !running ? `<span class="smc-badge smc-badge-ready">ready</span>` : '';
+  const statusBadge = renderSummaryStatusBadge(status, pct);
+
+  // Progress bar (visible while generating)
+  const progressBar = running
+    ? `<div class="progress-bar-wrap smc-progress"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`
+    : '';
+
+  // Artifact links (file)
+  const fileLink = ready
+    ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="smc-artifact-link">↗ ${label} file${isMarkdown ? ' (.md)' : ''}</a>`
+    : '';
+
+  // Error message
+  const errorMsg = (failed && task.error)
+    ? `<div class="smc-error" title="${String(task.error).replace(/"/g, '&quot;')}">${String(task.error).slice(0, 100)}</div>`
+    : '';
+
+  // ── Action buttons (type-specific) ───────────────────────
+  let actions = '';
+
+  if (key === 'ktDocument') {
+    // KT: two independent regenerate actions
+    const ktRunning = running;
+    const primaryLabel = ktRunning
+      ? `<span class="spinner"></span>Generating… ✕`
+      : ready ? '↺ Regenerate KT' : 'Generate KT';
+    const primaryAttr  = ktRunning
+      ? `data-cancel-summary="${job.id}:${key}"`
+      : `data-summary="${job.id}:${key}"`;
+
+    // Google Doc section
+    const gdocUrl   = job.summaryArtifacts?.ktDocumentGoogleDoc?.docUrl || '';
+    const gdocState = job.gdocsStatus || (ready ? 'idle' : '');
+    const gdocError = job.gdocsError || '';
+
+    let gdocArtifact = '';
+    let gdocAction   = '';
+
+    if (gdocUrl) {
+      const shareNote = job.summaryArtifacts?.ktDocumentGoogleDoc?.sharedPublicly === false
+        ? ' (shared with you)' : '';
+      gdocArtifact = `<a href="${gdocUrl}" target="_blank" rel="noopener" class="smc-artifact-link smc-artifact-gdoc">↗ Open in Google Docs${shareNote}</a>`;
+      gdocAction   = `<button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}"
+                             title="Rebuild the Google Doc from the existing .md file (faster)">
+                        ↺ Regen Google Doc
+                      </button>`;
+    } else if (gdocState === 'creating') {
+      gdocAction = `<span class="smc-creating"><span class="spinner" style="width:9px;height:9px"></span>Creating Google Doc…</span>`;
+    } else if (gdocState === 'failed') {
+      const errShort = gdocError ? gdocError.slice(0, 80) : 'unknown error';
+      gdocAction = `<span class="smc-error" title="${gdocError.replace(/"/g, '&quot;')}">${errShort}</span>
+                    <button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}">Retry</button>`;
+    } else if (ready) {
+      gdocAction = `<button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}">Create Google Doc</button>`;
+    }
+
+    actions = `
+      <div class="smc-actions">
+        <button class="btn btn-primary btn-sm" ${primaryAttr}>${primaryLabel}</button>
+        ${gdocAction}
+      </div>
+      ${fileLink}
+      ${gdocArtifact}`;
+  } else if (key === 'bullets') {
+    // Bullets: regenerate + optional incremental append
+    const bulletsRunning = running;
+    const primaryLabel = bulletsRunning
+      ? `<span class="spinner"></span>Generating… ✕`
+      : ready ? '↺ Regenerate' : 'Generate';
+    const primaryAttr  = bulletsRunning
+      ? `data-cancel-summary="${job.id}:${key}"`
+      : `data-summary="${job.id}:${key}"`;
+    const appendBtn = (ready && !running)
+      ? `<button class="btn btn-ghost btn-sm" data-summary-incremental="${job.id}:bullets"
+               title="Only generate bullets for new transcript entries since last run">
+           + Append new
+         </button>`
+      : '';
+
+    actions = `
+      <div class="smc-actions">
+        <button class="btn btn-ghost btn-sm" ${primaryAttr}>${primaryLabel}</button>
+        ${appendBtn}
+      </div>
+      ${fileLink}`;
+  } else {
+    // TL;DR and Story Arc: simple generate / regenerate
+    const thisRunning = running;
+    const primaryLabel = thisRunning
+      ? `<span class="spinner"></span>Generating… ✕`
+      : ready ? '↺ Regenerate' : 'Generate';
+    const primaryAttr  = thisRunning
+      ? `data-cancel-summary="${job.id}:${key}"`
+      : `data-summary="${job.id}:${key}"`;
+
+    const storyArcHint = (key === 'storyArc' && !ready && !running)
+      ? `<p class="smc-hint">Takes a while — runs in progressive chunks.</p>`
+      : '';
+
+    actions = `
+      <div class="smc-actions">
+        <button class="btn btn-ghost btn-sm" ${primaryAttr}>${primaryLabel}</button>
+      </div>
+      ${storyArcHint}
+      ${fileLink}`;
+  }
+
+  return `
+    <div class="summary-mini-card ${running ? 'smc-running' : ''} ${failed ? 'smc-failed' : ''}">
+      <div class="smc-header">
+        <span class="smc-label">${label}</span>
+        <div class="smc-badges">
+          ${readyBadge}
+          ${statusBadge}
+        </div>
+      </div>
+      ${progressBar}
+      ${errorMsg}
+      ${actions}
+    </div>`;
+}
 
 function renderSummarySection(job) {
   const types = [
-    { key: 'tldr',       label: 'TL;DR' },
-    { key: 'bullets',    label: 'Bullets' },
-    { key: 'storyArc',   label: 'Story Arc' }
+    { key: 'tldr',     label: 'TL;DR',      description: 'Concise executive summary' },
+    { key: 'bullets',  label: 'Bullets',     description: 'Status update bullet points' },
+    { key: 'storyArc', label: 'Story Arc',   description: 'Narrative arc of the meeting' }
   ];
 
-  // KT Document only available when intelligent screenshot capture was enabled for this job.
   if (job.classifierConfig?.enabled) {
-    types.push({ key: 'ktDocument', label: 'KT Document', isMarkdown: true });
+    types.push({ key: 'ktDocument', label: 'KT Document', isMarkdown: true, description: 'Knowledge transfer doc + Google Docs' });
   }
 
-  const items = types.map(({ key, label, isMarkdown }) => {
-    const task    = job.summaryTasks?.[key] || {};
-    const status  = task.status || 'idle';
-    const pct     = Number.isFinite(task.progress) ? task.progress : 0;
-    const ready   = Boolean(job.summaryArtifacts?.[key]?.localPath);
-    const fileUrl = ready ? `/api/jobs/${job.id}/summaries/${key}/file` : '';
-    const running = status === 'running';
-    const mr      = task.mode === 'map_reduce';
-
-    const alreadyDone = ready && !running;
-    const btnLabel = running
-      ? `<span class="spinner"></span>${label} (${pct}%) ✕`
-      : alreadyDone
-        ? `↺ Regenerate ${label}`
-        : `${label}${mr ? ' ↻' : ''}`;
-
-    const progressBar = running
-      ? `<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`
-      : '';
-
-    // Markdown files open inline; add download link too.
-    const fileLink = ready
-      ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="btn-link">↗ ${label} file${isMarkdown ? ' (.md)' : ''}</a>`
-      : '';
-
-    // Google Doc link / status — driven by job.gdocsStatus set in job-manager.
-    let gdocLink = '';
-    if (key === 'ktDocument') {
-      const gdocUrl   = job.summaryArtifacts?.ktDocumentGoogleDoc?.docUrl || '';
-      const gdocState = job.gdocsStatus || (ready ? 'idle' : '');
-      const gdocError = job.gdocsError || '';
-
-      if (gdocUrl) {
-        const shareNote = job.summaryArtifacts?.ktDocumentGoogleDoc?.sharedPublicly === false
-          ? ' (shared with you)' : '';
-        gdocLink = `<a href="${gdocUrl}" target="_blank" rel="noopener" class="btn-link" style="color:#4285f4">↗ Open in Google Docs${shareNote}</a>
-          <button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px;margin-left:4px" title="Regenerate Google Doc from latest .md file">↺ Regenerate</button>`;
-      } else if (gdocState === 'creating') {
-        gdocLink = `<span class="muted" style="font-size:0.82em"><span class="spinner" style="width:10px;height:10px;margin-right:4px"></span>Creating Google Doc…</span>`;
-      } else if (gdocState === 'failed') {
-        const errShort = gdocError ? gdocError.slice(0, 80) : 'unknown error';
-        gdocLink = `<span class="muted" style="font-size:0.82em;color:var(--danger)" title="${gdocError.replace(/"/g, '&quot;')}">✕ Google Doc failed: ${errShort}</span>
-          <button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px;margin-left:4px">Retry</button>`;
-      } else if (ready && gdocState === 'idle') {
-        gdocLink = `<button class="btn btn-ghost btn-sm" data-gdocs-retry="${job.id}" style="font-size:0.78em;padding:2px 8px">Create Google Doc</button>`;
-      }
-    }
-
-    const btnClass = key === 'ktDocument' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
-    const dataAttr = running ? `data-cancel-summary="${job.id}:${key}"` : `data-summary="${job.id}:${key}"`;
-
-    return `
-      <div class="summary-action-item">
-        <button class="${btnClass}" ${dataAttr}>
-          ${btnLabel}
-        </button>
-        ${progressBar}
-        ${fileLink}
-        ${gdocLink}
-      </div>`;
-  }).join('');
+  const cards = types.map(t => renderSummaryMiniCard(job, t)).join('');
 
   return `
     <div class="summary-section">
       <div class="summary-label">Summaries</div>
-      <div class="summary-actions">${items}</div>
+      <div class="summary-mini-grid">${cards}</div>
     </div>`;
 }
 
@@ -260,66 +346,123 @@ function renderJobRow(job) {
     </div>`;
 }
 
+/* ─── Summary availability badges (Tier 2) ───────────────────── */
+
+function renderSummaryBadges(job) {
+  const SUMMARY_KEYS = [
+    { key: 'tldr',       label: 'TL;DR' },
+    { key: 'bullets',    label: 'Bullets' },
+    { key: 'storyArc',   label: 'Arc' },
+    { key: 'ktDocument', label: 'KT' }
+  ];
+
+  const badges = SUMMARY_KEYS
+    .filter(({ key }) => job.summaryArtifacts?.[key]?.localPath)
+    .map(({ key, label }) => {
+      const url = `/api/jobs/${job.id}/summaries/${key}/file`;
+      const isKt = key === 'ktDocument';
+      const gdocUrl = isKt ? (job.summaryArtifacts?.ktDocumentGoogleDoc?.docUrl || '') : '';
+      if (gdocUrl) {
+        return `<a href="${gdocUrl}" target="_blank" rel="noopener" class="summary-badge summary-badge-gdoc" title="Open KT Document in Google Docs">↗ Google Docs</a>`;
+      }
+      return `<a href="${url}" target="_blank" rel="noopener" class="summary-badge" title="${label}">${label}</a>`;
+    });
+
+  // Show in-progress summaries too
+  const inProgress = Object.entries(job.summaryTasks || {})
+    .filter(([, t]) => t?.status === 'running')
+    .map(([key]) => {
+      const pct = job.summaryTasks[key]?.progress || 0;
+      const label = key === 'ktDocument' ? 'KT' : key === 'storyArc' ? 'Arc' : key === 'tldr' ? 'TL;DR' : 'Bullets';
+      return `<span class="summary-badge summary-badge-running">${label} ${pct}%</span>`;
+    });
+
+  const all = [...badges, ...inProgress];
+  return all.length ? `<div class="summary-badge-row">${all.join('')}</div>` : '';
+}
+
 /* ─── Job Card ────────────────────────────────────────────────── */
 
 function renderJobCard(job) {
-  const duration = formatDuration(job.startedAt, job.endedAt);
+  const duration   = formatDuration(job.startedAt, job.endedAt);
   const isInactive = job.status === 'failed' || job.status === 'cancelled' || job.status === 'ended';
+  const isRunning  = job.status === 'running' || job.status === 'cancelling';
+  // Running jobs auto-expand; everything else starts collapsed
+  const expanded   = isRunning;
 
-  const classifierLine = job.classifierConfig?.enabled
-    ? `<div class="meta-item">
-         <span class="meta-label">📸 screenshots:</span>
-         ${job.classifierConfig.model || 'on'}
-       </div>
-       ${job.classifierConfig.meetingObjective ? `<div class="meta-item"><span class="meta-label">objective:</span> ${job.classifierConfig.meetingObjective}</div>` : ''}`
+  const meetCode   = (job.meetUrl || '').split('/').pop();
+  const objective  = job.classifierConfig?.meetingObjective;
+  // Tier 1 title: objective if set, otherwise the meet code
+  const cardTitle  = objective || meetCode || job.meetUrl;
+
+  // ── Tier 1 primary action ──────────────────────────────────
+  const primaryAction = isRunning
+    ? `<button class="btn btn-danger btn-sm" data-cancel="${job.id}"><span class="spinner" style="display:none"></span>Leave</button>`
+    : ['ended', 'failed', 'cancelled'].includes(job.status)
+      ? `<button class="btn btn-ghost btn-sm card-action-secondary" data-rejoin="${job.id}" title="Rejoin and continue from last transcript">↩ Rejoin</button>`
+      : '';
+
+  // ── Tier 3 (drawer) contents ───────────────────────────────
+  const classifierMeta = job.classifierConfig?.enabled
+    ? `<div class="meta-item"><span class="meta-label">screenshots:</span> ${job.classifierConfig.model || 'on'}</div>`
     : '';
 
   const errorBlock = job.error
     ? `<div class="job-error">${job.error}</div>`
     : '';
 
-  const leaveBtn = (job.status === 'running' || job.status === 'cancelling')
-    ? `<button class="btn btn-danger btn-sm" data-cancel="${job.id}">Leave meeting</button>`
-    : '';
-
-  const rejoinBtn = ['ended', 'failed', 'cancelled'].includes(job.status)
-    ? `<button class="btn btn-ghost btn-sm" data-rejoin="${job.id}" title="Rejoin this meeting and continue from the last transcript">↩ Rejoin</button>`
-    : '';
+  const drawerMeta = `
+    <div class="job-meta">
+      <div class="meta-item"><span class="meta-label">id:</span><span style="font-family:var(--font-mono);font-size:0.72rem">${job.id}</span></div>
+      ${job.lastEvent ? `<div class="meta-item"><span class="meta-label">last event:</span> ${job.lastEvent}</div>` : ''}
+      ${job.heartbeatAt ? `<div class="meta-item"><span class="meta-label">heartbeat:</span> ${relativeTime(job.heartbeatAt)}</div>` : ''}
+      ${classifierMeta}
+    </div>`;
 
   return `
-    <div class="job-card ${job.status === 'running' ? 'job-running' : ''} ${isInactive ? 'job-inactive' : ''}"
-         data-job-id="${job.id}">
+    <div class="job-card job-card-v2 ${isRunning ? 'job-running' : ''} ${isInactive ? 'job-inactive' : ''} ${job.status === 'ended' ? 'job-ended' : ''}"
+         data-job-id="${job.id}" data-expanded="${expanded}">
 
-      <div class="job-card-header">
-        <div class="job-status-group">
+      <!-- Tier 1: Headline -->
+      <div class="jc-headline">
+        <div class="jc-headline-left">
           ${renderStatusDot(job)}
-          ${renderStatusBadge(job.status)}
+          <span class="jc-title" title="${objective ? job.meetUrl : ''}">${cardTitle}</span>
         </div>
-        <span class="job-id" title="${job.id}">${job.id}</span>
+        <div class="jc-headline-right">
+          ${duration ? `<span class="jc-duration">${duration}</span>` : ''}
+          ${renderStatusBadge(job.status)}
+          ${primaryAction}
+          <button class="jc-expand-btn" data-toggle-card="${job.id}" title="Show / hide details" aria-label="Toggle details">
+            <svg class="jc-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
-      <a href="${job.meetUrl}" class="job-meet-url" target="_blank" rel="noopener"
-         title="${job.meetUrl}">${job.meetUrl}</a>
-
-      <div class="job-meta">
-        ${duration ? `<div class="meta-item"><span class="meta-label">duration:</span> ${duration}</div>` : ''}
-        <div class="meta-item"><span class="meta-label">created:</span> ${relativeTime(job.createdAt)}</div>
-        ${job.lastEvent ? `<div class="meta-item"><span class="meta-label">last:</span> ${job.lastEvent}</div>` : ''}
-        ${job.heartbeatAt ? `<div class="meta-item"><span class="meta-label">heartbeat:</span> ${relativeTime(job.heartbeatAt)}</div>` : ''}
-        ${classifierLine}
+      <!-- Tier 2: Key details (always visible) -->
+      <div class="jc-details">
+        <div class="jc-details-row">
+          <a href="${job.meetUrl}" class="jc-meet-link" target="_blank" rel="noopener" title="${job.meetUrl}">${meetCode}</a>
+          <span class="jc-created">${relativeTime(job.createdAt)}</span>
+          ${objective && meetCode !== cardTitle ? `<span class="jc-objective">${objective}</span>` : ''}
+        </div>
+        ${renderSummaryBadges(job)}
+        ${errorBlock}
       </div>
 
-      ${renderHealthChecks(job)}
-      ${errorBlock}
-      ${renderArtifactLinks(job)}
-      ${renderSummarySection(job)}
-
-      <div class="job-card-footer">
-        <button class="btn btn-ghost btn-sm" data-filterjob="${job.id}">Filter events</button>
-        <a href="/api/jobs/${job.id}/live-transcript" target="_blank" rel="noopener"
-           class="btn btn-ghost btn-sm">Live transcript</a>
-        ${leaveBtn}
-        ${rejoinBtn}
+      <!-- Tier 3: Drawer (collapsed by default) -->
+      <div class="jc-drawer" ${expanded ? '' : 'hidden'}>
+        ${renderHealthChecks(job)}
+        ${renderArtifactLinks(job)}
+        ${renderSummarySection(job)}
+        ${drawerMeta}
+        <div class="jc-drawer-footer">
+          <button class="btn btn-ghost btn-sm" data-filterjob="${job.id}">Events</button>
+          <a href="/api/jobs/${job.id}/live-transcript" target="_blank" rel="noopener"
+             class="btn btn-ghost btn-sm">Transcript</a>
+        </div>
       </div>
     </div>`;
 }
@@ -397,6 +540,28 @@ function renderJobs(jobs) {
 
   root.className = viewMode === 'list' ? 'jobs-list' : 'jobs-grid';
   root.innerHTML = sorted.map(j => viewMode === 'list' ? renderJobRow(j) : renderJobCard(j)).join('');
+
+  // Expand / collapse card drawer
+  root.querySelectorAll('button[data-toggle-card]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id   = btn.getAttribute('data-toggle-card');
+      const card = root.querySelector(`[data-job-id="${id}"]`);
+      if (!card) return;
+      const drawer  = card.querySelector('.jc-drawer');
+      const chevron = card.querySelector('.jc-chevron');
+      const isOpen  = card.getAttribute('data-expanded') === 'true';
+      card.setAttribute('data-expanded', String(!isOpen));
+      drawer.hidden  = isOpen;
+      if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
+    });
+    // Reflect initial expanded state in chevron rotation
+    const id   = btn.getAttribute('data-toggle-card');
+    const card = root.querySelector(`[data-job-id="${id}"]`);
+    if (card?.getAttribute('data-expanded') === 'true') {
+      const chevron = card.querySelector('.jc-chevron');
+      if (chevron) chevron.style.transform = 'rotate(180deg)';
+    }
+  });
 
   root.querySelectorAll('button[data-cancel]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -477,6 +642,25 @@ function renderJobs(jobs) {
           throw new Error(data.error || `Failed generating ${type}`);
         }
         showToast(`Generating ${type}…`, 'info');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        await refresh();
+      }
+    });
+  });
+
+  root.querySelectorAll('button[data-summary-incremental]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const [id, type] = btn.getAttribute('data-summary-incremental').split(':');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/jobs/${id}/summaries/${type}?incremental=true`, { method: 'POST' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Failed appending ${type}`);
+        }
+        showToast(`Appending new bullets…`, 'info');
       } catch (err) {
         showToast(err.message, 'error');
       } finally {

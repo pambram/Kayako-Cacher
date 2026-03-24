@@ -408,6 +408,67 @@ export async function generateBulletPointsMapReduce(fullTranscript, config, onPr
   return summary;
 }
 
+/**
+ * Incremental bullet generation: takes already-generated bullets and only processes
+ * transcript entries that are new since the last generation.  The LLM appends the
+ * missing time-block updates and deduplicates, preserving reverse-chronological order.
+ *
+ * If newTranscript is empty, returns existingBullets unchanged (no LLM call).
+ * If the combined token count would exceed MAX_SINGLE_SUMMARY_INPUT_TOKENS, the new
+ * transcript is chunked and folded in iteratively, seeded with the existing bullets.
+ */
+export async function generateBulletPointsIncremental(existingBullets, newTranscript, config, onProgress) {
+  if (!newTranscript || !newTranscript.trim()) {
+    return existingBullets;
+  }
+
+  const system = config.promptSet?.bulletSystem || BULLET_POINTS_SYSTEM_PROMPT;
+  const combined = existingBullets + newTranscript;
+  const estimatedTokens = estimateTokenCount(combined);
+
+  if (estimatedTokens <= MAX_SINGLE_SUMMARY_INPUT_TOKENS) {
+    const userPrompt = `<current_bullets>
+${existingBullets}
+</current_bullets>
+
+<new_entries>
+${newTranscript}
+</new_entries>
+
+These new transcript entries happened AFTER the existing bullet-point summary above.
+Add new time-block updates for the new entries only. Preserve all existing blocks unchanged.
+Maintain reverse-chronological order (most recent first).
+Deduplicate if any new entry overlaps with an already-covered topic.
+Output only the complete updated bullets (existing + new appended).`;
+
+    if (onProgress) await onProgress({ current: 1, total: 1 });
+    return llmText(config, config.bulletsModel, system, userPrompt, 3500);
+  }
+
+  // New transcript too large: chunk it and fold incrementally, seeded with existing bullets.
+  const chunks = chunkTranscriptByApproxTokens(newTranscript);
+  let bullets = existingBullets;
+
+  for (let i = 0; i < chunks.length; i += 1) {
+    const userPrompt = `<current_bullets>
+${bullets}
+</current_bullets>
+
+<new_entries>
+${chunks[i]}
+</new_entries>
+
+Add new time-block updates for the new entries. Preserve existing blocks unchanged.
+Maintain reverse-chronological order. Deduplicate overlaps.
+Output only the complete updated bullets.`;
+
+    bullets = await llmText(config, config.bulletsModel, system, userPrompt, 3500);
+    if (onProgress) await onProgress({ current: i + 1, total: chunks.length });
+  }
+
+  return bullets;
+}
+
 export async function generateStoryArc(entries, config, onProgress) {
   const chunks = groupBatchesIntoChunks(entries, 10);
   let arc = '';

@@ -6,6 +6,7 @@ import { loadExtensionPromptSet } from './extension-compat.js';
 import {
   generateTldr,
   generateBulletPoints,
+  generateBulletPointsIncremental,
   generateStoryArc,
   generateTldrMapReduce,
   generateBulletPointsMapReduce,
@@ -237,7 +238,7 @@ export class JobManager {
     return this.getJob(jobId);
   }
 
-  async generateSummary(id, type) {
+  async generateSummary(id, type, options = {}) {
     const job = this.jobs.get(id);
     if (!job) {
       throw new Error('Job not found');
@@ -262,11 +263,11 @@ export class JobManager {
       error: null,
       abortController: summaryAbort
     };
-    this.#pushEvent(job, 'summary_running', { type });
+    this.#pushEvent(job, 'summary_running', { type, incremental: Boolean(options.incremental) });
     job.updatedAt = new Date().toISOString();
 
-    this.#runSummary(job, type, summaryAbort.signal);
-    return { type, status: 'running' };
+    this.#runSummary(job, type, summaryAbort.signal, options);
+    return { type, status: 'running', incremental: Boolean(options.incremental) };
   }
 
   cancelSummary(id, type) {
@@ -288,8 +289,9 @@ export class JobManager {
     return true;
   }
 
-  async #runSummary(job, type, abortSignal) {
-    console.log(`[summary:${type}] Starting for job ${job.id}`);
+  async #runSummary(job, type, abortSignal, options = {}) {
+    const isIncremental = Boolean(options.incremental) && type === 'bullets';
+    console.log(`[summary:${type}] Starting for job ${job.id}${isIncremental ? ' (incremental)' : ''}`);
     try {
       if (abortSignal?.aborted) return;
       const entries = await this.#readJobEntries(job);
@@ -304,6 +306,98 @@ export class JobManager {
         if (config.strictPromptParity && !config.allowPromptFallback) {
           throw new Error(`Prompt parity enforcement failed: ${error.message}`);
         }
+      }
+
+      // ── Incremental bullets: only process entries newer than the last generation ──
+      if (isIncremental) {
+        const existingArtifact = job.summaryArtifacts?.bullets;
+        let existingBullets = '';
+        if (existingArtifact?.localPath) {
+          try {
+            existingBullets = await fs.readFile(existingArtifact.localPath, 'utf8');
+          } catch (_err) {
+            existingBullets = '';
+          }
+        }
+
+        // If no previous bullets, fall through to full generation below.
+        if (existingBullets) {
+          const cutoff = existingArtifact?.generatedAt || null;
+          const newEntries = cutoff
+            ? entries.filter((e) => e.timestamp > cutoff)
+            : entries;
+
+          const newTranscript = newEntries
+            .map((e) => `[${e.timestampLabel}]\n${e.content}`)
+            .join('\n\n');
+
+          if (!newTranscript.trim()) {
+            // Nothing new since last run — no LLM call needed.
+            console.log(`[summary:bullets] Incremental: no new entries since ${cutoff}. Skipping LLM.`);
+            job.summaryTasks[type] = {
+              status: 'completed',
+              progress: 100,
+              startedAt: job.summaryTasks[type]?.startedAt || new Date().toISOString(),
+              endedAt: new Date().toISOString(),
+              error: null,
+              mode: 'incremental_noop'
+            };
+            this.#pushEvent(job, 'summary_generated', {
+              type,
+              localPath: existingArtifact.localPath,
+              incremental: true,
+              newEntries: 0
+            });
+            job.updatedAt = new Date().toISOString();
+            this.#schedulePersist();
+            return;
+          }
+
+          job.summaryTasks[type].mode = 'incremental';
+          job.summaryTasks[type].estimatedInputTokens = estimateTokenCount(existingBullets + newTranscript);
+          console.log(`[summary:bullets] Incremental: ${newEntries.length} new entries since ${cutoff}`);
+          this.#pushEvent(job, 'summary_plan', {
+            type,
+            mode: 'incremental',
+            newEntries: newEntries.length
+          });
+
+          const checkAbort = () => {
+            if (abortSignal?.aborted) throw new Error('Cancelled by user');
+          };
+
+          const text = await generateBulletPointsIncremental(
+            existingBullets,
+            newTranscript,
+            config,
+            async (p) => {
+              checkAbort();
+              job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+              job.updatedAt = new Date().toISOString();
+            }
+          );
+
+          checkAbort();
+
+          const outPath = existingArtifact.localPath;
+          await fs.writeFile(outPath, text, 'utf8');
+          job.summaryArtifacts[type] = { localPath: outPath, generatedAt: new Date().toISOString() };
+          job.summaryTasks[type] = {
+            status: 'completed',
+            progress: 100,
+            startedAt: job.summaryTasks[type]?.startedAt || new Date().toISOString(),
+            endedAt: new Date().toISOString(),
+            error: null,
+            mode: 'incremental'
+          };
+          console.log(`[summary:bullets] Incremental done → ${outPath}`);
+          this.#pushEvent(job, 'summary_generated', { type, localPath: outPath, incremental: true, newEntries: newEntries.length });
+          job.updatedAt = new Date().toISOString();
+          this.#schedulePersist();
+          return;
+        }
+        // No existing bullets → fall through to full generation.
+        console.log('[summary:bullets] Incremental requested but no existing bullets — running full generation.');
       }
 
       const transcript = entries.map((entry) => `[${entry.timestampLabel}]\n${entry.content}`).join('\n\n');

@@ -295,7 +295,8 @@ app.post('/api/jobs/:id/gdocs-retry', async (req, res) => {
 
 app.post('/api/jobs/:id/summaries/:type', async (req, res) => {
   try {
-    const result = await jobManager.generateSummary(req.params.id, req.params.type);
+    const incremental = Boolean(req.query.incremental === 'true' || req.body?.incremental);
+    const result = await jobManager.generateSummary(req.params.id, req.params.type, { incremental });
     res.json({ ok: true, summary: result });
   } catch (error) {
     res.status(400).json({ error: error.message });
