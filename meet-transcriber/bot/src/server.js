@@ -333,6 +333,20 @@ app.post('/api/jobs', (req, res) => {
   }
 });
 
+app.patch('/api/jobs/:id', (req, res) => {
+  const { displayName } = req.body || {};
+  if (displayName === undefined) {
+    res.status(400).json({ error: 'displayName is required' });
+    return;
+  }
+  const ok = jobManager.renameJob(req.params.id, displayName);
+  if (!ok) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 app.post('/api/jobs/:id/cancel', (req, res) => {
   const cancelled = jobManager.cancelJob(req.params.id);
   if (!cancelled) {

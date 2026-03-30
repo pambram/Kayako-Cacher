@@ -398,8 +398,8 @@ function renderJobCard(job) {
 
   const meetCode   = (job.meetUrl || '').split('/').pop();
   const objective  = job.classifierConfig?.meetingObjective;
-  // Tier 1 title: objective if set, otherwise the meet code
-  const cardTitle  = objective || meetCode || job.meetUrl;
+  // Tier 1 title: custom displayName > objective > meet code
+  const cardTitle  = job.displayName || objective || meetCode || job.meetUrl;
 
   // ── Tier 1 primary action ──────────────────────────────────
   const primaryAction = isRunning
@@ -433,7 +433,7 @@ function renderJobCard(job) {
       <div class="jc-headline">
         <div class="jc-headline-left">
           ${renderStatusDot(job)}
-          <span class="jc-title" title="${objective ? job.meetUrl : ''}">${cardTitle}</span>
+          <span class="jc-title" data-rename-job="${job.id}" title="Click to rename" style="cursor:pointer" tabindex="0">${cardTitle}</span>
         </div>
         <div class="jc-headline-right">
           ${duration ? `<span class="jc-duration">${duration}</span>` : ''}
@@ -500,7 +500,7 @@ function renderJobs(jobs) {
 
   const matchesSearch = (j) => {
     if (!searchQ) return true;
-    const haystack = [j.meetUrl, j.status, j.id, j.classifierConfig?.meetingObjective, j.lastEvent].join(' ').toLowerCase();
+    const haystack = [j.meetUrl, j.status, j.id, j.displayName, j.classifierConfig?.meetingObjective, j.lastEvent].join(' ').toLowerCase();
     return haystack.includes(searchQ);
   };
 
@@ -548,6 +548,50 @@ function renderJobs(jobs) {
   root.innerHTML = sorted.map(j => viewMode === 'list' ? renderJobRow(j) : renderJobCard(j)).join('');
 
   // Expand / collapse card drawer
+  root.querySelectorAll('[data-rename-job]').forEach(titleEl => {
+    const id = titleEl.getAttribute('data-rename-job');
+    const startEdit = () => {
+      if (titleEl.querySelector('input')) return; // already editing
+      const current = titleEl.textContent.trim();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = current;
+      input.className = 'input';
+      input.style.cssText = 'width:100%;min-width:180px;padding:2px 6px;font-size:inherit;font-weight:inherit';
+      input.maxLength = 200;
+      titleEl.textContent = '';
+      titleEl.appendChild(input);
+      input.focus();
+      input.select();
+
+      const save = async () => {
+        const newName = input.value.trim();
+        titleEl.removeChild(input);
+        titleEl.textContent = newName || current;
+        if (newName && newName !== current) {
+          try {
+            await fetch(`/api/jobs/${id}`, {
+              method: 'PATCH',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ displayName: newName })
+            });
+          } catch (_e) {
+            // non-fatal; in-memory already updated
+          }
+        }
+      };
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.value = current; input.blur(); }
+      });
+      input.addEventListener('blur', save, { once: true });
+    };
+
+    titleEl.addEventListener('click', startEdit);
+    titleEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') startEdit(); });
+  });
+
   root.querySelectorAll('button[data-toggle-card]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id   = btn.getAttribute('data-toggle-card');
@@ -789,6 +833,11 @@ const KT_MODEL_OPTIONS = [
   'gemini-3.1-flash-lite-preview'
 ];
 
+const ALL_MODEL_OPTIONS = [
+  ...MODEL_OPTIONS,
+  ...KT_MODEL_OPTIONS
+];
+
 function setModelOptions(selectId, currentValue, options = MODEL_OPTIONS) {
   const select = document.getElementById(selectId);
   if (!select) return;
@@ -871,7 +920,7 @@ function renderCustomSummarizersEditor() {
         </div>
         <div class="form-group" style="flex:0 0 160px">
           <label>Model</label>
-          <select class="select cs-model">${MODEL_OPTIONS.map(m => `<option value="${m}" ${m === s.model ? 'selected' : ''}>${m}</option>`).join('')}</select>
+          <select class="select cs-model">${ALL_MODEL_OPTIONS.map(m => `<option value="${m}" ${m === s.model ? 'selected' : ''}>${m}</option>`).join('')}</select>
         </div>
         <div class="form-group" style="flex:0 0 130px">
           <label>Screenshots</label>
@@ -966,6 +1015,16 @@ let viewMode = 'grid'; // 'grid' | 'list'
 let latestJobsCache = [];
 
 async function refresh() {
+  // Load config before rendering jobs so custom summarizers are available.
+  if (!configLoaded) {
+    try {
+      await loadConfigIntoForm();
+      configLoaded = true;
+    } catch (_err) {
+      // Will retry next cycle.
+    }
+  }
+
   let jobs = [];
   try {
     jobs = await fetchJobs();
@@ -975,7 +1034,8 @@ async function refresh() {
 
   const filterState = document.getElementById('hideFailedJobs')?.checked;
   const searchQuery = (document.getElementById('fleetSearch')?.value || '').trim().toLowerCase();
-  const hash = JSON.stringify({ filter: filterState, view: viewMode, search: searchQuery, jobs: jobs.map(j => ({ id: j.id, status: j.status, lastEvent: j.lastEvent, updatedAt: j.updatedAt })) });
+  // Include custom summarizer count so that loading config triggers a re-render.
+  const hash = JSON.stringify({ filter: filterState, view: viewMode, search: searchQuery, customCount: customSummarizersState.length, jobs: jobs.map(j => ({ id: j.id, status: j.status, lastEvent: j.lastEvent, updatedAt: j.updatedAt })) });
   const jobsChanged = hash !== lastJobsHash;
   lastJobsHash = hash;
 
@@ -986,16 +1046,6 @@ async function refresh() {
   }
   renderEventPanel(jobs);
   lastRefreshAt = Date.now();
-
-  // Re-attempt config load if server was down on initial page load.
-  if (!configLoaded) {
-    try {
-      await loadConfigIntoForm();
-      configLoaded = true;
-    } catch (_err) {
-      // Will retry next cycle.
-    }
-  }
 }
 
 /* ─── Objective Save (debounced) ──────────────────────────────── */

@@ -17,6 +17,10 @@ function isOpenAIModel(model) {
   return String(model || '').startsWith('gpt-') || String(model || '').startsWith('o1') || String(model || '').startsWith('o3');
 }
 
+function isGeminiModel(model) {
+  return String(model || '').startsWith('gemini-');
+}
+
 async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
   for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt += 1) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -100,6 +104,9 @@ async function openaiText(apiKey, model, system, user, maxTokens = 4000) {
 function llmText(config, model, system, user, maxTokens = 4000) {
   if (isOpenAIModel(model)) {
     return openaiText(config.openaiApiKey, model, system, user, maxTokens);
+  }
+  if (isGeminiModel(model)) {
+    return geminiText(config.geminiApiKey, model, system, user, maxTokens);
   }
   return anthropicText(config.anthropicApiKey, model, system, user, maxTokens);
 }
@@ -190,6 +197,46 @@ Please use the following Markdown template for your output:
 
 ---
 IMPORTANT: Read the transcript carefully to understand the context of each screenshot link. Match the visual evidence to the text instructions perfectly.`;
+
+async function geminiText(apiKey, model, system, user, maxTokens = 4000) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [{ parts: [{ text: `${system}\n\n---\n\n${user}` }] }],
+    generationConfig: { maxOutputTokens: maxTokens }
+  };
+
+  for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt += 1) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (response.ok) {
+      const json = await response.json();
+      const parts = json.candidates?.[0]?.content?.parts || [];
+      return parts.filter((p) => typeof p.text === 'string' && p.text.trim()).map((p) => p.text).join('').trim();
+    }
+
+    let errorBody = '';
+    try {
+      const parsed = await response.json();
+      errorBody = parsed?.error?.message || JSON.stringify(parsed);
+    } catch (_e) {
+      errorBody = await response.text();
+    }
+
+    if ((response.status === 429 || response.status === 503) && attempt < RATE_LIMIT_MAX_RETRIES) {
+      const waitMs = RATE_LIMIT_BASE_WAIT_MS * (attempt + 1);
+      console.warn(`Gemini rate limit; retrying in ${waitMs}ms (attempt ${attempt + 1}/${RATE_LIMIT_MAX_RETRIES + 1})`);
+      await sleep(waitMs);
+      continue;
+    }
+
+    throw new Error(`Gemini request failed (${response.status}): ${errorBody}`);
+  }
+  throw new Error('Gemini request failed after retries');
+}
 
 async function geminiKtRequest(apiKey, model, transcript) {
   // v1beta supports URL context; v1alpha is only needed for per-part media_resolution

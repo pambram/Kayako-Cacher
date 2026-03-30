@@ -592,6 +592,15 @@ export class JobManager {
     return [];
   }
 
+  renameJob(id, displayName) {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    job.displayName = String(displayName || '').trim().slice(0, 200);
+    job.updatedAt = new Date().toISOString();
+    this.#schedulePersist();
+    return true;
+  }
+
   cancelJob(id) {
     const job = this.jobs.get(id);
     if (!job) return false;
