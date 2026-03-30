@@ -864,16 +864,17 @@ async function runTldrTask(taskKey, sessionId, fullTranscript, handle) {
 
 RULES:
 - 3-5 bullet points maximum
-- Cover: what happened, key decisions made, action items identified
+- Cover the full timeline from start to finish: what happened, key decisions, action items, and any resolution or root cause identified
+- If the issue was resolved, state who resolved it and how
 - Be specific: use real resource names, commands, metrics from the transcript
 - If nothing substantive happened, say so honestly
- - No fluff, no filler — just the essential takeaways`;
+- No fluff, no filler, no repetition`;
 
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
       const userPrompt = i === 0
         ? `Generate a TL;DR for this meeting transcript:\n\n${chunk}`
-        : `<current_tldr>\n${tldr}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk into the existing TL;DR. Keep it concise and preserve key decisions, actions, and outcomes. Output only the updated TL;DR.`;
+        : `<current_tldr>\n${tldr}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk. Ensure the final TL;DR reflects the complete resolution if one was found in later chunks. Do not drop resolution details when merging. Deduplicate; output only the updated TL;DR.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -940,137 +941,34 @@ const BULLET_POINTS_PROMPT = `Convert this meeting transcript into a bulleted st
 FORMAT RULES:
 - Group updates into 15-30 minute blocks. Do NOT create a separate block for every minute.
 - Each block starts with a time range: "Update Time: ~HH:MM - HH:MM PM" (or a single approximate time if the block is short)
-- Optionally followed by the person(s) reporting, if identifiable: "Status: Name1, Name2" (NOT "Status Update:")
 - Then the actual content as bullet points. Every content line MUST start with "- " (a dash and a space).
 - Most recent updates appear first (reverse chronological)
 - Each bullet: 1-2 lines, factual. Use specific names, resource IDs, error messages, commands, and technical details.
 - Do not editorialize. No "interestingly" or "it's worth noting". Just facts.
 - A 1-hour meeting should produce roughly 4-6 blocks, not 30+.
+- Never repeat the same information across multiple time blocks. State each fact exactly once, at the time it first occurred. Consolidate and deduplicate.
+- Ignore UI noise like meeting bot activity, transcription tool status, or modal popups.
 
-Here are two examples of the desired output format:
+<example>
+Update Time: ~3:46 PM
+- Started from an alarm monitor
+- Robert Egglestone identified the root cause: daily certificate renewal cronjob on sslutil-rhel9-1.usw2.int.khorostech.com was not running
+- Robert manually executed certbot renew; Nitin Manik confirmed the main domain certificate was restored
+- Affected community URL: https://www.googlenestcommunity.com/
+- Jira ticket: UA-17427
+- Monitoring gap: multiple subdomains and stage instances not under certificate monitoring
+- Nitin Manik committed to creating a TCR and a formal change request covering cron automation and monitoring expansion
 
-<example_1>
-Update time: Mar 13, 2026 2:15 PM GMT+0
-Status update:
- Abdul-Muizz Oyewole is now investigating while DevOps work continues on other incidents
+Update Time: ~2:50 AM
+- Ali Ahmad isolated the issue: the failure point is in message_dispatcher.Java where the "fire hose logic" creates messages for downstream services
+- Last successful execution was 15 hours ago, aligning with the start of the outage
 
-Update: 2026-03-13 13:15 UTC
-Status:
-Jhonis's investigation was unsuccessful so far. Ahmed Cakir has taken over the investigation
-Customer shared further examples for our analysis.
-If we remain stuck, we will need to involve Abdul-Muizz Oyewole
-
-Update Time: Mar 13, 2026 09:30 AM GMT
-Status Update: Ciprian Nastase
-No updates on the ticket since 6:30 AM UTC - tagged Ashu in the IM thread
-Sanket shared something with me -  a convo between him and  Ashu at around 5:51 AM UTC
-
-So it looks like no one is looking into this, as Quang never touched the ticket
-Jhonis de Souza is looking into the matter async
-
-Update Time: Mar 13, 2026 08:00 AM GMT
-Status Update: Mohammed Amer
-Following up with Ashu , they are still investigating.
-
-
-Update Time: Mar 13, 2026 06:00 AM GMT
-Status Update: Sanket Ghia
-The LIA App Nodes are NOT the root cause. The nodes are healthy, serving web traffic, and processing internal events normally. The firehose event emission is handled by a centralized external API service.
-Investigation continues.
-
-Update Time: Mar 13, 2026 05:30 AM GMT
-Status Update: Sanket Ghia
-Update from 5 am UTC indicates restart of DropBox nodes might be required.
-Current - DevOps Ashu Bhardwaj now mentioned that all nodes are down for a particular service (specially for DropBox). They are now SSH-ing into each node to confirm this hypothesis.
-
-Update Time: Mar 13, 2026 04:30 AM GMT
-Status Update: Sanket Ghia
-It seems that different communities have different issues.
-Have informed DevOps that only 2 customers have reported this.
-DevOps is continuing their investigation. Latest update.
-
-Update Time: Mar 13, 2026 04:00 AM GMT
-Status Update: Sanket Ghia
-DevOps Ashu Bhardwaj was investigating a Lambda that the previous DevOps Ali Ahmad had mentioned.
-Per further investigation, that Lambda is not the culprit and investigation is being done on other components.
-
-Update Time: Mar 13, 2026 03:31 AM GMT
-Status Update:
-\t* Ali Ahmad pinpointed the AWS account (us-west-2) and identified the specific SQS queues feeding the Firehose layer via the "pageviews" Kinesis stream.
-\t* Ali verified that public-post events have resumed over the past 15-40 minutes, but Dropbox community messages remain at zero, confirming the upstream producer stall persists.
-\t* Ashu Bhardwaj will initiate a lambda-level deep-dive on the Firehose message-dispatcher component, and Ali Ahmad will concurrently review the associated code to isolate and remediate the remaining ingestion failure.
-
-
-Update Time: Mar 13, 2026 03:08 AM GMT
-Status Update:
-\t* Pinpointed the message-dispatcher service in the Firehose pipeline as the precise failure point; it hasn't processed any messages for ~15 hours.
-\t* Discovered only a staging ALB for the Firehose layer and no production ALB; will verify and remediate the prod load-balancer configuration.
-\t* Will deep-dive into the message-dispatcher logs and code to identify the root-cause and implement a fix.
-
-Update Time: 2026-03-13 02:50
-Status Update:
-Issue Isolated: Ali Ahmad has isolated the issue by reviewing the code.
-Working Components: The initial steps - a user posting a message, the event being created, and the "entity created message" - are all working correctly.
-Broken Component Identified: The failure point is in the message_dispatcher.Java file, where the "fire hose logic" is supposed to create a message for the downstream services.
-Outage Timeline: The last successful execution of this specific message creation was 15 hours ago, which aligns with the start of the outage.
-Next Steps: He is currently trying to locate where the "Firehose" service is running to determine what is causing it to fail.
-
-
-Update Time: 2026-03-13 02:15
-Status Update:
-The Issue: The synchronization is broken for new community posts or comments, which are not showing up in the right-side activity bar. The problem is in the pipeline before the Gopher service, and he is not seeing activity resuming for the Dropbox community specifically. He noted that if a message successfully reaches Gopher, the subsequent process is working correctly.
-Action: Ali Ahmad is investigating the code and product documentation to identify the exact services in the broken part of the pipeline, their purpose, and their known breaking points to precisely pinpoint the cause of the failure.
-
-
-Update Time: Mar 13, 2026 02:23 AM GMT
-Status Update:
-\t* Identified that LIA (the upstream producer for the Dropbox community) emitted zero messages to Gopher during the outage, confirming the stall occurs before Kinesis ingestion
-\t* Observed that public-post events were fully halted for ~40 minutes before resuming; will extend log analysis to a 24-hour window to define the complete impacted period
-\t* Chintan Parekh took over from Aditi Garg to lead the Dropbox and CommScope ingestion analysis
-\t* David Rodriguez drafted a Markdown summary for the AI agent and will post it into the ticket within minutes to consolidate investigative steps
-\t* Ali Ahmad will review the streaming-plugin and firehose pipeline code to pinpoint the exact service component where ingestion is failing
-
-
-Update Time: 2026-03-13 00:40
-Status Update:
-Current working theory is that the Firehose Contract layer is not working in the complete ingestion flow.
-
-
-
-Update Time: Mar 13, 2026 12:15 AM GMT
-Status Update:
-\t* Determined that the ingestion stoppage (~15 h) impacts only a subset of Khoros Community instances and originates upstream of the Gopher ECS service; ALBs were confirmed healthy.
-\t* Applied four of five change requests under spread fast 15167; one remaining change will be applied before closing this incident.
-\t* Implemented rate-limiting WAF rules on Khoros Community endpoints to curb excessive API calls; will evaluate the customer's IPv4-whitelisting request for practicality.
-\t* Will escalate the Community-to-Care ingestion investigation to DevOps (including Ranga) to review Kinesis event routing and ECS memory metrics.
-</example_1>
-
-<example_2>
-Update: 2026-03-13 03:15
-Status: Sanket Ghia
-SaaS approval received.
-TPM and Compliance approvals pending.
-Pinged Milad Chalfoun (TPM) and Anca Zetea (Compliance) 1x1
-
-Update: 2026-03-12 22:00
-Status: Harry Tasker
-I don't see any reason to keep this IM open since there's no customer ticket and the issue is solved.
-Oh its waiting on LIA-17440
-Requested SaaS, TPM, Compliance approvals in the chat
-
-Update time: Mar 12, 2026 3:46 PM
-Status update:
-Pablo Ambram
-Started from an alarm monitor
-Robert Egglestone identified the root cause of the Google Nest Community outage: the daily certificate renewal cronjob on sslutil-rhel9-1.usw2.int.khorostech.com was not running, causing the production certificate to revert to an expired state despite a fresh cert being deployed the previous day.
-Robert manually executed certbot renew on the host; Nitin Manik confirmed the main domain certificate was restored to working state.
-Affected community URL: https://www.googlenestcommunity.com/
-Jira ticket for tracking: UA-17427
-Open question: why the previously deployed certificate was swapped out for the older/expired one - cause not yet determined.
-Monitoring gap identified: multiple subdomains and stage instances (including "stage popular" and "stage community") are not currently under certificate monitoring. Robert confirmed these are customer-facing environments, not internal, making monitoring critical.
-Nitin Manik committed to creating a TCR immediately and a formal change request covering cron automation and monitoring expansion across all stage environments.
-Meeting transitioning to monitoring status pending confirmation that cron is in place and monitoring coverage is expanded.
-</example_2>
+Update Time: ~12:15 AM
+- Ingestion stoppage (~15 h) impacts only a subset of Khoros Community instances, originates upstream of the Gopher ECS service; ALBs confirmed healthy
+- Applied four of five change requests under spread fast 15167
+- Implemented rate-limiting WAF rules on Khoros Community endpoints
+- Will escalate Community-to-Care ingestion investigation to DevOps (including Ranga)
+</example>
 
 Match this style precisely. Do not invent your own format.`;
 

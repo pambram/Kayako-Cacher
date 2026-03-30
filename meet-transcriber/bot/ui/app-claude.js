@@ -1,4 +1,4 @@
-/* app-claude.js — Meet Fleet Dashboard by Claude Sonnet */
+/* app-claude.js — Witness. Dashboard */
 
 /* ─── API ─────────────────────────────────────────────────────── */
 
@@ -307,6 +307,12 @@ function renderSummarySection(job) {
     types.push({ key: 'ktDocument', label: 'KT Document', isMarkdown: true, description: 'Knowledge transfer doc + Google Docs' });
   }
 
+  // Append enabled custom summarizers from config.
+  for (const cs of customSummarizersState) {
+    if (!cs.enabled || !cs.id) continue;
+    types.push({ key: cs.id, label: cs.name || cs.id, isMarkdown: cs.isMarkdown || false, description: cs.prompt?.slice(0, 60) || '' });
+  }
+
   const cards = types.map(t => renderSummaryMiniCard(job, t)).join('');
 
   return `
@@ -519,7 +525,7 @@ function renderJobs(jobs) {
           <circle cx="24" cy="12" r="3.5" stroke="currentColor" stroke-width="2"/>
           <circle cx="24" cy="36" r="3.5" stroke="currentColor" stroke-width="2"/>
         </svg>
-        <p>${hiddenCount > 0 ? 'All meetings are hidden by the current filter.' : 'No bots in the fleet yet.<br>Head to <strong>New Meeting</strong> to deploy one.'}</p>
+        <p>${hiddenCount > 0 ? 'All meetings are hidden by the current filter.' : 'No bots deployed yet.<br>Head to <strong>New Meeting</strong> to send Witness into a call.'}</p>
         ${hiddenMsg}
       </div>`;
     if (hiddenCount > 0) {
@@ -802,7 +808,7 @@ async function loadConfigIntoForm() {
   document.getElementById('cfgBatchSize').value                    = cfg.batchSize ?? 6;
   document.getElementById('cfgScreenshotQuality').value            = cfg.screenshotQuality ?? 50;
   document.getElementById('cfgArtifactUploadEndpoint').value       = cfg.artifactUploadEndpoint ?? '';
-  document.getElementById('cfgGuestName').value                    = cfg.guestName ?? 'Meet Bot';
+  document.getElementById('cfgGuestName').value                    = cfg.guestName ?? 'Witness';
   setModelOptions('cfgAnalysisModel',            cfg.analysisModel ?? '');
   setModelOptions('cfgSummaryModel',             cfg.summaryModel ?? '');
   setModelOptions('cfgTldrModel',                cfg.tldrModel ?? '');
@@ -810,6 +816,8 @@ async function loadConfigIntoForm() {
   setModelOptions('cfgBulletsModel',             cfg.bulletsModel ?? '');
   setModelOptions('cfgScreenshotClassifierModel', cfg.screenshotClassifierModel ?? '');
   setModelOptions('cfgKtModel', cfg.ktModel ?? 'gemini-3.1-pro-preview', KT_MODEL_OPTIONS);
+  customSummarizersState = Array.isArray(cfg.customSummarizers) ? cfg.customSummarizers : [];
+  renderCustomSummarizersEditor();
   document.getElementById('cfgEnableMetaAnalysis').checked   = Boolean(cfg.enableMetaAnalysis);
   document.getElementById('cfgMetaAnalysisInterval').value  = cfg.metaAnalysisInterval ?? 5;
   document.getElementById('cfgMetaAnalysisWindow').value    = cfg.metaAnalysisWindow ?? 5;
@@ -834,8 +842,85 @@ function collectConfigFromForm() {
     ktModel:                    document.getElementById('cfgKtModel').value,
     enableMetaAnalysis:         document.getElementById('cfgEnableMetaAnalysis').checked,
     metaAnalysisInterval:       Number(document.getElementById('cfgMetaAnalysisInterval').value),
-    metaAnalysisWindow:         Number(document.getElementById('cfgMetaAnalysisWindow').value)
+    metaAnalysisWindow:         Number(document.getElementById('cfgMetaAnalysisWindow').value),
+    customSummarizers:          collectCustomSummarizers()
   };
+}
+
+/* ─── Custom Summarizers Editor ──────────────────────────────── */
+
+let customSummarizersState = [];
+
+function slugify(name) {
+  return (name || 'custom').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 40) || 'custom';
+}
+
+function renderCustomSummarizersEditor() {
+  const root = document.getElementById('customSummarizersEditor');
+  if (!root) return;
+  if (!customSummarizersState.length) {
+    root.innerHTML = '<p class="muted" style="font-size:0.82rem">No custom summarizers yet.</p>';
+    return;
+  }
+  root.innerHTML = customSummarizersState.map((s, idx) => `
+    <div class="custom-summarizer-row" data-idx="${idx}">
+      <div class="form-row" style="align-items:flex-start;gap:var(--sp-3)">
+        <div class="form-group" style="flex:1">
+          <label>Name</label>
+          <input class="input cs-name" value="${(s.name || '').replace(/"/g, '&quot;')}" placeholder="Meeting Notes">
+        </div>
+        <div class="form-group" style="flex:0 0 160px">
+          <label>Model</label>
+          <select class="select cs-model">${MODEL_OPTIONS.map(m => `<option value="${m}" ${m === s.model ? 'selected' : ''}>${m}</option>`).join('')}</select>
+        </div>
+        <div class="form-group" style="flex:0 0 130px">
+          <label>Screenshots</label>
+          <select class="select cs-screenshots">
+            <option value="none" ${s.includeScreenshots === 'none' ? 'selected' : ''}>None</option>
+            <option value="urls" ${s.includeScreenshots === 'urls' ? 'selected' : ''}>URLs in transcript</option>
+            <option value="vision" ${s.includeScreenshots === 'vision' ? 'selected' : ''}>Vision (images)</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;padding-top:1.6rem">
+          <label class="toggle-label"><input type="checkbox" class="cs-markdown" ${s.isMarkdown ? 'checked' : ''}><span>Markdown</span></label>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;padding-top:1.6rem">
+          <label class="toggle-label"><input type="checkbox" class="cs-enabled" ${s.enabled !== false ? 'checked' : ''}><span>Enabled</span></label>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;padding-top:1.6rem">
+          <button class="btn btn-danger btn-sm cs-delete" data-idx="${idx}">Delete</button>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:var(--sp-2)">
+        <label>System prompt</label>
+        <textarea class="input cs-prompt" rows="4" style="width:100%;font-family:var(--font-mono);font-size:0.82rem">${(s.prompt || '').replace(/</g, '&lt;')}</textarea>
+      </div>
+    </div>
+  `).join('<hr style="border-color:var(--border);margin:var(--sp-3) 0">');
+
+  root.querySelectorAll('.cs-delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.getAttribute('data-idx'));
+      customSummarizersState.splice(idx, 1);
+      renderCustomSummarizersEditor();
+    });
+  });
+}
+
+function collectCustomSummarizers() {
+  const rows = document.querySelectorAll('.custom-summarizer-row');
+  return Array.from(rows).map((row, idx) => {
+    const name = row.querySelector('.cs-name')?.value?.trim() || `Custom ${idx + 1}`;
+    return {
+      id: customSummarizersState[idx]?.id || slugify(name),
+      name,
+      model: row.querySelector('.cs-model')?.value || 'claude-sonnet-4-6',
+      prompt: row.querySelector('.cs-prompt')?.value || '',
+      includeScreenshots: row.querySelector('.cs-screenshots')?.value || 'none',
+      isMarkdown: row.querySelector('.cs-markdown')?.checked || false,
+      enabled: row.querySelector('.cs-enabled')?.checked !== false
+    };
+  });
 }
 
 /* ─── Health Check ────────────────────────────────────────────── */
@@ -958,7 +1043,7 @@ document.getElementById('joinNow').addEventListener('click', async () => {
       const data = await res.json();
       throw new Error(data.error || 'Failed to create job');
     }
-    showToast('Bot deployed! Joining meeting…', 'success');
+    showToast('Witness deployed. Joining meeting…', 'success');
     document.getElementById('meetUrl').value = '';
     switchTab('fleet');
     await refresh();
@@ -983,6 +1068,19 @@ function syncObjectiveVisibility() {
 }
 document.getElementById('liveEnableScreenshotClassifier').addEventListener('change', syncObjectiveVisibility);
 syncObjectiveVisibility(); // apply initial state on load
+
+document.getElementById('addCustomSummarizerBtn').addEventListener('click', () => {
+  customSummarizersState.push({
+    id: slugify('custom-' + Date.now()),
+    name: '',
+    model: 'claude-sonnet-4-6',
+    prompt: '',
+    includeScreenshots: 'none',
+    isMarkdown: false,
+    enabled: true
+  });
+  renderCustomSummarizersEditor();
+});
 
 document.getElementById('saveConfigBtn').addEventListener('click', async () => {
   const btn = document.getElementById('saveConfigBtn');

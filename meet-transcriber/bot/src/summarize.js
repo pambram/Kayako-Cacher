@@ -104,6 +104,34 @@ function llmText(config, model, system, user, maxTokens = 4000) {
   return anthropicText(config.anthropicApiKey, model, system, user, maxTokens);
 }
 
+/**
+ * Generates a summary using a user-defined custom summarizer definition.
+ * Supports map-reduce for large transcripts and optional vision input.
+ */
+export async function generateCustomSummary(transcript, config, summarizerDef, onProgress) {
+  const model = summarizerDef.model || config.summaryModel || 'claude-sonnet-4-6';
+  const system = summarizerDef.prompt || 'Summarize this meeting transcript concisely.';
+  const maxTokens = 4000;
+  const inputTokens = estimateTokenCount(transcript);
+  const useMapReduce = inputTokens > MAX_SINGLE_SUMMARY_INPUT_TOKENS;
+
+  if (!useMapReduce) {
+    return llmText(config, model, system, `Summarize this meeting transcript:\n\n${transcript}`, maxTokens);
+  }
+
+  const chunks = chunkTranscriptByApproxTokens(transcript);
+  let summary = '';
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunk = chunks[i];
+    const userPrompt = i === 0
+      ? `Summarize this meeting transcript chunk:\n\n${chunk}`
+      : `<current_summary>\n${summary}\n</current_summary>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the summary by merging this new chunk. Deduplicate and preserve key details including any resolution. Output only the updated summary.`;
+    summary = await llmText(config, model, system, userPrompt, maxTokens);
+    if (onProgress) await onProgress({ current: i + 1, total: chunks.length });
+  }
+  return summary;
+}
+
 // Maximum transcript tokens accepted for KT document generation (no map-reduce — needs holistic view).
 const KT_MAX_INPUT_TOKENS = 800000;
 
@@ -362,7 +390,7 @@ export async function generateTldrMapReduce(fullTranscript, config, onProgress) 
     const chunk = chunks[i];
     const userPrompt = i === 0
       ? `Generate a TL;DR for this meeting transcript chunk:\n\n${chunk}`
-      : `<current_tldr>\n${summary}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk into the existing TL;DR. Keep it concise and preserve key decisions, actions, and outcomes. Output only the updated TL;DR.`;
+      : `<current_tldr>\n${summary}\n</current_tldr>\n\n<new_chunk>\n${chunk}\n</new_chunk>\n\nUpdate the TL;DR by merging this new chunk. Ensure the final TL;DR reflects the complete resolution if one was found in later chunks. Do not drop resolution details when merging. Deduplicate; output only the updated TL;DR.`;
     summary = await llmText(
       config,
       config.tldrModel,

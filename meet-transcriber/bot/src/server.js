@@ -75,35 +75,88 @@ app.get('/', (req, res, next) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Meet Fleet</title>
+  <title>Witness.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400&display=swap" rel="stylesheet">
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;background:#0d0d0f;color:#eee;min-height:100vh;display:flex;align-items:center;justify-content:center}
-    .card{background:#1c1c1e;border:1px solid #2a2a2d;border-radius:16px;padding:48px 40px;max-width:420px;width:90%;text-align:center}
-    .logo{width:52px;height:52px;background:rgba(129,140,248,0.12);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:24px}
-    h1{font-size:1.6rem;font-weight:700;margin-bottom:8px;letter-spacing:-0.02em}
-    p{color:#888;font-size:0.9rem;line-height:1.6;margin-bottom:32px}
-    .btn{display:inline-flex;align-items:center;gap:10px;background:#fff;color:#111;font-size:0.95rem;font-weight:600;padding:12px 24px;border-radius:8px;text-decoration:none;border:none;cursor:pointer;transition:opacity .15s}
-    .btn:hover{opacity:.88}
-    .btn svg{flex-shrink:0}
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      font-weight: 300;
+      background: #0e0d0b;
+      color: #f5f2eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wrap {
+      max-width: 440px;
+      width: 90%;
+      padding: 48px 40px;
+      background: #1a1815;
+      border: 1px solid rgba(245,242,235,0.08);
+      border-top: 2px solid #d4820a;
+    }
+    .eyebrow {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #ef9f27;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-family: 'Playfair Display', serif;
+      font-weight: 900;
+      font-size: 2.6rem;
+      letter-spacing: -0.01em;
+      line-height: 1;
+      margin-bottom: 1rem;
+    }
+    h1 span { color: #ef9f27; }
+    .amber-bar {
+      width: 2rem;
+      height: 2px;
+      background: #d4820a;
+      margin: 1.25rem 0;
+    }
+    p {
+      font-size: 0.9rem;
+      color: rgba(245,242,235,0.55);
+      line-height: 1.75;
+      margin-bottom: 2rem;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: #d4820a;
+      color: #0e0d0b;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 12px 22px;
+      border: none;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.2s;
+      border-radius: 2px;
+    }
+    .btn:hover { background: #ef9f27; }
+    .btn svg { flex-shrink: 0; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="logo">
-      <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
-        <rect width="26" height="26" rx="7" fill="#818cf8" fill-opacity="0.12"/>
-        <circle cx="13" cy="13" r="4.5" fill="#818cf8"/>
-        <circle cx="5" cy="13" r="2.2" fill="#818cf8" opacity=".45"/>
-        <circle cx="21" cy="13" r="2.2" fill="#818cf8" opacity=".45"/>
-        <circle cx="13" cy="5" r="2.2" fill="#818cf8" opacity=".45"/>
-        <circle cx="13" cy="21" r="2.2" fill="#818cf8" opacity=".45"/>
-      </svg>
-    </div>
-    <h1>Meet Fleet</h1>
-    <p>AI-powered meeting transcription and analysis.<br>Sign in with your Google account to continue.</p>
+  <div class="wrap">
+    <p class="eyebrow">// Meeting Intelligence</p>
+    <h1>Witness<span>.</span></h1>
+    <div class="amber-bar"></div>
+    <p>Eyes and ears in every call. Sign in with your Google account to access the fleet dashboard.</p>
     <a class="btn" href="${loginUrl}">
-      <svg width="18" height="18" viewBox="0 0 18 18"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg>
+      <svg width="16" height="16" viewBox="0 0 18 18"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg>
       Sign in with Google
     </a>
   </div>
@@ -173,7 +226,8 @@ const CONFIG_KEYS = [
   'maxMeetingMinutes', 'artifactUploadEndpoint', 'analysisModel', 'summaryModel',
   'tldrModel', 'arcModel', 'bulletsModel', 'guestName', 'forceGoogleSignIn',
   'enableMetaAnalysis', 'metaAnalysisInterval', 'metaAnalysisWindow',
-  'enableScreenshotClassifier', 'screenshotClassifierModel', 'ktModel', 'meetingObjective'
+  'enableScreenshotClassifier', 'screenshotClassifierModel', 'ktModel', 'meetingObjective',
+  'customSummarizers'
 ];
 
 app.get('/api/config', async (req, res) => {
@@ -248,11 +302,15 @@ app.put('/api/config', async (req, res) => {
         updates[envKey] = body[k];
       }
     }
+    // customSummarizers is stored as JSON, not a simple env var.
+    if (Array.isArray(body.customSummarizers)) {
+      updates.CUSTOM_SUMMARIZERS = JSON.stringify(body.customSummarizers);
+    }
     // Persist to .env for local dev, AND to S3 per user for production.
     await writeEnvValues(updates);
     const userKey = userConfigKey(getUserEmail(req));
     const userPrefs = Object.fromEntries(
-      Object.keys(map)
+      [...Object.keys(map), 'customSummarizers']
         .filter((k) => Object.prototype.hasOwnProperty.call(body, k))
         .map((k) => [k, body[k]])
     );

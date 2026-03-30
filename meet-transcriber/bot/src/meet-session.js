@@ -331,10 +331,63 @@ async function ensureMeetingControlsReady(page, maxAttempts = 20, intervalMs = 2
       await sleep(700);
     }
     await dismissPostJoinConsentDialog(page);
+    const notification = await dismissInMeetingNotifications(page);
+    if (notification) {
+      console.log('Dismissed in-meeting notification:', notification.replace(/\n/g, ' '));
+    }
     await sleep(intervalMs);
   }
 
   return { av: lastAv, captionsOn: lastCaptionsOn, attempts: maxAttempts };
+}
+
+/**
+ * Dismisses generic informational/warning modals that Meet shows during a call.
+ * Examples: "Others may see your video differently", "You can still turn off your mic", etc.
+ * Returns the text of the dismissed modal if one was found, otherwise null.
+ */
+async function dismissInMeetingNotifications(page) {
+  try {
+    return await page.evaluate(() => {
+      // Button labels that indicate a dismissible notification/tip (not action dialogs).
+      const dismissLabels = ['got it', 'ok', 'dismiss', 'close', 'ok, got it', 'done'];
+      const isVisible = (node) => {
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return false;
+        const style = window.getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      };
+
+      // Find dismiss-style buttons that are visible and not inside the main toolbar.
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
+      for (const btn of buttons) {
+        const text = (btn.textContent || '').toLowerCase().trim();
+        const aria = (btn.getAttribute('aria-label') || '').toLowerCase().trim();
+        if (!dismissLabels.some((lbl) => text === lbl || aria === lbl)) continue;
+        if (!isVisible(btn)) continue;
+        // Avoid dismissing join/leave/caption controls — those have longer surrounding context.
+        const parentText = (btn.closest('[role="dialog"], [role="alertdialog"], [jsname], .VfPpkd-Jh9lGc') || btn.parentElement)
+          ?.innerText?.toLowerCase() || '';
+        if (
+          parentText.includes('leave') ||
+          parentText.includes('end the call for') ||
+          parentText.includes('turn on captions')
+        ) continue;
+        // We have a dismiss candidate.
+        const modalText = (btn.closest('[role="dialog"], [role="alertdialog"], .XKSfm-RLmnJb, .VfPpkd-Jh9lGc') || btn.parentElement)
+          ?.innerText?.slice(0, 120) || text;
+        btn.click();
+        return modalText.trim();
+      }
+      return null;
+    });
+  } catch (error) {
+    if (!String(error.message).toLowerCase().includes('detached')) {
+      console.warn('In-meeting notification dismissal error:', error.message);
+    }
+    return null;
+  }
 }
 
 async function detectMeetingEnded(page) {
@@ -686,6 +739,13 @@ export async function startMeetSession(config, hooks = {}) {
         const ended = await detectMeetingEnded(page).catch(() => false);
         if (ended) return 'meeting-ended';
         if (Date.now() - startedAt > timeoutMs) return 'timeout';
+
+        // Continuously dismiss any informational popups Meet may show during the session.
+        const notification = await dismissInMeetingNotifications(page).catch(() => null);
+        if (notification) {
+          console.log('Dismissed in-meeting notification (during wait):', notification.replace(/\n/g, ' '));
+          if (onStatus) onStatus('notification_dismissed', { text: notification.slice(0, 120) });
+        }
 
         // Detect when all humans have left — only bots remain.
         const humanCount = await countNonBotParticipants(page, config.guestName).catch(() => null);

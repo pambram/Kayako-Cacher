@@ -205,7 +205,8 @@ export async function runMeetingBot(config, hooks = {}) {
   }
 
   const maybeUploadCheckpoint = async (force = false) => {
-    ensureNotAborted(abortSignal);
+    // Do not gate forced uploads on abort — we always want the final S3 snapshot.
+    if (!force) ensureNotAborted(abortSignal);
     if (!config.s3Bucket || !config.checkpointUploadEnabled) return;
     const now = Date.now();
     if (!force && now - lastCheckpointUploadAt < checkpointIntervalMs) return;
@@ -366,6 +367,11 @@ export async function runMeetingBot(config, hooks = {}) {
     if (endReason === 'aborted') {
       emit(hooks, 'cancelled', { reason: 'user-request' });
     }
+    if (endReason === 'participants-left') {
+      // Bot left because all humans were gone — not a failure, treat as user-ended.
+      emit(hooks, 'participants_left', {});
+      await session.leave().catch(() => {});
+    }
     emit(hooks, 'meeting_end_detected', { endReason });
     await capture.stop();
     emit(hooks, 'capture_stopped', {});
@@ -391,16 +397,20 @@ export async function runMeetingBot(config, hooks = {}) {
   const transcript = buildTranscript(entries);
   emit(hooks, 'transcript_ready', { entriesCount: entries.length });
 
-  if (abortSignal?.aborted) {
+  const userEnded = abortSignal?.aborted || endReason === 'participants-left';
+  if (userEnded) {
     const transcriptLink = latestCheckpointUpload?.files?.find((file) => file.name.includes('live'))?.url || '';
+    const reason = endReason === 'participants-left' ? 'participants left' : 'user request';
     await sendLifecycleEmail(
       config,
-      `Meet Bot cancelled: ${config.meetUrl}`,
-      `Meet bot was cancelled.\n\nRun ID: ${runId}\nEntries captured: ${entries.length}\nMeet URL: ${config.meetUrl}\nTranscript link: ${transcriptLink || 'not available'}\nTime: ${new Date().toISOString()}`
+      `Meet Bot ended: ${config.meetUrl}`,
+      `Meet bot ended (${reason}).\n\nRun ID: ${runId}\nEntries captured: ${entries.length}\nMeet URL: ${config.meetUrl}\nTranscript link: ${transcriptLink || 'not available'}\nTime: ${new Date().toISOString()}`
     );
     return {
       runId,
       cancelled: true,
+      userEnded: true,
+      endReason,
       entriesCount: entries.length,
       checkpoint,
       latestCheckpointUpload,

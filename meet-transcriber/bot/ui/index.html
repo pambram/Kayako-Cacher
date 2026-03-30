@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Meet Fleet — Bot Dashboard</title>
+  <title>Witness. — Meeting Intelligence</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./style-claude.css">
 </head>
 <body>
@@ -14,17 +14,14 @@
   <!-- ─── Header ──────────────────────────────────────────────── -->
   <header class="app-header">
     <div class="header-left">
-      <div class="app-logo">
-        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-          <rect width="26" height="26" rx="7" fill="#818cf8" fill-opacity="0.12"/>
-          <circle cx="13" cy="13" r="4.5" fill="#818cf8"/>
-          <circle cx="5"  cy="13" r="2.2" fill="#818cf8" opacity="0.45"/>
-          <circle cx="21" cy="13" r="2.2" fill="#818cf8" opacity="0.45"/>
-          <circle cx="13" cy="5"  r="2.2" fill="#818cf8" opacity="0.45"/>
-          <circle cx="13" cy="21" r="2.2" fill="#818cf8" opacity="0.45"/>
+      <div class="app-logo" aria-hidden="true">
+        <!-- Witness amber-period logotype -->
+        <svg width="28" height="22" viewBox="0 0 28 22" fill="none">
+          <text x="0" y="18" font-family="'Playfair Display', serif" font-weight="900" font-size="18" fill="#f5f2eb">W</text>
+          <text x="18" y="18" font-family="'Playfair Display', serif" font-weight="900" font-size="18" fill="#ef9f27">.</text>
         </svg>
       </div>
-      <h1 class="app-title">Meet Fleet</h1>
+      <h1 class="app-title">Witness<span class="title-period">.</span></h1>
       <div class="health-indicator" aria-live="polite">
         <span class="health-dot" id="healthDot"></span>
         <span id="healthLabel">connecting…</span>
@@ -32,7 +29,6 @@
     </div>
     <div class="header-right">
       <span class="refresh-info" id="refreshInfo"></span>
-      <span class="model-badge" title="Built by Claude Sonnet (claude-4.6-sonnet)">Claude Sonnet</span>
     </div>
   </header>
 
@@ -64,16 +60,16 @@
   <nav class="tab-nav" role="tablist">
     <button class="tab-btn tab-active" data-tab="fleet" role="tab" aria-selected="true">
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <rect x="1" y="1" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-        <rect x="8" y="1" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-        <rect x="1" y="8" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-        <rect x="8" y="8" width="5" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="1" y="1" width="5" height="5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="8" y="1" width="5" height="5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="1" y="8" width="5" height="5" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="8" y="8" width="5" height="5" stroke="currentColor" stroke-width="1.5"/>
       </svg>
       <span>Fleet</span>
     </button>
     <button class="tab-btn" data-tab="new-meeting" role="tab" aria-selected="false">
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="1" y="1" width="12" height="12" stroke="currentColor" stroke-width="1.5"/>
         <path d="M7 4v6M4 7h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
       <span>New Meeting</span>
@@ -87,7 +83,7 @@
     </button>
     <button class="tab-btn" data-tab="event-log" role="tab" aria-selected="false">
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        <rect x="1" y="1" width="12" height="12" stroke="currentColor" stroke-width="1.5"/>
         <path d="M4 5h6M4 7h6M4 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
       </svg>
       <span>Event Log</span>
@@ -106,8 +102,8 @@
           <span>Hide failed &amp; cancelled</span>
         </label>
         <div class="view-toggle" role="group" aria-label="View mode">
-          <button id="viewGrid" class="btn btn-ghost btn-sm view-btn view-btn-active" title="Grid view">⊞</button>
-          <button id="viewList" class="btn btn-ghost btn-sm view-btn" title="List view">☰</button>
+          <button id="viewGrid" class="btn btn-ghost btn-sm view-btn view-btn-active" title="Grid view">&#9645;</button>
+          <button id="viewList" class="btn btn-ghost btn-sm view-btn" title="List view">&#9776;</button>
         </div>
       </div>
       <div class="jobs-grid" id="jobs" aria-live="polite" aria-label="Bot fleet"></div>
@@ -156,9 +152,6 @@
 
           <div class="form-actions">
             <button id="joinNow" class="btn btn-primary btn-lg">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-              </svg>
               Join Meeting
             </button>
           </div>
@@ -269,6 +262,13 @@
           </div>
         </div>
 
+        <div class="form-card" style="grid-column: 1 / -1;">
+          <h3>Custom Summarizers</h3>
+          <p class="form-hint">Define custom summarizer templates. Each appears as a button on job cards.</p>
+          <div id="customSummarizersEditor"></div>
+          <button id="addCustomSummarizerBtn" class="btn btn-ghost" style="margin-top:var(--sp-3)">+ Add Summarizer</button>
+        </div>
+
       </div>
       <div class="config-actions">
         <button id="saveConfigBtn" class="btn btn-primary">Save configuration</button>
@@ -284,11 +284,11 @@
         <button id="clearFiltersBtn" class="btn btn-ghost">Clear filters</button>
       </div>
       <div class="event-filter-presets">
-        <span class="preset-label">Quick filter:</span>
-        <button class="btn btn-ghost btn-xs" data-preset="screenshot_classifier">📸 Screenshots</button>
-        <button class="btn btn-ghost btn-xs" data-preset="batch_analyzed">📝 Batches</button>
-        <button class="btn btn-ghost btn-xs" data-preset="analysis_error">⚠️ Errors</button>
-        <button class="btn btn-ghost btn-xs" data-preset="joined">🟢 Join events</button>
+        <span class="preset-label">// quick filter:</span>
+        <button class="btn btn-ghost btn-xs" data-preset="screenshot_classifier">Screenshots</button>
+        <button class="btn btn-ghost btn-xs" data-preset="batch_analyzed">Batches</button>
+        <button class="btn btn-ghost btn-xs" data-preset="analysis_error">Errors</button>
+        <button class="btn btn-ghost btn-xs" data-preset="joined">Join events</button>
       </div>
       <div class="event-log" id="events" aria-live="polite" aria-label="Event log"></div>
     </div>

@@ -28,9 +28,11 @@ export const TLDR_SYSTEM_PROMPT = `You produce concise executive TL;DR summaries
 
 Rules:
 - 3 to 5 bullet points maximum
-- Cover what happened, key decisions, and action items
+- Cover the full timeline from start to finish: what happened, key decisions, action items, and any resolution or root cause identified
+- If the issue was resolved, state who resolved it and how
 - Prefer concrete names and facts over generic language
-- If there was little substantive activity, say that clearly`;
+- If there was little substantive activity, say that clearly
+- No repetition`;
 
 export const ARC_SYSTEM_PROMPT = `You write plain, direct meeting recounts.
 
@@ -52,13 +54,15 @@ Progressive updates:
 - Add a new section only for clear topic shifts
 - Keep output dense, not long`;
 
-export const BULLET_POINTS_SYSTEM_PROMPT = `Convert this meeting transcript into chronological status updates.
+export const BULLET_POINTS_SYSTEM_PROMPT = `Convert this meeting transcript into a bulleted status update timeline.
 
-Formatting:
-- Use repeated blocks with:
-  - "Update Time:" (or "Update:")
-  - "Status Update:" (or "Status:")
-  - concise factual lines under each block
-- Most recent updates first
-- Focus on concrete facts, decisions, ownership changes, and next actions
-- No fluff`;
+FORMAT RULES:
+- Group updates into 15-30 minute blocks. Do NOT create a separate block for every minute.
+- Each block starts with a time range: "Update Time: ~HH:MM - HH:MM PM"
+- Then the actual content as bullet points. Every content line MUST start with "- " (a dash and a space).
+- Most recent updates appear first (reverse chronological)
+- Each bullet: 1-2 lines, factual. Use specific names, resource IDs, error messages, commands, and technical details.
+- Do not editorialize. Just facts.
+- A 1-hour meeting should produce roughly 4-6 blocks, not 30+.
+- Never repeat the same information across multiple time blocks. State each fact exactly once. Consolidate and deduplicate.
+- Ignore UI noise like meeting bot activity, transcription tool status, or modal popups.`;

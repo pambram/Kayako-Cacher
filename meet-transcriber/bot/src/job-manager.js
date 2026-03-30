@@ -12,6 +12,7 @@ import {
   generateBulletPointsMapReduce,
   generateStoryArcMapReduce,
   generateKtDocument,
+  generateCustomSummary,
   estimateTokenCount,
   MAX_SINGLE_SUMMARY_INPUT_TOKENS
 } from './summarize.js';
@@ -243,8 +244,9 @@ export class JobManager {
     if (!job) {
       throw new Error('Job not found');
     }
-    const supported = ['tldr', 'bullets', 'storyArc', 'ktDocument'];
-    if (!supported.includes(type)) {
+    const builtIn = ['tldr', 'bullets', 'storyArc', 'ktDocument'];
+    const customIds = (this.baseConfig.customSummarizers || []).map((s) => s.id);
+    if (!builtIn.includes(type) && !customIds.includes(type)) {
       throw new Error(`Unsupported summary type: ${type}`);
     }
     if (job.status === 'scheduled' || job.status === 'pending') {
@@ -436,7 +438,7 @@ export class JobManager {
               job.updatedAt = new Date().toISOString();
             })
           : await generateBulletPoints(transcript, config);
-      } else {
+      } else if (type === 'storyArc') {
         text = useMapReduce
           ? await generateStoryArcMapReduce(transcript, config, async (p) => {
               checkAbort();
@@ -448,19 +450,30 @@ export class JobManager {
               job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
               job.updatedAt = new Date().toISOString();
             });
+      } else {
+        // Custom summarizer — look up definition from config.
+        const summarizerDef = (config.customSummarizers || []).find((s) => s.id === type);
+        if (!summarizerDef) throw new Error(`Custom summarizer "${type}" not found in config`);
+        text = await generateCustomSummary(transcript, config, summarizerDef, async (p) => {
+          checkAbort();
+          job.summaryTasks[type].progress = Math.floor((p.current / p.total) * 100);
+          job.updatedAt = new Date().toISOString();
+        });
       }
 
       checkAbort();
 
       await fs.mkdir(config.outputDir, { recursive: true });
-      const isMarkdown = type === 'ktDocument';
+      const customDef = (config.customSummarizers || []).find((s) => s.id === type);
+      const isMarkdown = type === 'ktDocument' || (customDef?.isMarkdown === true);
       const ext = isMarkdown ? 'md' : 'txt';
       const outPath = path.join(config.outputDir, `meet-${type}-${job.id}.${ext}`);
       let fileContent;
       if (isMarkdown) {
         fileContent = text;
       } else {
-        const title = type === 'storyArc' ? 'Story Arc' : type === 'tldr' ? 'TL;DR' : 'Bullet Points';
+        const builtInTitles = { storyArc: 'Story Arc', tldr: 'TL;DR', bullets: 'Bullet Points' };
+        const title = builtInTitles[type] || customDef?.name || type;
         const header = [
           `Google Meet - ${title}`,
           '===========================',
@@ -698,7 +711,7 @@ export class JobManager {
       .then((result) => {
         const finalStatus = !result.cancelled
           ? 'completed'
-          : job.userInitiatedLeave ? 'ended' : 'cancelled';
+          : (result.userEnded || job.userInitiatedLeave) ? 'ended' : 'cancelled';
         job.status = finalStatus;
         job.endedAt = new Date().toISOString();
         job.updatedAt = job.endedAt;
@@ -709,8 +722,8 @@ export class JobManager {
         this.#pushEvent(job, finalStatus, { entriesCount: result.entriesCount });
       })
       .catch((error) => {
-        const wasCancelled = job.lastEvent === 'cancelling';
-        job.status = wasCancelled ? 'cancelled' : 'failed';
+        const isUserLeave = job.userInitiatedLeave || error?.name === 'RunAbortedError';
+        job.status = isUserLeave ? 'ended' : 'failed';
         job.error = error.message;
         job.endedAt = new Date().toISOString();
         job.updatedAt = job.endedAt;

@@ -10,9 +10,10 @@
 #   2. Verify SES sender: aws ses verify-email-identity --email-address pablo.ambram@trilogy.com
 #
 # Usage:
-#   ./deploy.sh              # full build + deploy
-#   ./deploy.sh --push-only  # rebuild and push Docker image only (no SAM)
-#   ./deploy.sh --sam-only   # SAM deploy only (skip Docker build, use existing image)
+#   ./deploy.sh                    # full build + deploy
+#   ./deploy.sh --push-only        # rebuild and push Docker image only (no SAM)
+#   ./deploy.sh --sam-only         # SAM deploy only (skip Docker build, use existing image)
+#   ./deploy.sh --force-ecs-deploy # force ECS rolling update using the already-pushed image (no build, no SAM)
 
 set -euo pipefail
 
@@ -38,10 +39,27 @@ ALB_HTTPS_LISTENER_ARN="arn:aws:elasticloadbalancing:us-east-1:899084202472:list
 # All modes load missing values from .env automatically.
 # You can also export them in your shell before running.
 
-PUSH_ONLY="${1:-}"
-SAM_ONLY="${1:-}"
+MODE="${1:-}"
+PUSH_ONLY="$MODE"
+SAM_ONLY="$MODE"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
+
+# ─── --force-ecs-deploy: skip build and SAM, just cycle the ECS service ───
+if [[ "$MODE" == "--force-ecs-deploy" ]]; then
+  echo "==> Meet Fleet — force ECS rolling update  [cluster=${STACK_NAME}-cluster  service=${STACK_NAME}]"
+  aws ecs update-service \
+    --cluster "${STACK_NAME}-cluster" \
+    --service "$STACK_NAME" \
+    --force-new-deployment \
+    --region "$AWS_REGION" \
+    --query 'service.{Running:runningCount,Desired:desiredCount,Status:status}' \
+    --output json
+  echo ""
+  echo "==> Done. ECS will pull the latest image and perform a rolling replacement."
+  echo "    Watch progress: aws ecs wait services-stable --cluster ${STACK_NAME}-cluster --services ${STACK_NAME} --region ${AWS_REGION}"
+  exit 0
+fi
 
 # Load any missing values from the local .env file first.
 ENV_FILE="$SCRIPT_DIR/.env"

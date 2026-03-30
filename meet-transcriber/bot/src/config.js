@@ -40,6 +40,41 @@ const DEFAULTS = {
   geminiApiKey: '',
   ktModel: 'gemini-3.1-pro-preview',
   meetingObjective: '',
+  customSummarizers: [
+    {
+      id: 'meeting-notes',
+      name: 'Meeting Notes',
+      enabled: true,
+      model: 'claude-sonnet-4-6',
+      prompt: `You are a professional meeting note-taker. Produce structured meeting notes in Markdown from the transcript provided.
+
+SECTIONS (use these exact headers):
+## Attendees
+List everyone mentioned or who spoke.
+
+## Agenda / Topics Discussed
+Numbered list of main topics covered.
+
+## Key Decisions
+Bullet list of decisions made, with who decided.
+
+## Action Items
+Table with columns: Action | Owner | Due/Notes
+
+## Open Questions
+Anything unresolved or flagged for follow-up.
+
+## Key Moments
+If the transcript contains screenshot URLs (markdown image links), embed the 2-3 most important ones here with a one-line caption explaining what was shown at that moment. Only include screenshots that capture a decision, a critical finding, or a key visual. If no screenshots are relevant, omit this section.
+
+RULES:
+- Be factual and specific. Use real names, resource IDs, commands, and metrics from the transcript.
+- No filler, no editorializing.
+- Keep it concise but complete.`,
+      includeScreenshots: 'urls',
+      isMarkdown: true
+    }
+  ],
   strictPromptParity: true,
   allowPromptFallback: false,
   notifyEmail: 'pablo.ambram@trilogy.com',
@@ -49,6 +84,16 @@ const DEFAULTS = {
 function parseBoolean(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+function parseJsonArray(value, fallback) {
+  if (!value || value === '') return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch (_error) {
+    return fallback;
+  }
 }
 
 function parseNumber(value, fallback) {
@@ -154,6 +199,7 @@ export function loadConfig(cliArgs = {}, options = {}) {
     geminiApiKey: cliArgs['gemini-api-key'] || process.env.GEMINI_API_KEY || DEFAULTS.geminiApiKey,
     ktModel: cliArgs['kt-model'] || process.env.KT_MODEL || DEFAULTS.ktModel,
     meetingObjective: cliArgs['meeting-objective'] || process.env.MEETING_OBJECTIVE || DEFAULTS.meetingObjective,
+    customSummarizers: parseJsonArray(process.env.CUSTOM_SUMMARIZERS, DEFAULTS.customSummarizers),
     strictPromptParity: parseBoolean(
       cliArgs['strict-prompt-parity'] || process.env.STRICT_PROMPT_PARITY,
       DEFAULTS.strictPromptParity
