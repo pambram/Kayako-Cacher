@@ -52,7 +52,8 @@ async function anthropicText(apiKey, model, system, user, maxTokens = 4000) {
     }
 
     // Auto-retry transient rate limiting using Retry-After when available.
-    if (response.status === 429 && attempt < RATE_LIMIT_MAX_RETRIES) {
+    // 429 = rate limit, 529 = Anthropic overloaded — both transient, both retryable.
+    if ((response.status === 429 || response.status === 529) && attempt < RATE_LIMIT_MAX_RETRIES) {
       const retryAfterHeader = response.headers.get('retry-after');
       const retryAfterSec = Number(retryAfterHeader);
       const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0

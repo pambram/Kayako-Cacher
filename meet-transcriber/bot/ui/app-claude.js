@@ -129,6 +129,12 @@ function renderHealthChecks(job) {
 
 /* ─── Artifact Links ──────────────────────────────────────────── */
 
+function s3LinkHref(file) {
+  // Always use the presign proxy so URLs never expire.
+  if (file.key) return `/api/s3/presign?key=${encodeURIComponent(file.key)}`;
+  return file.url || '#';
+}
+
 function renderArtifactLinks(job) {
   const links = [];
 
@@ -137,11 +143,21 @@ function renderArtifactLinks(job) {
     let label = 'checkpoint';
     if (name.includes('live') && name.endsWith('.txt')) label = 'transcript (s3)';
     else if (name.includes('state') && name.endsWith('.json')) label = 'state (s3)';
-    links.push(`<a href="${file.url}" target="_blank" rel="noopener" class="artifact-link">↗ ${label}</a>`);
+    const href = s3LinkHref(file);
+    if (file.key) {
+      // Presign proxy — generates a fresh URL before navigating.
+      links.push(`<a href="#" data-s3-open="${encodeURIComponent(file.key)}" class="artifact-link">↗ ${label}</a>`);
+    } else {
+      links.push(`<a href="${href}" target="_blank" rel="noopener" class="artifact-link">↗ ${label}</a>`);
+    }
   });
 
   (job.finalLinks || []).forEach(file => {
-    links.push(`<a href="${file.url}" target="_blank" rel="noopener" class="artifact-link">↗ ${file.name}</a>`);
+    if (file.key) {
+      links.push(`<a href="#" data-s3-open="${encodeURIComponent(file.key)}" class="artifact-link">↗ ${file.name}</a>`);
+    } else {
+      links.push(`<a href="${file.url || '#'}" target="_blank" rel="noopener" class="artifact-link">↗ ${file.name}</a>`);
+    }
   });
 
   return links.length ? `<div class="artifact-section">${links.join('')}</div>` : '';
@@ -393,8 +409,8 @@ function renderJobCard(job) {
   const duration   = formatDuration(job.startedAt, job.endedAt);
   const isInactive = job.status === 'failed' || job.status === 'cancelled' || job.status === 'ended';
   const isRunning  = job.status === 'running' || job.status === 'cancelling';
-  // Running jobs auto-expand; everything else starts collapsed
-  const expanded   = isRunning;
+  // Running jobs auto-expand; preserve user's manual toggle across re-renders
+  const expanded = jobExpandedState.has(job.id) ? jobExpandedState.get(job.id) : isRunning;
 
   const meetCode   = (job.meetUrl || '').split('/').pop();
   const objective  = job.classifierConfig?.meetingObjective;
@@ -437,7 +453,7 @@ function renderJobCard(job) {
         </div>
         <div class="jc-headline-right">
           ${duration ? `<span class="jc-duration">${duration}</span>` : ''}
-          ${renderStatusBadge(job.status)}
+          <span data-status-badge="${job.id}" title="Click to change status" style="cursor:pointer">${renderStatusBadge(job.status)}</span>
           ${primaryAction}
           <button class="jc-expand-btn" data-toggle-card="${job.id}" title="Show / hide details" aria-label="Toggle details">
             <svg class="jc-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -592,25 +608,81 @@ function renderJobs(jobs) {
     titleEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') startEdit(); });
   });
 
-  root.querySelectorAll('button[data-toggle-card]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id   = btn.getAttribute('data-toggle-card');
-      const card = root.querySelector(`[data-job-id="${id}"]`);
-      if (!card) return;
-      const drawer  = card.querySelector('.jc-drawer');
-      const chevron = card.querySelector('.jc-chevron');
-      const isOpen  = card.getAttribute('data-expanded') === 'true';
-      card.setAttribute('data-expanded', String(!isOpen));
-      drawer.hidden  = isOpen;
-      if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
+  root.querySelectorAll('[data-s3-open]').forEach(link => {
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const key = decodeURIComponent(link.getAttribute('data-s3-open'));
+      link.textContent = '…';
+      try {
+        const res = await fetch(`/api/s3/presign?key=${encodeURIComponent(key)}`);
+        if (!res.ok) throw new Error('Presign failed');
+        const { url } = await res.json();
+        window.open(url, '_blank', 'noopener');
+      } catch (err) {
+        showToast('Could not generate S3 link: ' + err.message, 'error');
+      } finally {
+        link.textContent = '↗ ' + (link.getAttribute('data-s3-open').includes('state') ? 'state (s3)' : link.getAttribute('data-s3-open').includes('live') ? 'transcript (s3)' : 'file');
+      }
     });
-    // Reflect initial expanded state in chevron rotation
+  });
+
+  root.querySelectorAll('[data-status-badge]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (el.querySelector('.status-picker')) return;
+      const id = el.getAttribute('data-status-badge');
+      const options = ['ended', 'completed', 'failed', 'cancelled'];
+      const picker = document.createElement('div');
+      picker.className = 'status-picker';
+      picker.style.cssText = 'position:absolute;z-index:99;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:4px;display:flex;flex-direction:column;gap:2px;min-width:100px';
+      options.forEach(s => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-ghost btn-sm';
+        btn.style.cssText = 'text-align:left;font-size:0.78rem;padding:3px 8px';
+        btn.textContent = s;
+        btn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          picker.remove();
+          try {
+            const res = await fetch(`/api/jobs/${id}`, {
+              method: 'PATCH',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ status: s })
+            });
+            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+          } catch (err) {
+            showToast(err.message, 'error');
+          }
+          await refresh();
+        });
+        picker.appendChild(btn);
+      });
+      el.style.position = 'relative';
+      el.appendChild(picker);
+      const close = (ev) => { if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', close); } };
+      setTimeout(() => document.addEventListener('click', close), 0);
+    });
+  });
+
+  root.querySelectorAll('button[data-toggle-card]').forEach(btn => {
     const id   = btn.getAttribute('data-toggle-card');
     const card = root.querySelector(`[data-job-id="${id}"]`);
+    // Apply initial chevron rotation from persisted state
     if (card?.getAttribute('data-expanded') === 'true') {
       const chevron = card.querySelector('.jc-chevron');
       if (chevron) chevron.style.transform = 'rotate(180deg)';
     }
+    btn.addEventListener('click', () => {
+      if (!card) return;
+      const drawer  = card.querySelector('.jc-drawer');
+      const chevron = card.querySelector('.jc-chevron');
+      const isOpen  = card.getAttribute('data-expanded') === 'true';
+      const next = !isOpen;
+      card.setAttribute('data-expanded', String(next));
+      jobExpandedState.set(id, next);   // persist across re-renders
+      drawer.hidden  = isOpen;
+      if (chevron) chevron.style.transform = next ? 'rotate(180deg)' : '';
+    });
   });
 
   root.querySelectorAll('button[data-cancel]').forEach(btn => {
@@ -647,7 +719,7 @@ function renderJobs(jobs) {
         const res = await fetch('/api/jobs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ meetUrl: priorJob.meetUrl, resumeFromJobId: id })
+          body: JSON.stringify({ meetUrl: priorJob.meetUrl, resumeFromJobId: id, displayName: priorJob.displayName || '' })
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -764,8 +836,14 @@ function renderEventPanel(jobs) {
   const jobFilter  = (document.getElementById('eventJobFilter')?.value  || '').trim().toLowerCase();
   const textFilter = (document.getElementById('eventTextFilter')?.value || '').trim().toLowerCase();
 
+  // When a job filter is active, only collect events from matching jobs to prevent
+  // background-task events from other jobs leaking through between render cycles.
+  const sourceJobs = jobFilter
+    ? jobs.filter(j => j.id.toLowerCase().includes(jobFilter))
+    : jobs;
+
   const lines = [];
-  jobs.forEach(job => {
+  sourceJobs.forEach(job => {
     (job.recentEvents || []).forEach(ev => {
       lines.push({ ts: ev.ts, jobId: job.id, event: ev.event, data: ev.payload || null });
     });
@@ -867,6 +945,8 @@ async function loadConfigIntoForm() {
   setModelOptions('cfgKtModel', cfg.ktModel ?? 'gemini-3.1-pro-preview', KT_MODEL_OPTIONS);
   customSummarizersState = Array.isArray(cfg.customSummarizers) ? cfg.customSummarizers : [];
   renderCustomSummarizersEditor();
+  const botEmailEl = document.getElementById('botEmailHint');
+  if (botEmailEl) botEmailEl.textContent = cfg.googleEmail || 'not configured (set GOOGLE_EMAIL)';
   document.getElementById('cfgEnableMetaAnalysis').checked   = Boolean(cfg.enableMetaAnalysis);
   document.getElementById('cfgMetaAnalysisInterval').value  = cfg.metaAnalysisInterval ?? 5;
   document.getElementById('cfgMetaAnalysisWindow').value    = cfg.metaAnalysisWindow ?? 5;
@@ -1013,6 +1093,7 @@ let lastJobsHash = '';
 let configLoaded = false;
 let viewMode = 'grid'; // 'grid' | 'list'
 let latestJobsCache = [];
+const jobExpandedState = new Map(); // persists expand/collapse across re-renders
 
 async function refresh() {
   // Load config before rendering jobs so custom summarizers are available.

@@ -3,6 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import fs from 'node:fs/promises';
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { generateFreshPresignedUrl } from './delivery.js';
 import { parseCliArgs, loadConfig } from './config.js';
 import { JobManager } from './job-manager.js';
 
@@ -227,7 +228,7 @@ const CONFIG_KEYS = [
   'tldrModel', 'arcModel', 'bulletsModel', 'guestName', 'forceGoogleSignIn',
   'enableMetaAnalysis', 'metaAnalysisInterval', 'metaAnalysisWindow',
   'enableScreenshotClassifier', 'screenshotClassifierModel', 'ktModel', 'meetingObjective',
-  'customSummarizers'
+  'customSummarizers', 'googleEmail'
 ];
 
 app.get('/api/config', async (req, res) => {
@@ -324,8 +325,16 @@ app.put('/api/config', async (req, res) => {
   }
 });
 
-app.post('/api/jobs', (req, res) => {
+app.post('/api/jobs', async (req, res) => {
   try {
+    // Apply per-user saved config overrides so settings like guestName are
+    // always respected, even if the ECS task was restarted since the last save.
+    const userKey = userConfigKey(getUserEmail(req));
+    const userOverrides = await s3Get(userKey).catch(() => ({})) || {};
+    if (Object.keys(userOverrides).length) {
+      const base = jobManager.getBaseConfig();
+      jobManager.setBaseConfig({ ...base, ...userOverrides });
+    }
     const job = jobManager.createJob(req.body || {});
     res.status(201).json({ job });
   } catch (error) {
@@ -333,16 +342,40 @@ app.post('/api/jobs', (req, res) => {
   }
 });
 
+// Generate a fresh presigned URL for a stored S3 key (never expires at access time).
+app.get('/api/s3/presign', async (req, res) => {
+  const { key } = req.query;
+  if (!key) { res.status(400).json({ error: 'key required' }); return; }
+  if (!config.s3Bucket) { res.status(503).json({ error: 'S3 not configured' }); return; }
+  try {
+    const url = await generateFreshPresignedUrl(config.s3Bucket, key, config.awsRegion);
+    res.json({ url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.patch('/api/jobs/:id', (req, res) => {
-  const { displayName } = req.body || {};
-  if (displayName === undefined) {
-    res.status(400).json({ error: 'displayName is required' });
+  const { displayName, status } = req.body || {};
+  if (displayName === undefined && status === undefined) {
+    res.status(400).json({ error: 'displayName or status is required' });
     return;
   }
-  const ok = jobManager.renameJob(req.params.id, displayName);
-  if (!ok) {
+  const job = jobManager.getJobInternal(req.params.id);
+  if (!job) {
     res.status(404).json({ error: 'Job not found' });
     return;
+  }
+  if (displayName !== undefined) {
+    jobManager.renameJob(req.params.id, displayName);
+  }
+  if (status !== undefined) {
+    const allowed = ['ended', 'completed', 'failed', 'cancelled'];
+    if (!allowed.includes(status)) {
+      res.status(400).json({ error: `status must be one of: ${allowed.join(', ')}` });
+      return;
+    }
+    jobManager.overrideStatus(req.params.id, status);
   }
   res.json({ ok: true });
 });
@@ -386,19 +419,36 @@ app.delete('/api/jobs/:id/summaries/:type', (req, res) => {
 
 app.get('/api/jobs/:id/summaries/:type/file', async (req, res) => {
   const job = jobManager.getJob(req.params.id);
-  if (!job) {
-    res.status(404).json({ error: 'Job not found' });
-    return;
-  }
+  if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
   const summary = job.summaryArtifacts?.[req.params.type];
-  if (!summary?.localPath || !(await exists(summary.localPath))) {
-    res.status(404).json({ error: 'Summary file not available' });
-    return;
+  if (!summary) { res.status(404).json({ error: 'Summary not generated yet' }); return; }
+
+  const { fetchS3ObjectText } = await import('./delivery.js');
+  let content = null;
+  let filename = `${req.params.type}.txt`;
+  let isMarkdown = false;
+
+  // 1. Try local file.
+  if (summary.localPath && await exists(summary.localPath)) {
+    content = await fs.readFile(summary.localPath, 'utf8');
+    filename = path.basename(summary.localPath);
+    isMarkdown = filename.endsWith('.md');
   }
-  const content = await fs.readFile(summary.localPath, 'utf8');
-  const isMarkdown = summary.localPath.endsWith('.md');
+  // 2. Fall back to S3 key (server credentials, never expires).
+  if (content === null && summary.s3Key && config.s3Bucket) {
+    try {
+      content = await fetchS3ObjectText(config.s3Bucket, summary.s3Key, config.awsRegion);
+      filename = path.basename(summary.s3Key);
+      isMarkdown = filename.endsWith('.md');
+    } catch (err) {
+      console.warn(`[summaries/file] S3 fallback failed for ${req.params.type}:`, err.message);
+    }
+  }
+
+  if (content === null) { res.status(404).json({ error: 'Summary file not available locally or in S3' }); return; }
+
   res.setHeader('Content-Type', isMarkdown ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8');
-  res.setHeader('Content-Disposition', `inline; filename="${path.basename(summary.localPath)}"`);
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.send(content);
 });
 

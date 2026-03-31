@@ -1,3 +1,5 @@
+import { dismissInMeetingNotifications } from './meet-session.js';
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -93,6 +95,16 @@ export function startCaptureLoop({ page, config, onBatch, onTick, onFatal }) {
 
       if (imageBase64) {
         screenshots.push(imageBase64);
+      }
+
+      // Dismiss any in-call action dialogs (mute/remove/cancel prompts) that may overlay the meeting.
+      try {
+        const dismissed = await dismissInMeetingNotifications(page);
+        if (dismissed) {
+          console.log('Capture loop: dismissed in-call modal:', dismissed.replace(/\n/g, ' ').slice(0, 120));
+        }
+      } catch (_err) {
+        // Non-fatal — continue capturing even if dismissal fails.
       }
 
       if (onTick) {

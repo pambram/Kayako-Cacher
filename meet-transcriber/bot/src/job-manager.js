@@ -18,6 +18,7 @@ import {
 } from './summarize.js';
 import { createGoogleDocFromMarkdown } from './gdocs-export.js';
 import { normalizeMeetUrlInput } from './meet-url.js';
+import { fetchS3ObjectText, uploadSummaryToS3, syncManifestToS3 } from './delivery.js';
 
 function newJobId() {
   return `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -230,7 +231,9 @@ export class JobManager {
       timer: null,
       runnerPromise: null,
       abortController: null,
-      resumeFromJobId: request.resumeFromJobId || null
+      resumeFromJobId: request.resumeFromJobId || null,
+      // Prefer explicit display name, then fall back to the per-job meeting objective.
+      displayName: request.displayName || request.meetingObjective || null
     };
 
     this.jobs.set(jobId, job);
@@ -383,18 +386,23 @@ export class JobManager {
 
           const outPath = existingArtifact.localPath;
           await fs.writeFile(outPath, text, 'utf8');
-          job.summaryArtifacts[type] = { localPath: outPath, generatedAt: new Date().toISOString() };
+          const incrAt = new Date().toISOString();
+          job.summaryArtifacts[type] = { localPath: outPath, generatedAt: incrAt };
           job.summaryTasks[type] = {
-            status: 'completed',
-            progress: 100,
-            startedAt: job.summaryTasks[type]?.startedAt || new Date().toISOString(),
-            endedAt: new Date().toISOString(),
-            error: null,
-            mode: 'incremental'
+            status: 'completed', progress: 100,
+            startedAt: job.summaryTasks[type]?.startedAt || incrAt,
+            endedAt: incrAt, error: null, mode: 'incremental'
           };
           console.log(`[summary:bullets] Incremental done → ${outPath}`);
           this.#pushEvent(job, 'summary_generated', { type, localPath: outPath, incremental: true, newEntries: newEntries.length });
-          job.updatedAt = new Date().toISOString();
+          job.updatedAt = incrAt;
+          // Upload incremental result to S3.
+          uploadSummaryToS3(this.baseConfig, job.id, type, text, 'txt').then((s3Key) => {
+            if (s3Key) {
+              job.summaryArtifacts[type].s3Key = s3Key;
+              syncManifestToS3(this.baseConfig, job).catch(() => {});
+            }
+          }).catch(() => {});
           this.#schedulePersist();
           return;
         }
@@ -485,22 +493,34 @@ export class JobManager {
       }
       await fs.writeFile(outPath, fileContent, 'utf8');
 
-      job.summaryArtifacts[type] = {
-        localPath: outPath,
-        generatedAt: new Date().toISOString()
-      };
+      const generatedAt = new Date().toISOString();
+      job.summaryArtifacts[type] = { localPath: outPath, generatedAt };
       job.summaryTasks[type] = {
         status: 'completed',
         progress: 100,
-        startedAt: job.summaryTasks[type]?.startedAt || new Date().toISOString(),
-        endedAt: new Date().toISOString(),
+        startedAt: job.summaryTasks[type]?.startedAt || generatedAt,
+        endedAt: generatedAt,
         error: null,
         estimatedInputTokens: job.summaryTasks[type]?.estimatedInputTokens,
         mode: job.summaryTasks[type]?.mode || 'single_pass'
       };
       console.log(`[summary:${type}] Done → ${outPath}`);
       this.#pushEvent(job, 'summary_generated', { type, localPath: outPath });
-      job.updatedAt = new Date().toISOString();
+      job.updatedAt = generatedAt;
+
+      // Upload summary to S3 and update the job manifest.
+      const s3Key = await uploadSummaryToS3(this.baseConfig, job.id, type, fileContent, ext).catch((err) => {
+        console.warn(`[summary:${type}] S3 upload failed (non-fatal):`, err.message);
+        return null;
+      });
+      if (s3Key) {
+        job.summaryArtifacts[type].s3Key = s3Key;
+        this.#pushEvent(job, 'summary_uploaded_s3', { type, s3Key });
+        syncManifestToS3(this.baseConfig, job).catch((err) =>
+          console.warn(`[manifest] Sync failed (non-fatal):`, err.message)
+        );
+      }
+      this.#schedulePersist();
 
       // After KT document md is written, create a Google Doc as a separate sequential step.
       if (type === 'ktDocument') {
@@ -577,19 +597,43 @@ export class JobManager {
   }
 
   async #readJobEntries(job) {
+    // 1. Try local checkpoint state file first.
     const statePath = job.checkpoint?.statePath;
     if (statePath) {
       try {
         const raw = await fs.readFile(statePath, 'utf8');
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.entries)) {
+        if (Array.isArray(parsed.entries) && parsed.entries.length > 0) {
           return parsed.entries;
         }
       } catch (_error) {
-        // Fallback below.
+        // Fall through to S3.
       }
     }
+
+    // 2. Fallback: fetch via S3 key directly (SDK credentials, never expires).
+    const stateLink = (job.latestCheckpointLinks || []).find(
+      (f) => f.key && f.name && f.name.includes('state') && f.name.endsWith('.json')
+    );
+    if (stateLink && this.baseConfig.s3Bucket) {
+      try {
+        console.log(`[readJobEntries] Local state missing for ${job.id}; fetching from S3 key: ${stateLink.key}`);
+        const text = await fetchS3ObjectText(this.baseConfig.s3Bucket, stateLink.key, this.baseConfig.awsRegion);
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed.entries) && parsed.entries.length > 0) {
+          console.log(`[readJobEntries] Loaded ${parsed.entries.length} entries from S3 for ${job.id}`);
+          return parsed.entries;
+        }
+      } catch (err) {
+        console.warn(`[readJobEntries] S3 fallback failed for ${job.id}:`, err.message);
+      }
+    }
+
     return [];
+  }
+
+  getJobInternal(id) {
+    return this.jobs.get(id) || null;
   }
 
   renameJob(id, displayName) {
@@ -598,6 +642,16 @@ export class JobManager {
     job.displayName = String(displayName || '').trim().slice(0, 200);
     job.updatedAt = new Date().toISOString();
     this.#schedulePersist();
+    return true;
+  }
+
+  overrideStatus(id, status) {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    job.status = status;
+    job.updatedAt = new Date().toISOString();
+    job.lastEvent = `status_overridden:${status}`;
+    this.#pushEvent(job, 'status_overridden', { status });
     return true;
   }
 
@@ -736,7 +790,7 @@ export class JobManager {
         job.error = error.message;
         job.endedAt = new Date().toISOString();
         job.updatedAt = job.endedAt;
-        this.#pushEvent(job, wasCancelled ? 'cancelled' : 'failed', { error: error.message });
+        this.#pushEvent(job, isUserLeave ? 'ended' : 'failed', { error: error.message });
       })
       .finally(() => {
         job.abortController = null;

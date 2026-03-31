@@ -102,6 +102,94 @@ export async function uploadCheckpointArtifacts(checkpoint, config, options = {}
   return { uploaded: true, files };
 }
 
+/**
+ * Upload a single summary file to S3 at a deterministic path and return the S3 key.
+ * Path: {prefix}/jobs/{jobId}/summaries/{type}.{ext}
+ */
+export async function uploadSummaryToS3(config, jobId, type, content, ext = 'txt') {
+  if (!config.s3Bucket) return null;
+  const s3 = buildS3Client(config);
+  const key = normalizeKey(config.s3Prefix, `jobs/${jobId}/summaries/${type}.${ext}`);
+  const contentType = ext === 'md' ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8';
+  await s3.send(new PutObjectCommand({ Bucket: config.s3Bucket, Key: key, Body: content, ContentType: contentType }));
+  return key;
+}
+
+/**
+ * Write/update the job manifest at {prefix}/jobs/{jobId}/manifest.json.
+ * Contains meeting metadata and keys to all generated artifacts.
+ */
+export async function syncManifestToS3(config, job) {
+  if (!config.s3Bucket) return;
+  const s3 = buildS3Client(config);
+  const key = normalizeKey(config.s3Prefix, `jobs/${job.id}/manifest.json`);
+
+  const artifacts = {};
+  // Transcript checkpoints
+  for (const f of (job.latestCheckpointLinks || [])) {
+    if (f.key) {
+      const tag = f.name?.includes('state') ? 'checkpointState' : 'checkpointTranscript';
+      artifacts[tag] = { key: f.key, name: f.name, uploadedAt: job.updatedAt };
+    }
+  }
+  // Final upload artifacts
+  for (const f of (job.finalLinks || [])) {
+    if (f.key) artifacts[`final_${f.name}`] = { key: f.key, name: f.name };
+  }
+  // Summaries
+  for (const [type, summary] of Object.entries(job.summaryArtifacts || {})) {
+    if (summary?.s3Key) {
+      artifacts[`summary_${type}`] = {
+        key: summary.s3Key,
+        generatedAt: summary.generatedAt,
+        ext: summary.s3Key.endsWith('.md') ? 'md' : 'txt'
+      };
+    }
+  }
+
+  const manifest = {
+    jobId: job.id,
+    meetUrl: job.meetUrl,
+    displayName: job.displayName || job.classifierConfig?.meetingObjective || null,
+    status: job.status,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    endedAt: job.endedAt,
+    updatedAt: job.updatedAt,
+    classifierEnabled: Boolean(job.classifierConfig?.enabled),
+    artifacts
+  };
+
+  await s3.send(new PutObjectCommand({
+    Bucket: config.s3Bucket,
+    Key: key,
+    Body: JSON.stringify(manifest, null, 2),
+    ContentType: 'application/json; charset=utf-8'
+  }));
+  return key;
+}
+
+/** Fetch an S3 object's text content directly using SDK credentials (never expires). */
+export async function fetchS3ObjectText(bucket, key, region) {
+  const s3 = new S3Client({ region: region || 'us-east-1' });
+  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const chunks = [];
+  for await (const chunk of res.Body) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Generate a fresh presigned URL for an existing S3 key (always valid for 7 days from now). */
+export async function generateFreshPresignedUrl(bucket, key, region) {
+  const s3 = new S3Client({ region: region || 'us-east-1' });
+  return getSignedUrl(
+    s3,
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+    { expiresIn: 7 * 24 * 60 * 60 }
+  );
+}
+
 export async function notifyDelivery(uploadResult, config) {
   if (!config.snsTopicArn) {
     console.log('Skipping SNS notification: SNS_TOPIC_ARN not configured.');

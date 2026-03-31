@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="./favicon.png">
   <link rel="stylesheet" href="./style-claude.css">
 </head>
 <body>
@@ -154,6 +155,14 @@
             <button id="joinNow" class="btn btn-primary btn-lg">
               Join Meeting
             </button>
+          </div>
+
+          <div class="form-group" style="margin-top:var(--sp-4);padding:var(--sp-3) var(--sp-4);background:rgba(129,140,248,0.07);border:1px solid rgba(129,140,248,0.2);border-radius:var(--radius)">
+            <p style="font-size:0.82rem;color:var(--text-secondary);margin:0">
+              <strong style="color:var(--accent,#818cf8)">Tip — avoid bot denial:</strong>
+              Add the bot's Google account to your calendar invite for automatic admission.
+              Bot email: <span id="botEmailHint" style="font-family:var(--font-mono);font-size:0.78rem;color:var(--text-primary)">loading…</span>
+            </p>
           </div>
         </div>
       </div>

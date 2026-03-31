@@ -342,15 +342,27 @@ async function ensureMeetingControlsReady(page, maxAttempts = 20, intervalMs = 2
 }
 
 /**
- * Dismisses generic informational/warning modals that Meet shows during a call.
- * Examples: "Others may see your video differently", "You can still turn off your mic", etc.
+ * Dismisses generic informational/warning modals and in-call action dialogs that Meet shows
+ * during a call.  Handles two categories:
+ *
+ *   1. Info/tip dismissals: "Got it", "OK", "Dismiss", "Close", "Done"
+ *   2. Action-dialog cancellations: "Cancel" buttons on mute/remove/participant dialogs
+ *      (e.g. "Mute Priyanka for everyone?") — always clicks Cancel to avoid the destructive action.
+ *
+ * Safety: never clicks Cancel if the dialog context mentions "leave" or "end the call for everyone"
+ * to avoid accidentally cancelling the bot's own leave action.
+ *
  * Returns the text of the dismissed modal if one was found, otherwise null.
  */
-async function dismissInMeetingNotifications(page) {
+export async function dismissInMeetingNotifications(page) {
   try {
     return await page.evaluate(() => {
-      // Button labels that indicate a dismissible notification/tip (not action dialogs).
+      // Button labels for simple info/tip dismissals.
       const dismissLabels = ['got it', 'ok', 'dismiss', 'close', 'ok, got it', 'done'];
+
+      // Keywords that indicate the dialog is the bot's own leave/end-call flow — never cancel those.
+      const leaveKeywords = ['leave', 'end the call for', 'hang up'];
+
       const isVisible = (node) => {
         if (!node) return false;
         const rect = node.getBoundingClientRect();
@@ -359,24 +371,35 @@ async function dismissInMeetingNotifications(page) {
         return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       };
 
-      // Find dismiss-style buttons that are visible and not inside the main toolbar.
+      const getParentContext = (btn) =>
+        (btn.closest('[role="dialog"], [role="alertdialog"], [jsname], .VfPpkd-Jh9lGc') || btn.parentElement)
+          ?.innerText?.toLowerCase() || '';
+
+      const getModalText = (btn) =>
+        (btn.closest('[role="dialog"], [role="alertdialog"], .XKSfm-RLmnJb, .VfPpkd-Jh9lGc') || btn.parentElement)
+          ?.innerText?.slice(0, 120) || (btn.textContent || '').trim();
+
       const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
+
       for (const btn of buttons) {
         const text = (btn.textContent || '').toLowerCase().trim();
         const aria = (btn.getAttribute('aria-label') || '').toLowerCase().trim();
-        if (!dismissLabels.some((lbl) => text === lbl || aria === lbl)) continue;
         if (!isVisible(btn)) continue;
-        // Avoid dismissing join/leave/caption controls — those have longer surrounding context.
-        const parentText = (btn.closest('[role="dialog"], [role="alertdialog"], [jsname], .VfPpkd-Jh9lGc') || btn.parentElement)
-          ?.innerText?.toLowerCase() || '';
-        if (
-          parentText.includes('leave') ||
-          parentText.includes('end the call for') ||
-          parentText.includes('turn on captions')
-        ) continue;
-        // We have a dismiss candidate.
-        const modalText = (btn.closest('[role="dialog"], [role="alertdialog"], .XKSfm-RLmnJb, .VfPpkd-Jh9lGc') || btn.parentElement)
-          ?.innerText?.slice(0, 120) || text;
+
+        const isTipDismissal = dismissLabels.some((lbl) => text === lbl || aria === lbl);
+        const isCancelAction = text === 'cancel' || aria === 'cancel';
+
+        if (!isTipDismissal && !isCancelAction) continue;
+
+        const parentText = getParentContext(btn);
+
+        // Skip tip-dismissals that are really join/caption controls.
+        if (isTipDismissal && parentText.includes('turn on captions')) continue;
+
+        // Safety: never cancel the bot's own leave flow.
+        if (leaveKeywords.some((kw) => parentText.includes(kw))) continue;
+
+        const modalText = getModalText(btn);
         btn.click();
         return modalText.trim();
       }
@@ -638,7 +661,6 @@ export async function startMeetSession(config, hooks = {}) {
     headless: config.headless,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
-      // --no-sandbox is required on Linux (Docker/CI) but produces a warning on macOS.
       ...(process.platform !== 'darwin' ? ['--no-sandbox'] : []),
       '--disable-dev-shm-usage',
       '--disable-gpu',
@@ -647,14 +669,24 @@ export async function startMeetSession(config, hooks = {}) {
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
       '--mute-audio',
-      '--autoplay-policy=no-user-gesture-required'
+      '--autoplay-policy=no-user-gesture-required',
+      '--lang=en-US',
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     ],
-    defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 2 }
+    defaultViewport: { width: 1920, height: 1080 }
   });
 
   const [page] = await browser.pages();
   await page.bringToFront();
   await page.browserContext().overridePermissions('https://meet.google.com', ['notifications', 'camera', 'microphone']);
+
+  // Additional stealth: remove automation fingerprints that the stealth plugin may not fully cover.
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    window.chrome = { runtime: {} };
+  });
 
   await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
   await sleep(3000);
@@ -670,9 +702,9 @@ export async function startMeetSession(config, hooks = {}) {
   }
 
   const canGuestJoin = await hasGuestJoinUi(page);
-  const joinMode = canGuestJoin && !config.forceGoogleSignIn ? 'guest' : 'google-signin';
+  const joinMode = (canGuestJoin && !config.forceGoogleSignIn) ? 'guest' : 'google-signin';
   console.log(`Join mode selected: ${joinMode}`);
-  if (canGuestJoin && !config.forceGoogleSignIn) {
+  if (joinMode === 'guest') {
     console.log(`Guest join UI detected. Joining as guest name: ${config.guestName}`);
     const filledName = await setGuestName(page, config.guestName);
     if (!filledName) {
@@ -685,9 +717,9 @@ export async function startMeetSession(config, hooks = {}) {
     }
   } else {
     if (!config.googleEmail || !config.googlePassword) {
-      throw new Error('Guest join unavailable and GOOGLE_EMAIL/GOOGLE_PASSWORD not configured.');
+      throw new Error('Authenticated join required (Linux/Fargate or forceGoogleSignIn) but GOOGLE_EMAIL/GOOGLE_PASSWORD not configured.');
     }
-    console.log('Guest join unavailable or forced sign-in enabled. Signing in with Google account.');
+    console.log(`Signing in as ${config.googleEmail} to join as authenticated user.`);
     await maybeSignIn(page, config);
     await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
     await sleep(3000);
