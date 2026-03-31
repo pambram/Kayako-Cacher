@@ -3587,33 +3587,43 @@ ${fullHistoryLines.join('\n\n')}
     const action = provider === 'anthropic' ? 'anthropicChat' : 'openaiChat';
     console.log(`🔀 Routing to ${provider} for model ${model}`);
     
-    const sendOnce = () => new Promise((resolve) => {
-      try {
-        if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
-          resolve({ success: false, error: 'Extension context invalidated. Please reload the page.' });
-          return;
-        }
-        chrome.runtime.sendMessage({ action, requestBody }, (resp) => {
-          // Check callback error details
-          if (chrome?.runtime?.lastError) {
-            resolve({ success: false, error: chrome.runtime.lastError.message || 'Message failed' });
+    // Timeout for the background worker response. MV3 service workers can be killed
+    // by Chrome at any time; if that happens the sendMessage callback never fires and
+    // the promise hangs forever. We race against a timeout so we always resolve.
+    const SEND_TIMEOUT_MS = 120000; // 2 minutes — long enough for large image payloads
+
+    const sendOnce = () => {
+      const messagePromise = new Promise((resolve) => {
+        try {
+          if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
+            resolve({ success: false, error: 'Extension context invalidated. Please reload the page.' });
             return;
           }
-          resolve(resp || { success: false, error: 'No response from background' });
-        });
-      } catch (e) {
-        resolve({ success: false, error: e?.message || 'Message failed' });
-      }
-    });
+          chrome.runtime.sendMessage({ action, requestBody }, (resp) => {
+            if (chrome?.runtime?.lastError) {
+              resolve({ success: false, error: chrome.runtime.lastError.message || 'Message failed' });
+              return;
+            }
+            resolve(resp || { success: false, error: 'No response from background' });
+          });
+        } catch (e) {
+          resolve({ success: false, error: e?.message || 'Message failed' });
+        }
+      });
+      const timeoutPromise = new Promise((resolve) =>
+        setTimeout(() => resolve({ success: false, error: `Request timed out after ${SEND_TIMEOUT_MS / 1000}s — the background worker may have been terminated. Please try again.` }), SEND_TIMEOUT_MS)
+      );
+      return Promise.race([messagePromise, timeoutPromise]);
+    };
 
-    // Try once, then one quick retry if the worker was reloaded
+    // Try once, then one quick retry if the worker was reloaded or timed out
     let result = await sendOnce();
     if (!result?.success) {
       const msg = (result?.error || '').toLowerCase();
-      const transient = msg.includes('invalidated') || msg.includes('receiving end does not exist') || msg.includes('the message port closed');
+      const transient = msg.includes('invalidated') || msg.includes('receiving end does not exist') || msg.includes('the message port closed') || msg.includes('timed out');
       if (transient) {
         try { console.warn('AI request failed, retrying shortly due to transient error:', result?.error); } catch (_) {}
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 600));
         result = await sendOnce();
       }
     }
