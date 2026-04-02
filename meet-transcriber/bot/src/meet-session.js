@@ -99,17 +99,87 @@ async function dismissPreJoinMediaPrompt(page) {
   return { state: finalPresent ? 'visible' : 'absent', attempt: 8 };
 }
 
-async function maybeSignIn(page, config) {
+async function maybeSignIn(page, config, emitStatus) {
   if (!config.googleEmail || !config.googlePassword) return;
 
+  console.log(`[signIn] Navigating to Google sign-in page...`);
   await page.goto('https://accounts.google.com/signin/v2/identifier', { waitUntil: 'networkidle2' });
+
+  console.log(`[signIn] Entering email...`);
   await page.waitForSelector('input[type="email"]', { timeout: 30000 });
-  await page.type('input[type="email"]', config.googleEmail, { delay: 30 });
+  await sleep(300);
+  await page.click('input[type="email"]');
+  await page.type('input[type="email"]', config.googleEmail, { delay: 50 });
+  await sleep(300);
   await clickFirstMatching(page, ['#identifierNext button', '#identifierNext']);
-  await page.waitForSelector('input[type="password"]', { timeout: 30000 });
-  await page.type('input[type="password"]', config.googlePassword, { delay: 30 });
+  // Wait for the page to transition to the password step.
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+  await sleep(500);
+
+  console.log(`[signIn] Waiting for password field... URL: ${page.url()}`);
+  // Google uses several possible selectors for the password input depending on flow version.
+  const pwdSelector = await Promise.race([
+    page.waitForSelector('input[type="password"]',  { timeout: 15000 }).then(() => 'input[type="password"]'),
+    page.waitForSelector('input[name="Passwd"]',     { timeout: 15000 }).then(() => 'input[name="Passwd"]'),
+    page.waitForSelector('input[name="password"]',   { timeout: 15000 }).then(() => 'input[name="password"]'),
+    page.waitForSelector('#password input',          { timeout: 15000 }).then(() => '#password input'),
+  ]).catch(() => null);
+
+  if (!pwdSelector) {
+    console.warn(`[signIn] Could not find password field. Page HTML snippet: ${(await page.evaluate(() => document.body?.innerHTML?.slice(0, 500) || '').catch(() => ''))}`);
+    throw new Error('Google sign-in: password field not found');
+  }
+
+  console.log(`[signIn] Password field found via: ${pwdSelector}`);
+  await sleep(300);
+  await page.click(pwdSelector);
+  await page.type(pwdSelector, config.googlePassword, { delay: 50 });
+  await sleep(300);
   await clickFirstMatching(page, ['#passwordNext button', '#passwordNext']);
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+
+  // Google sign-in may have 2FA or multiple redirects — wait up to 2 minutes.
+  console.log(`[signIn] Waiting for sign-in to complete (up to 120s)...`);
+  let twoFaLogged = false;
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const url = page.url();
+    if (!url.includes('accounts.google.com')) {
+      break;
+    }
+    // Detect 2FA prompt and keep waiting — user needs to approve on their phone.
+    const bodyText = await page.evaluate(() => (document.body?.innerText || '').toLowerCase()).catch(() => '');
+    if (bodyText.includes('2-step') || bodyText.includes('verification') || bodyText.includes('verify it')) {
+      if (!twoFaLogged) {
+        console.log(`[signIn] 2FA prompt detected — waiting for approval on phone...`);
+        if (emitStatus) emitStatus('signin_waiting_2fa', { message: 'Waiting for 2FA approval on phone' });
+        twoFaLogged = false; // keep logging every 10s
+      }
+      twoFaLogged = true;
+      // Don't break — keep polling until the user taps Yes on their phone.
+      continue;
+    }
+  }
+
+  await sleep(1000);
+
+  // Dismiss the "Sign in to Chrome?" browser profile dialog if it appears.
+  const dismissedChromeSignin = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const btn = buttons.find((b) =>
+      b.textContent.toLowerCase().includes('without an account') ||
+      b.textContent.toLowerCase().includes('use chrome without')
+    );
+    if (btn) { btn.click(); return true; }
+    return false;
+  }).catch(() => false);
+  if (dismissedChromeSignin) {
+    console.log('[signIn] Dismissed "Sign in to Chrome?" profile dialog.');
+    await sleep(800);
+  }
+
+  console.log(`[signIn] Sign-in flow finished. Final URL: ${page.url()}`);
 }
 
 async function disableMicAndCamera(page) {
@@ -671,7 +741,10 @@ export async function startMeetSession(config, hooks = {}) {
       '--mute-audio',
       '--autoplay-policy=no-user-gesture-required',
       '--lang=en-US',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      '--disable-sync',
+      '--no-first-run',
+      '--disable-features=SyncToSignin,IdentityConsistencyAccountConsistency'
     ],
     defaultViewport: { width: 1920, height: 1080 }
   });
@@ -688,6 +761,18 @@ export async function startMeetSession(config, hooks = {}) {
     window.chrome = { runtime: {} };
   });
 
+  // When forceGoogleSignIn is set, sign in BEFORE loading Meet so Google
+  // recognises the bot as an authenticated org member on first page load.
+  // This prevents the hard denial that happens when cloud IPs hit Meet as anonymous guests.
+  if (config.forceGoogleSignIn) {
+    if (!config.googleEmail || !config.googlePassword) {
+      throw new Error('forceGoogleSignIn is enabled but GOOGLE_EMAIL/GOOGLE_PASSWORD are not configured.');
+    }
+    console.log(`forceGoogleSignIn: signing in as ${config.googleEmail} before loading Meet...`);
+    await maybeSignIn(page, config, emitStatus);
+    console.log('Sign-in complete. Loading Meet URL...');
+  }
+
   await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
   await sleep(3000);
   await dismissPreJoinMediaPromptWithStatus();
@@ -702,6 +787,7 @@ export async function startMeetSession(config, hooks = {}) {
   }
 
   const canGuestJoin = await hasGuestJoinUi(page);
+  // When signed in, Meet shows the pre-join screen without a name field (uses account name).
   const joinMode = (canGuestJoin && !config.forceGoogleSignIn) ? 'guest' : 'google-signin';
   console.log(`Join mode selected: ${joinMode}`);
   if (joinMode === 'guest') {
@@ -715,17 +801,20 @@ export async function startMeetSession(config, hooks = {}) {
       console.log('Join diagnostics (guest-button-disabled):', await collectJoinDiagnostics(page));
       throw new Error('Ask to join button stayed disabled after entering guest name.');
     }
-  } else {
+  } else if (!config.forceGoogleSignIn) {
+    // google-signin path but didn't pre-sign-in (shouldn't normally happen, but handle gracefully)
     if (!config.googleEmail || !config.googlePassword) {
-      throw new Error('Authenticated join required (Linux/Fargate or forceGoogleSignIn) but GOOGLE_EMAIL/GOOGLE_PASSWORD not configured.');
+      throw new Error('GOOGLE_EMAIL/GOOGLE_PASSWORD not configured for authenticated join.');
     }
-    console.log(`Signing in as ${config.googleEmail} to join as authenticated user.`);
-    await maybeSignIn(page, config);
+    console.log(`Signing in as ${config.googleEmail}...`);
+    await maybeSignIn(page, config, emitStatus);
     await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
     await sleep(3000);
     await dismissPreJoinMediaPromptWithStatus();
     await dismissPreJoinMediaPromptWithStatus();
     console.log('Join diagnostics (post-signin):', await collectJoinDiagnostics(page));
+  } else {
+    console.log('Already signed in — proceeding to join as authenticated user.');
   }
 
   await dismissPreJoinMediaPromptWithStatus();
