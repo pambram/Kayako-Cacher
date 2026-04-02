@@ -3079,37 +3079,40 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
       // This captures both message/note bubbles AND activity/status-change events in
       // their correct temporal position, so the AI sees a coherent narrative.
       
-      // Find the timeline list container first (try multiple selector patterns)
+      // PRIMARY: Use the old reliable document-wide query for messages/notes.
+      // This is the ONLY approach proven to find all messages regardless of Kayako's
+      // nested DOM structure. Container-based approaches (.children, scoped querySelectorAll)
+      // repeatedly fail because Kayako wraps content in unexpected nested elements.
+      const messageDOMItems = Array.from(document.querySelectorAll(
+        '.message-or-note .ko-timeline-2_list_item__post_1oksrd, .message-or-note .ko-timeline-2_list_item__note_1oksrd'
+      ));
+
+      // SUPPLEMENTARY: Try to find activity/status events from the timeline container.
+      // These are non-message items (like "changed GHI Status to Completed").
       const timelineContainer =
         document.querySelector('.ko-timeline-2_list_1oksrd') ||
-        document.querySelector('[class*="timeline-2_list"]') ||
-        document.querySelector('[class*="timeline_list"]') ||
+        document.querySelector('[class*="timeline-2_list_1"]') ||
         document.querySelector('.ko-conversation-timeline');
 
-      // IMPORTANT: Use querySelectorAll (recursive) NOT .children (direct only).
-      // Kayako wraps messages in nested containers, so .children returns only the
-      // wrapper element, missing all the actual message bubbles inside it.
-      // We collect message bubbles and activity items separately, then merge by DOM order.
-      const scope = timelineContainer || document;
+      const activityDOMItems = [];
+      if (timelineContainer) {
+        // Walk direct children of the container; keep only non-message items with relevant text
+        Array.from(timelineContainer.children).forEach(el => {
+          if (el.classList.contains('message-or-note') || el.querySelector('.message-or-note')) return;
+          const text = (el.textContent || '').trim();
+          if (text.length >= 5 && /changed|closed|completed|opened|reopened|resolved|escalated|GHI|github/i.test(text)) {
+            activityDOMItems.push(el);
+          }
+        });
+      }
 
-      // All message/note bubbles (recursive search)
-      const messageDOMItems = Array.from(scope.querySelectorAll('.message-or-note'));
-
-      // Activity/status items: direct children of the list container that are NOT .message-or-note
-      // and are not ancestors of .message-or-note (to avoid false positives on wrapper elements)
-      const activityDOMItems = timelineContainer
-        ? Array.from(timelineContainer.children).filter(el =>
-            !el.classList.contains('message-or-note') && !el.querySelector('.message-or-note')
-          )
-        : [];
-
-      // Merge both sets in DOM order using compareDocumentPosition
+      // Merge both sets in DOM order
       const allItems = [...messageDOMItems, ...activityDOMItems].sort((a, b) => {
         const pos = a.compareDocumentPosition(b);
         return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
       });
 
-      console.log(`🔍 Found ${allItems.length} timeline items (${messageDOMItems.length} messages/notes + ${activityDOMItems.length} potential activity items)`);
+      console.log(`🔍 Found ${allItems.length} timeline items (${messageDOMItems.length} messages/notes + ${activityDOMItems.length} activity items)`);
 
       const entries = []; // unified list: messages and activity events in order
       const timelineImages = [];
@@ -3118,15 +3121,14 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
 
       allItems.forEach((item, domIndex) => {
         try {
-          // Items sourced from messageDOMItems are guaranteed .message-or-note;
-          // items from activityDOMItems are guaranteed NOT to be or contain one.
-          const isMessageOrNote = messageDOMItems.includes(item) ||
-            item.classList.contains('message-or-note') ||
-            item.querySelector('.ko-timeline-2_list_item__post_1oksrd, .ko-timeline-2_list_item__note_1oksrd') !== null;
+          // messageDOMItems contains the inner post/note elements directly (from the document-wide query).
+          // activityDOMItems contains timeline container children (non-message status events).
+          const isMessage = messageDOMItems.includes(item);
 
-          if (isMessageOrNote) {
+          if (isMessage) {
             // ── Message / note bubble ──────────────────────────────────────────
-            const inner = item.querySelector('.ko-timeline-2_list_item__post_1oksrd, .ko-timeline-2_list_item__note_1oksrd') || item;
+            // item IS the inner post/note element already (from the document-wide query)
+            const inner = item;
             const isNote = inner.classList.contains('ko-timeline-2_list_item__note_1oksrd') ||
                            inner.closest('.ko-timeline-2_list_item__note_1oksrd') !== null;
 
@@ -3186,42 +3188,7 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
         }
       });
 
-      // Fallback: if no MESSAGES were extracted (container selector missed or DOM structure unexpected),
-      // fall back to the old reliable document-wide query. Check msgCount, not entries.length,
-      // so we still fall back when only activity events were found but messages were missed.
-      if (msgCount === 0) {
-        const fallbackItems = document.querySelectorAll('.message-or-note .ko-timeline-2_list_item__post_1oksrd, .message-or-note .ko-timeline-2_list_item__note_1oksrd');
-        fallbackItems.forEach((item, index) => {
-          try {
-            const isNote = item.classList.contains('ko-timeline-2_list_item__note_1oksrd');
-            const authorEl = item.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
-            const author = authorEl ? authorEl.textContent.trim() : 'Unknown';
-            const isSystemMessage = ['Log Agent', 'ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis',
-              'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'System', 'Automation', 'AI-CS Integration', 'Wise Old Man'].includes(author);
-            const contentEl = item.querySelector('.ko-timeline-2_list_item__html-content_1oksrd, .ko-timeline-2_list_item__content_1oksrd');
-            let content = '';
-            let hasImages = false;
-            if (contentEl) {
-              const imgs = contentEl.querySelectorAll('img');
-              if (imgs.length > 0) {
-                hasImages = true;
-                const te = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
-                const mt = te ? te.textContent.trim() : '';
-                imgs.forEach((img, ii) => { const src = img.getAttribute('src'); if (src) timelineImages.push({ src, author, time: mt, isNote, messageIndex: index, imgIndex: ii }); });
-              }
-              const tmp = document.createElement('div');
-              tmp.innerHTML = contentEl.innerHTML;
-              content = (tmp.textContent || tmp.innerText || '').trim().replace(/\s+/g, ' ');
-            }
-            const te = item.querySelector('.ko-timeline-2_list_item__time_1oksrd');
-            const time = te ? te.textContent.trim() : '';
-            if (content && content.length > 10) { entries.push({ type: 'message', author, content, time, hasImages, isNote, isSystemMessage, domIndex: index }); msgCount++; }
-          } catch (e) { console.warn('Fallback message extraction error', index, e); }
-        });
-        console.log(`📋 Fallback extraction: ${msgCount} messages`);
-      } else {
-        console.log(`📋 Unified extraction: ${msgCount} messages + ${activityCount} activity events = ${entries.length} total entries`);
-      }
+      console.log(`📋 Extracted ${msgCount} messages + ${activityCount} activity events = ${entries.length} total entries`);
 
       // Separate message entries for "last 2" and numbering
       const messages = entries.filter(e => e.type === 'message');
