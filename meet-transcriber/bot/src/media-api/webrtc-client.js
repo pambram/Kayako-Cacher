@@ -1,17 +1,16 @@
 /**
  * Meet Media API WebRTC client.
  *
- * Key design decisions (aligned with official Google TypeScript sample):
+ * Aligned with official Google TypeScript reference:
+ *   https://github.com/googleworkspace/meet-media-api-samples
  *
- * 1. connectActiveConference via raw HTTP fetch() — NOT the gRPC library.
- * 2. RTCPeerConnection runs inside a headless Puppeteer page for
- *    browser-native, standards-compliant SDP generation.
- * 3. Two-phase SDP creation: audio + data channels (phase 1), then video
- *    (phase 2) — preserves the required m-line order: audio, application, video.
- * 4. Video frames captured in-browser via canvas.toDataURL() and forwarded
- *    to Node via page.exposeFunction().
- * 5. Audio captured in-browser via ScriptProcessorNode + WAV encoding,
- *    forwarded to Node via page.exposeFunction().
+ * 1. RTCPeerConnection runs inside Puppeteer for browser-native SDP.
+ * 2. connectActiveConference via raw HTTP (not gRPC).
+ * 3. Two-phase SDP: audio + data channels → setLocalDescription → video → createOffer again.
+ * 4. After STATE_JOINED on session-control data channel, sends a video-assignment
+ *    layout request so Meet actually routes video frames to our transceivers.
+ * 5. Video frames captured via canvas.toDataURL → exposeFunction → Node.
+ * 6. Audio captured via ScriptProcessorNode → WAV → exposeFunction → Node.
  */
 
 import { OAuth2Client } from 'google-auth-library';
@@ -58,7 +57,7 @@ function detectChrome() {
   return candidates.find(c => fsSync.existsSync(c)) || '';
 }
 
-// ── connectActiveConference via raw HTTP (matches official reference) ───────
+// ── connectActiveConference via raw HTTP ─────────────────────────────────────
 
 async function connectActiveConference(meetingCode, sdpOffer, accessToken) {
   const spaceName = `spaces/${meetingCode}`;
@@ -88,15 +87,10 @@ async function connectActiveConference(meetingCode, sdpOffer, accessToken) {
 
 // ── Main session class ───────────────────────────────────────────────────────
 
-/**
- * MediaApiSession — browser-native RTCPeerConnection for SDP generation,
- * raw HTTP for the Meet API call, and Puppeteer exposeFunction to bridge
- * video frames + audio chunks back to Node.
- */
 export class MediaApiSession {
   constructor({ onVideoFrame, onAudioChunk, onParticipants, onSessionState, onDisconnect }) {
-    this.onVideoFrame = onVideoFrame;       // (base64jpeg: string) => void
-    this.onAudioChunk = onAudioChunk;       // (base64wav: string) => void
+    this.onVideoFrame = onVideoFrame;
+    this.onAudioChunk = onAudioChunk;
     this.onParticipants = onParticipants;
     this.onSessionState = onSessionState;
     this.onDisconnect = onDisconnect;
@@ -130,7 +124,7 @@ export class MediaApiSession {
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
         '--mute-audio',
-        '--autoplay-policy=no-user-gesture-required', // needed for AudioContext without user gesture
+        '--autoplay-policy=no-user-gesture-required',
         '--window-size=640,480'
       ]
     });
@@ -139,14 +133,17 @@ export class MediaApiSession {
     this._page = page;
     await page.goto('about:blank');
 
-    // Expose Node callbacks BEFORE any page.evaluate that uses them
-    await page.exposeFunction('__mediaApiOnVideoFrame', (base64jpeg) => {
+    // Expose Node callbacks to the browser context
+    await page.exposeFunction('__onVideoFrame', (base64jpeg) => {
       if (this.onVideoFrame) this.onVideoFrame(base64jpeg);
     });
-    await page.exposeFunction('__mediaApiOnAudioChunk', (base64wav) => {
+    await page.exposeFunction('__onAudioChunk', (base64wav) => {
       if (this.onAudioChunk) this.onAudioChunk(base64wav);
     });
-    await page.exposeFunction('__mediaApiOnSessionState', (state) => {
+    await page.exposeFunction('__onLog', (msg) => {
+      console.log(`[mediaApi:browser] ${msg}`);
+    });
+    await page.exposeFunction('__onConnectionState', (state) => {
       console.log(`[mediaApi] Connection state: ${state}`);
       if (state === 'connected') {
         console.log('[mediaApi] WebRTC session established with Meet Media API');
@@ -158,50 +155,218 @@ export class MediaApiSession {
         if (this.onDisconnect) this.onDisconnect(state);
       }
     });
-    await page.exposeFunction('__mediaApiOnMeetState', (jsonStr) => {
-      try {
-        const parsed = JSON.parse(jsonStr);
-        if (this.onParticipants) this.onParticipants(parsed);
-        const connState = parsed?.sessionStatus?.connectionState;
-        if (connState) {
-          console.log(`[mediaApi] Meet session state: ${connState}`);
-          if (this.onSessionState) this.onSessionState(connState);
-          if (connState === 'STATE_DISCONNECTED' && !this._disconnected) {
-            this._disconnected = true;
-            if (this.onDisconnect) this.onDisconnect(connState);
-          }
-        }
-      } catch (_e) {}
+    await page.exposeFunction('__onMeetSessionState', (stateStr) => {
+      console.log(`[mediaApi] Meet session state: ${stateStr}`);
+      if (this.onSessionState) this.onSessionState(stateStr);
+      if (stateStr === 'STATE_DISCONNECTED' && !this._disconnected) {
+        this._disconnected = true;
+        if (this.onDisconnect) this.onDisconnect(stateStr);
+      }
+    });
+    await page.exposeFunction('__onParticipants', (jsonStr) => {
+      try { if (this.onParticipants) this.onParticipants(JSON.parse(jsonStr)); } catch (_e) {}
     });
 
     const numVideoStreams = Math.max(0, Math.min(3, config.mediaApiVideoStreams || 1));
     const captureIntervalMs = (config.captureIntervalSec || 5) * 1000;
 
-    // Phase 1 + Phase 2 SDP offer generation inside the browser
+    // ── Build SDP + wire up everything inside the browser ──────────────
     console.log('[mediaApi] Setting up RTCPeerConnection in browser...');
-    const sdpOffer = await page.evaluate(async (numVideo) => {
+    const sdpOffer = await page.evaluate(async (numVideo, capIntervalMs) => {
+
       const pc = new RTCPeerConnection({
         sdpSemantics: 'unified-plan',
         bundlePolicy: 'max-bundle',
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
 
-      // Phase 1 — audio transceivers + data channels
+      let trackCount = 0;
+      let videoTrackCount = 0;
+      let audioTrackCount = 0;
+
+      // ── 1. ontrack — set up BEFORE setRemoteDescription ───────────
+      pc.ontrack = (e) => {
+        trackCount++;
+        const track = e.track;
+        const stream = (e.streams && e.streams[0]) || new MediaStream([track]);
+        window.__onLog(`ontrack fired: kind=${track.kind} id=${track.id} label=${track.label} (track #${trackCount})`);
+
+        if (track.kind === 'video') {
+          videoTrackCount++;
+          const video = document.createElement('video');
+          video.autoplay = true;
+          video.muted = true;
+          video.playsInline = true;
+          document.body.appendChild(video);
+          video.srcObject = stream;
+
+          const canvas = document.createElement('canvas');
+          canvas.width = 1280;
+          canvas.height = 720;
+          const ctx = canvas.getContext('2d');
+
+          const captureId = setInterval(() => {
+            try {
+              if (video.readyState >= 2 && video.videoWidth > 0) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                const b64 = dataUrl.split(',')[1];
+                if (b64 && b64.length > 100) {
+                  window.__onVideoFrame(b64);
+                }
+              }
+            } catch (_e) {}
+          }, capIntervalMs);
+
+          // Stop capturing when track ends
+          track.onended = () => {
+            clearInterval(captureId);
+            window.__onLog(`Video track ${track.id} ended`);
+          };
+
+        } else if (track.kind === 'audio') {
+          audioTrackCount++;
+          try {
+            const audioCtx = new AudioContext({ sampleRate: 16000 });
+            const source = audioCtx.createMediaStreamSource(stream);
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            const FLUSH_SAMPLES = 16000 * 10; // 10s at 16kHz
+            let pcmAccum = [];
+
+            processor.onaudioprocess = (ev) => {
+              const input = ev.inputBuffer.getChannelData(0);
+              for (let i = 0; i < input.length; i++) pcmAccum.push(input[i]);
+
+              if (pcmAccum.length >= FLUSH_SAMPLES) {
+                const samples = pcmAccum.splice(0, FLUSH_SAMPLES);
+                // Build WAV header
+                const wavBuf = new ArrayBuffer(44 + samples.length * 2);
+                const dv = new DataView(wavBuf);
+                const ws = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+                ws(0, 'RIFF');
+                dv.setUint32(4, 36 + samples.length * 2, true);
+                ws(8, 'WAVE'); ws(12, 'fmt ');
+                dv.setUint32(16, 16, true);
+                dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+                dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true);
+                dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+                ws(36, 'data');
+                dv.setUint32(40, samples.length * 2, true);
+                for (let i = 0; i < samples.length; i++) {
+                  const s = Math.max(-1, Math.min(1, samples[i]));
+                  dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+                }
+                const bytes = new Uint8Array(wavBuf);
+                let binary = '';
+                const CHUNK = 8192;
+                for (let i = 0; i < bytes.length; i += CHUNK) {
+                  binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+                }
+                window.__onAudioChunk(btoa(binary));
+                window.__onLog(`Audio chunk flushed: ${samples.length} samples`);
+              }
+            };
+            source.connect(processor);
+            processor.connect(audioCtx.destination);
+          } catch (err) {
+            window.__onLog(`Audio capture error: ${err.message}`);
+          }
+        }
+      };
+
+      // ── 2. Connection state → Node ─────────────────────────────────
+      pc.onconnectionstatechange = () => {
+        window.__onConnectionState(pc.connectionState);
+      };
+
+      // ── 3. Phase 1 — audio transceivers + data channels ────────────
       for (let i = 0; i < 3; i++) {
         pc.addTransceiver('audio', { direction: 'recvonly' });
       }
-      const dcOpts = { ordered: true };
-      pc.createDataChannel('session-control', dcOpts);
-      pc.createDataChannel('media-stats', dcOpts);
+
+      const dcConfig = { ordered: true };
+
+      // Session-control data channel
+      const sessionControlDC = pc.createDataChannel('session-control', dcConfig);
+      sessionControlDC.onopen = () => window.__onLog('DC session-control opened');
+      sessionControlDC.onclose = () => window.__onLog('DC session-control closed');
+      sessionControlDC.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          window.__onLog(`DC session-control msg: ${ev.data.slice(0, 200)}`);
+          if (msg?.resources?.[0]?.sessionStatus?.connectionState) {
+            const cs = msg.resources[0].sessionStatus.connectionState;
+            window.__onMeetSessionState(cs);
+            // After STATE_JOINED, request video assignment layout
+            if (cs === 'STATE_JOINED' && window.__videoAssignmentDC && numVideo > 0) {
+              window.__onLog('STATE_JOINED — sending video assignment request');
+              const canvases = [];
+              for (let i = 0; i < numVideo; i++) {
+                canvases.push({
+                  id: i + 1,
+                  dimensions: { width: 1280, height: 720 },
+                  relevant: {}
+                });
+              }
+              const request = {
+                requestId: 1,
+                setAssignment: {
+                  layoutModel: {
+                    label: Date.now().toString(),
+                    canvases
+                  },
+                  maxVideoResolution: { width: 1920, height: 1080, frameRate: 30 }
+                }
+              };
+              try {
+                window.__videoAssignmentDC.send(JSON.stringify({ request }));
+                window.__onLog('Video assignment request sent');
+              } catch (sendErr) {
+                window.__onLog(`Video assignment send error: ${sendErr.message}`);
+              }
+            }
+          }
+        } catch (_e) {}
+      };
+
+      // Media-stats data channel
+      const mediaStatsDC = pc.createDataChannel('media-stats', dcConfig);
+      mediaStatsDC.onopen = () => window.__onLog('DC media-stats opened');
+      mediaStatsDC.onmessage = (ev) => {
+        window.__onLog(`DC media-stats msg: ${ev.data.slice(0, 200)}`);
+      };
+
+      // Conditional channels for video
       if (numVideo > 0) {
-        pc.createDataChannel('video-assignment', dcOpts);
-        pc.createDataChannel('media-entries', dcOpts);
-        pc.createDataChannel('participants', dcOpts);
+        const videoAssignmentDC = pc.createDataChannel('video-assignment', dcConfig);
+        window.__videoAssignmentDC = videoAssignmentDC;
+        videoAssignmentDC.onopen = () => window.__onLog('DC video-assignment opened');
+        videoAssignmentDC.onclose = () => window.__onLog('DC video-assignment closed');
+        videoAssignmentDC.onmessage = (ev) => {
+          window.__onLog(`DC video-assignment msg: ${ev.data.slice(0, 300)}`);
+        };
+
+        const mediaEntriesDC = pc.createDataChannel('media-entries', dcConfig);
+        mediaEntriesDC.onopen = () => window.__onLog('DC media-entries opened');
+        mediaEntriesDC.onmessage = (ev) => {
+          window.__onLog(`DC media-entries msg: ${ev.data.slice(0, 300)}`);
+        };
+
+        const participantsDC = pc.createDataChannel('participants', dcConfig);
+        participantsDC.onopen = () => window.__onLog('DC participants opened');
+        participantsDC.onmessage = (ev) => {
+          window.__onLog(`DC participants msg: ${ev.data.slice(0, 300)}`);
+          window.__onParticipants(ev.data);
+        };
       }
+
+      // Phase 1 SDP
       const offer1 = await pc.createOffer();
       await pc.setLocalDescription(offer1);
 
-      // Phase 2 — video transceivers
+      // ── 4. Phase 2 — video transceivers ────────────────────────────
       for (let i = 0; i < numVideo; i++) {
         pc.addTransceiver('video', { direction: 'recvonly' });
       }
@@ -219,128 +384,22 @@ export class MediaApiSession {
 
       window.__meetPc = pc;
       return pc.localDescription?.sdp || offer2.sdp;
-    }, numVideoStreams);
+    }, numVideoStreams, captureIntervalMs);
 
     const hasCandidates = sdpOffer.includes('a=candidate');
     console.log(`[mediaApi] SDP offer ready. Has candidates: ${hasCandidates}. Length: ${sdpOffer.length}`);
 
-    // Send to Meet API via raw HTTP
+    // Send to Meet API
     const sdpAnswer = await connectActiveConference(meetingCode, sdpOffer, accessToken);
     console.log('[mediaApi] Received SDP answer');
 
-    // Apply answer and set up track handlers (video canvas capture + audio ScriptProcessor)
-    await page.evaluate(async (answer, capIntervalMs) => {
-      const pc = window.__meetPc;
+    // Apply the answer (triggers ICE + track delivery)
+    await page.evaluate(async (answer) => {
+      await window.__meetPc.setRemoteDescription({ type: 'answer', sdp: answer });
+      window.__onLog('Remote description applied');
+    }, sdpAnswer);
 
-      // Connection state → exposed function
-      pc.addEventListener('connectionstatechange', () => {
-        window.__mediaApiOnSessionState(pc.connectionState);
-      });
-
-      // Data channel messages (session-control, participants)
-      pc.addEventListener('datachannel', (e) => {
-        if (e.channel.label === 'session-control' || e.channel.label === 'participants') {
-          e.channel.addEventListener('message', (msg) => {
-            window.__mediaApiOnMeetState(msg.data);
-          });
-        }
-      });
-
-      // Track handler — set up BEFORE setRemoteDescription so we don't miss tracks
-      pc.addEventListener('track', (e) => {
-        const track = e.track;
-        const stream = (e.streams && e.streams[0]) || new MediaStream([track]);
-
-        if (track.kind === 'video') {
-          // Draw track to canvas, capture JPEG, forward to Node
-          const video = document.createElement('video');
-          video.autoplay = true;
-          video.muted = true;
-          video.playsInline = true;
-          video.width = 1280;
-          video.height = 720;
-          document.body.appendChild(video);
-          video.srcObject = stream;
-
-          const canvas = document.createElement('canvas');
-          canvas.width = 1280;
-          canvas.height = 720;
-          const ctx = canvas.getContext('2d');
-          document.body.appendChild(canvas);
-
-          setInterval(() => {
-            try {
-              if (video.readyState >= 2 && video.videoWidth > 0) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-                const base64 = dataUrl.split(',')[1];
-                if (base64) window.__mediaApiOnVideoFrame(base64);
-              }
-            } catch (_e) {}
-          }, capIntervalMs);
-
-        } else if (track.kind === 'audio') {
-          // Capture PCM via ScriptProcessorNode, encode as WAV, forward to Node
-          try {
-            const audioCtx = new AudioContext({ sampleRate: 16000 });
-            const source = audioCtx.createMediaStreamSource(stream);
-            // bufferSize, inputChannels, outputChannels
-            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-            const FLUSH_SAMPLES = 16000 * 10; // 10 seconds at 16kHz
-            let pcmAccum = [];
-
-            processor.onaudioprocess = (e) => {
-              const inputData = e.inputBuffer.getChannelData(0);
-              for (let i = 0; i < inputData.length; i++) pcmAccum.push(inputData[i]);
-
-              if (pcmAccum.length >= FLUSH_SAMPLES) {
-                const samples = pcmAccum.splice(0, FLUSH_SAMPLES);
-                // Build WAV in browser
-                const wavBuffer = new ArrayBuffer(44 + samples.length * 2);
-                const view = new DataView(wavBuffer);
-                const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
-                writeStr(0, 'RIFF');
-                view.setUint32(4, 36 + samples.length * 2, true);
-                writeStr(8, 'WAVE');
-                writeStr(12, 'fmt ');
-                view.setUint32(16, 16, true);
-                view.setUint16(20, 1, true);    // PCM
-                view.setUint16(22, 1, true);    // mono
-                view.setUint32(24, 16000, true); // sample rate
-                view.setUint32(28, 32000, true); // byte rate
-                view.setUint16(32, 2, true);    // block align
-                view.setUint16(34, 16, true);   // bits per sample
-                writeStr(36, 'data');
-                view.setUint32(40, samples.length * 2, true);
-                for (let i = 0; i < samples.length; i++) {
-                  const s = Math.max(-1, Math.min(1, samples[i]));
-                  view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-                }
-                // Base64-encode in chunks to avoid stack overflow on large arrays
-                const bytes = new Uint8Array(wavBuffer);
-                let binary = '';
-                const CHUNK = 8192;
-                for (let i = 0; i < bytes.length; i += CHUNK) {
-                  binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
-                }
-                window.__mediaApiOnAudioChunk(btoa(binary));
-              }
-            };
-
-            source.connect(processor);
-            processor.connect(audioCtx.destination);
-          } catch (audioErr) {
-            console.log('[mediaApi] Audio capture setup failed:', audioErr.message);
-          }
-        }
-      });
-
-      // Apply the SDP answer (triggers ICE connectivity and track delivery)
-      await pc.setRemoteDescription({ type: 'answer', sdp: answer });
-    }, sdpAnswer, captureIntervalMs);
-
-    console.log('[mediaApi] Track handlers registered, remote description applied');
+    console.log('[mediaApi] Remote description applied, waiting for tracks...');
     return this;
   }
 
