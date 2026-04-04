@@ -169,10 +169,12 @@ export class MediaApiSession {
 
     const numVideoStreams = Math.max(0, Math.min(3, config.mediaApiVideoStreams || 1));
     const captureIntervalMs = (config.captureIntervalSec || 5) * 1000;
+    // JPEG quality 0.0–1.0 for canvas.toDataURL; config is 0–100
+    const jpegQuality = Math.max(0.1, Math.min(1.0, (config.screenshotQuality || 80) / 100));
 
     // ── Build SDP + wire up everything inside the browser ──────────────
     console.log('[mediaApi] Setting up RTCPeerConnection in browser...');
-    const sdpOffer = await page.evaluate(async (numVideo, capIntervalMs) => {
+    const sdpOffer = await page.evaluate(async (numVideo, capIntervalMs, jpgQuality) => {
 
       const pc = new RTCPeerConnection({
         sdpSemantics: 'unified-plan',
@@ -211,7 +213,7 @@ export class MediaApiSession {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 ctx.drawImage(video, 0, 0);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                const dataUrl = canvas.toDataURL('image/jpeg', jpgQuality);
                 const b64 = dataUrl.split(',')[1];
                 if (b64 && b64.length > 100) {
                   window.__onVideoFrame(b64);
@@ -440,7 +442,7 @@ export class MediaApiSession {
 
       window.__meetPc = pc;
       return pc.localDescription?.sdp || offer2.sdp;
-    }, numVideoStreams, captureIntervalMs);
+    }, numVideoStreams, captureIntervalMs, jpegQuality);
 
     const hasCandidates = sdpOffer.includes('a=candidate');
     console.log(`[mediaApi] SDP offer ready. Has candidates: ${hasCandidates}. Length: ${sdpOffer.length}`);

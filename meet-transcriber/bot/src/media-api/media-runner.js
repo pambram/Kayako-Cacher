@@ -18,6 +18,7 @@ import { MediaApiSession } from './webrtc-client.js';
 import { VideoCaptureLoop } from './video-capture.js';
 import { AudioCaptureLoop } from './audio-capture.js';
 import { analyzeBatch } from '../analysis.js';
+import { classifyAndUploadKtScreenshot } from '../screenshot-classifier.js';
 import {
   generateTldr, generateStoryArc, generateBulletPoints,
   generateTldrMapReduce, generateBulletPointsMapReduce, generateStoryArcMapReduce,
@@ -81,6 +82,7 @@ export async function runMeetingBotMediaApi(config, hooks = {}) {
   let previousContext = '';
   let batchCounter = 0;
   let sessionEnded = false;
+  const selectedScreenshotHistory = [];
 
   const checkpoint = await initCheckpoints(config.outputDir, config.meetUrl, runId);
   emit(hooks, 'checkpoint_initialized', { checkpoint });
@@ -114,7 +116,30 @@ export async function runMeetingBotMediaApi(config, hooks = {}) {
     emit(hooks, 'batch_processing', { startedAtIso: batch.startedAtIso, endedAtIso: batch.endedAtIso });
     try {
       const analysis = await analyzeBatch(batch, previousContext, config);
-      const entry = { timestamp: batch.endedAtIso, timestampLabel: formatTimeLabel(batch.endedAtIso), content: analysis.text };
+      let finalContent = analysis.text;
+
+      // KT screenshot classifier — identical to runner.js Puppeteer path
+      if (config.enableScreenshotClassifier) {
+        try {
+          emit(hooks, 'screenshot_classifier_running', { batchNumber: entries.length + 1, screenshots: (batch.screenshots || []).length });
+          const classifierResult = await classifyAndUploadKtScreenshot(batch, analysis.text, config, {
+            batchNumber: entries.length + 1,
+            runId,
+            previousSelections: selectedScreenshotHistory
+          });
+          if (classifierResult.selected && classifierResult.imageUrl) {
+            selectedScreenshotHistory.push({ batchNumber: entries.length + 1, reason: classifierResult.reason || '' });
+            finalContent += `\n\n![Screenshot batch ${entries.length + 1}](${classifierResult.imageUrl})`;
+            emit(hooks, 'screenshot_classifier_selected', { batchNumber: entries.length + 1, selectedIndex: classifierResult.selectedIndex, reason: classifierResult.reason, imageUrl: classifierResult.imageUrl });
+          } else {
+            emit(hooks, 'screenshot_classifier_skipped', { batchNumber: entries.length + 1, reason: classifierResult.reason || 'No screenshot selected' });
+          }
+        } catch (classifierError) {
+          emit(hooks, 'screenshot_classifier_error', { batchNumber: entries.length + 1, error: classifierError.message });
+        }
+      }
+
+      const entry = { timestamp: batch.endedAtIso, timestampLabel: formatTimeLabel(batch.endedAtIso), content: finalContent };
       entries.push(entry);
       batchCounter += 1;
       await appendEntry(checkpoint.liveTranscriptPath, entry);

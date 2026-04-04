@@ -45,19 +45,19 @@ export class AudioCaptureLoop {
     }
   }
 
-  /** Send a complete WAV buffer to OpenAI Whisper. */
+  /** Send a complete WAV buffer to OpenAI Whisper using native fetch + FormData. */
   async _sendWavToWhisper(wavBuffer) {
     if (wavBuffer.length < 1000) return;
     try {
-      const FormData = (await import('form-data')).default;
+      const blob = new Blob([wavBuffer], { type: 'audio/wav' });
       const form = new FormData();
-      form.append('file', wavBuffer, { filename: 'audio.wav', contentType: 'audio/wav' });
+      form.append('file', blob, 'audio.wav');
       form.append('model', 'whisper-1');
       form.append('language', 'en');
 
       const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${this.openaiApiKey}`, ...form.getHeaders() },
+        headers: { 'Authorization': `Bearer ${this.openaiApiKey}` },
         body: form
       });
 
