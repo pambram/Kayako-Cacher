@@ -15,11 +15,15 @@
     "@aws-sdk/client-ses": "^3.1009.0",
     "@aws-sdk/client-sns": "^3.883.0",
     "@aws-sdk/s3-request-presigner": "^3.883.0",
+    "@google-apps/meet": "^0.7.1",
+    "canvas": "^3.2.3",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
+    "google-auth-library": "^10.6.2",
     "googleapis": "^171.4.0",
     "puppeteer-core": "^24.23.1",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "werift": "^0.22.9"
   }
 }

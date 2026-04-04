@@ -228,7 +228,9 @@ const CONFIG_KEYS = [
   'tldrModel', 'arcModel', 'bulletsModel', 'guestName', 'forceGoogleSignIn',
   'enableMetaAnalysis', 'metaAnalysisInterval', 'metaAnalysisWindow',
   'enableScreenshotClassifier', 'screenshotClassifierModel', 'ktModel', 'meetingObjective',
-  'customSummarizers', 'googleEmail'
+  'customSummarizers', 'googleEmail',
+  'captureMode', 'mediaApiVideoStreams', 'transcriptionMode', 'deepgramApiKey'
+  // mediaApiCredentialsPath is env-only, not exposed via UI
 ];
 
 app.get('/api/config', async (req, res) => {
@@ -296,7 +298,11 @@ app.put('/api/config', async (req, res) => {
       enableScreenshotClassifier: 'ENABLE_SCREENSHOT_CLASSIFIER',
       screenshotClassifierModel: 'SCREENSHOT_CLASSIFIER_MODEL',
       ktModel: 'KT_MODEL',
-      meetingObjective: 'MEETING_OBJECTIVE'
+      meetingObjective: 'MEETING_OBJECTIVE',
+      captureMode: 'CAPTURE_MODE',
+      mediaApiVideoStreams: 'MEDIA_API_VIDEO_STREAMS',
+      transcriptionMode: 'TRANSCRIPTION_MODE',
+      deepgramApiKey: 'DEEPGRAM_API_KEY'
     };
     for (const [k, envKey] of Object.entries(map)) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
@@ -343,6 +349,128 @@ app.post('/api/jobs', async (req, res) => {
 });
 
 // Generate a fresh presigned URL for a stored S3 key (never expires at access time).
+// ── Meet Media API OAuth flow ─────────────────────────────────────────────
+
+// State shared between the connect endpoint and the callback endpoint
+let _oauthPending = null; // { oauth2Client, resolve, reject, timer }
+
+app.get('/api/media-api/status', (_req, res) => {
+  const hasToken = Boolean(process.env.MEDIA_API_REFRESH_TOKEN);
+  const hasCredentials = Boolean(process.env.MEDIA_API_CREDENTIALS_PATH);
+  res.json({ connected: hasToken && hasCredentials, hasToken, hasCredentials });
+});
+
+app.post('/api/media-api/connect', async (req, res) => {
+  try {
+    const { OAuth2Client } = await import('google-auth-library');
+    const fsSync = await import('node:fs/promises');
+
+    const credPath = process.env.MEDIA_API_CREDENTIALS_PATH;
+    if (!credPath) {
+      res.status(503).json({ error: 'MEDIA_API_CREDENTIALS_PATH not set in .env' });
+      return;
+    }
+    const raw = JSON.parse(await fsSync.readFile(credPath, 'utf8'));
+    const creds = raw.web || raw.installed;
+    if (!creds) { res.status(500).json({ error: 'Invalid credentials file' }); return; }
+
+    const REDIRECT = 'http://localhost:3030/api/media-api/callback';
+    const SCOPES = [
+      'https://www.googleapis.com/auth/meetings.conference.media.readonly',
+      'https://www.googleapis.com/auth/meetings.space.readonly'
+    ];
+
+    const oauth2Client = new OAuth2Client(creds.client_id, creds.client_secret, REDIRECT);
+    const authUrl = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+
+    // Cancel any previous pending flow
+    if (_oauthPending) {
+      clearTimeout(_oauthPending.timer);
+      _oauthPending.reject(new Error('New connect request started'));
+      _oauthPending = null;
+    }
+
+    // Store pending state — the callback will resolve it
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        _oauthPending = null;
+        reject(new Error('OAuth timeout (5 minutes)'));
+      }, 5 * 60 * 1000);
+      _oauthPending = { oauth2Client, timer };
+
+      // Respond immediately with the URL so the UI can open it
+      res.json({ authUrl, message: 'Open authUrl in your browser to authorize' });
+      // Don't resolve here — wait for callback
+    }).catch(() => {}); // errors handled via status endpoint
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media-api/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error || !code) {
+    res.send(`<h2 style="font-family:sans-serif;color:#e05c5c">Authorization denied: ${error || 'no code'}</h2>`);
+    if (_oauthPending) { clearTimeout(_oauthPending.timer); _oauthPending = null; }
+    return;
+  }
+  if (!_oauthPending) {
+    res.send('<h2 style="font-family:sans-serif">No pending authorization flow. Please try again.</h2>');
+    return;
+  }
+  try {
+    const { oauth2Client, timer } = _oauthPending;
+    _oauthPending = null;
+    clearTimeout(timer);
+
+    const { tokens } = await oauth2Client.getToken(code);
+    if (!tokens.refresh_token) {
+      res.send('<h2 style="font-family:sans-serif;color:#e05c5c">No refresh token returned. The account may already be authorized — revoke access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and try again.</h2>');
+      return;
+    }
+
+    // Persist refresh token to .env
+    const envContent = await fs.readFile(envPath, 'utf8').catch(() => '');
+    const lines = envContent.split('\n');
+    const idx = lines.findIndex((l) => l.match(/^MEDIA_API_REFRESH_TOKEN=/));
+    const newLine = `MEDIA_API_REFRESH_TOKEN=${tokens.refresh_token}`;
+    if (idx >= 0) { lines[idx] = newLine; } else { lines.push(newLine); }
+    await fs.writeFile(envPath, `${lines.join('\n').replace(/\n+$/, '')}\n`, 'utf8');
+    process.env.MEDIA_API_REFRESH_TOKEN = tokens.refresh_token;
+
+    // Update in-memory config
+    const nextConfig = loadConfig({}, { requireMeetUrl: false, requireSecrets: false });
+    jobManager.setBaseConfig(nextConfig);
+
+    res.send(`
+      <!DOCTYPE html><html><head><style>
+        body{font-family:sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+        .card{background:#1c1c1c;border:1px solid #333;border-radius:12px;padding:32px;max-width:400px;text-align:center}
+        h2{color:#31c46d;margin-top:0}
+      </style></head><body>
+        <div class="card">
+          <h2>✓ Connected!</h2>
+          <p>Google account authorized for Meet Media API.</p>
+          <p>You can close this tab and return to the dashboard.</p>
+        </div>
+      </body></html>`);
+  } catch (err) {
+    res.send(`<h2 style="font-family:sans-serif;color:#e05c5c">Error: ${err.message}</h2>`);
+  }
+});
+
+app.post('/api/media-api/disconnect', async (req, res) => {
+  try {
+    const envContent = await fs.readFile(envPath, 'utf8').catch(() => '');
+    const lines = envContent.split('\n').filter((l) => !l.match(/^MEDIA_API_REFRESH_TOKEN=/));
+    await fs.writeFile(envPath, `${lines.join('\n').replace(/\n+$/, '')}\n`, 'utf8');
+    process.env.MEDIA_API_REFRESH_TOKEN = '';
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/s3/presign', async (req, res) => {
   const { key } = req.query;
   if (!key) { res.status(400).json({ error: 'key required' }); return; }

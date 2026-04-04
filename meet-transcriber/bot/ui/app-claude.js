@@ -947,6 +947,14 @@ async function loadConfigIntoForm() {
   renderCustomSummarizersEditor();
   const botEmailEl = document.getElementById('botEmailHint');
   if (botEmailEl) botEmailEl.textContent = cfg.googleEmail || 'not configured (set GOOGLE_EMAIL)';
+  // Capture mode
+  const captureMode = cfg.captureMode || 'puppeteer';
+  document.getElementById('cfgCaptureMode').value = captureMode;
+  document.getElementById('cfgTranscriptionMode').value = cfg.transcriptionMode || 'none';
+  updateMediaApiConnectionStatus();
+  document.getElementById('cfgDeepgramApiKey').value = cfg.deepgramApiKey ?? '';
+  document.getElementById('mediaApiSettings').style.display = captureMode === 'media-api' ? 'block' : 'none';
+
   document.getElementById('cfgEnableMetaAnalysis').checked   = Boolean(cfg.enableMetaAnalysis);
   document.getElementById('cfgMetaAnalysisInterval').value  = cfg.metaAnalysisInterval ?? 5;
   document.getElementById('cfgMetaAnalysisWindow').value    = cfg.metaAnalysisWindow ?? 5;
@@ -972,6 +980,9 @@ function collectConfigFromForm() {
     enableMetaAnalysis:         document.getElementById('cfgEnableMetaAnalysis').checked,
     metaAnalysisInterval:       Number(document.getElementById('cfgMetaAnalysisInterval').value),
     metaAnalysisWindow:         Number(document.getElementById('cfgMetaAnalysisWindow').value),
+    captureMode:                document.getElementById('cfgCaptureMode').value,
+    transcriptionMode:          document.getElementById('cfgTranscriptionMode').value,
+    deepgramApiKey:             document.getElementById('cfgDeepgramApiKey').value.trim(),
     customSummarizers:          collectCustomSummarizers()
   };
 }
@@ -1258,6 +1269,96 @@ document.querySelectorAll('[data-preset]').forEach((btn) => {
     }
     refresh();
   });
+});
+
+document.getElementById('cfgCaptureMode').addEventListener('change', () => {
+  const isMediaApi = document.getElementById('cfgCaptureMode').value === 'media-api';
+  document.getElementById('mediaApiSettings').style.display = isMediaApi ? 'block' : 'none';
+  if (isMediaApi) updateMediaApiConnectionStatus();
+});
+
+// ── Meet Media API connect / disconnect ─────────────────────────────────────
+
+let _mediaApiPollHandle = null;
+
+async function updateMediaApiConnectionStatus() {
+  try {
+    const res = await fetch('/api/media-api/status');
+    if (!res.ok) return;
+    const { connected, hasCredentials } = await res.json();
+    const statusEl = document.getElementById('mediaApiConnectionStatus');
+    const connectBtn = document.getElementById('mediaApiConnectBtn');
+    const disconnectBtn = document.getElementById('mediaApiDisconnectBtn');
+    if (!statusEl) return;
+    if (connected) {
+      statusEl.innerHTML = '<span style="color:#31c46d">● Connected</span> — Google account authorized';
+      connectBtn.textContent = 'Re-authorize';
+      disconnectBtn.style.display = 'inline-block';
+    } else if (!hasCredentials) {
+      statusEl.innerHTML = '<span style="color:#e05c5c">● Not configured</span> — set MEDIA_API_CREDENTIALS_PATH in .env';
+      connectBtn.disabled = true;
+    } else {
+      statusEl.innerHTML = '<span style="color:#f2c94c">● Not connected</span> — authorize your Google account';
+      connectBtn.disabled = false;
+      connectBtn.textContent = 'Connect Google Account';
+      disconnectBtn.style.display = 'none';
+    }
+  } catch (_e) { /* server may be starting */ }
+}
+
+document.getElementById('mediaApiConnectBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mediaApiConnectBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Opening authorization…';
+  try {
+    const res = await fetch('/api/media-api/connect', { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to start OAuth flow', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Connect Google Account';
+      return;
+    }
+    const { authUrl } = await res.json();
+    window.open(authUrl, '_blank', 'noopener,width=600,height=700');
+
+    // Poll for completion
+    btn.innerHTML = '<span class="spinner"></span>Waiting for authorization…';
+    _mediaApiPollHandle = setInterval(async () => {
+      const sr = await fetch('/api/media-api/status').then(r => r.json()).catch(() => ({}));
+      if (sr.connected) {
+        clearInterval(_mediaApiPollHandle);
+        _mediaApiPollHandle = null;
+        btn.disabled = false;
+        btn.textContent = 'Re-authorize';
+        showToast('Google account connected for Meet Media API', 'success');
+        updateMediaApiConnectionStatus();
+      }
+    }, 2000);
+
+    // Stop polling after 6 minutes regardless
+    setTimeout(() => {
+      if (_mediaApiPollHandle) {
+        clearInterval(_mediaApiPollHandle);
+        _mediaApiPollHandle = null;
+        btn.disabled = false;
+        btn.textContent = 'Connect Google Account';
+      }
+    }, 6 * 60 * 1000);
+  } catch (err) {
+    showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Connect Google Account';
+  }
+});
+
+document.getElementById('mediaApiDisconnectBtn').addEventListener('click', async () => {
+  // Clear the token from .env via config save with empty token indicator
+  try {
+    await fetch('/api/media-api/disconnect', { method: 'POST' });
+  } catch (_e) {}
+  showToast('Disconnected. Re-authorize to reconnect.', 'info');
+  updateMediaApiConnectionStatus();
 });
 
 document.getElementById('hideFailedJobs').addEventListener('change', () => refresh());

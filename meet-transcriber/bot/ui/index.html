@@ -217,6 +217,46 @@
         </div>
 
         <div class="form-card">
+          <h3>Capture Mode</h3>
+          <div class="form-group">
+            <label for="cfgCaptureMode">Bot capture method</label>
+            <select id="cfgCaptureMode" class="select" style="max-width:260px">
+              <option value="puppeteer">Puppeteer (browser bot)</option>
+              <option value="media-api">Meet Media API (no browser)</option>
+            </select>
+            <p class="form-hint">Media API mode: no browser, no bot avatar, no join denial. Requires Google Workspace Developer Preview enrollment and one-time OAuth setup.</p>
+          </div>
+          <div id="mediaApiSettings" style="display:none">
+            <!-- Google account connection status + button -->
+            <div class="form-group" style="padding:var(--sp-3) var(--sp-4);background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.2);border-radius:var(--radius);margin-bottom:var(--sp-3)">
+              <div style="display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap">
+                <span id="mediaApiConnectionStatus" style="font-size:0.85rem">Checking…</span>
+                <button id="mediaApiConnectBtn" class="btn btn-ghost btn-sm">Connect Google Account</button>
+                <button id="mediaApiDisconnectBtn" class="btn btn-ghost btn-sm" style="display:none;color:var(--text-muted)">Disconnect</button>
+              </div>
+              <p class="form-hint" style="margin-top:var(--sp-2)">
+                Clicking "Connect" will open a Google authorization page. After granting access, return here.
+                <strong>Note:</strong> Add <code>http://localhost:3030/api/media-api/callback</code> to your OAuth client's Authorized Redirect URIs in Google Cloud Console first.
+              </p>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfgTranscriptionMode">Transcription backend</label>
+                <select id="cfgTranscriptionMode" class="select">
+                  <option value="none">None (captions only)</option>
+                  <option value="whisper">OpenAI Whisper</option>
+                  <option value="deepgram">Deepgram</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="cfgDeepgramApiKey">Deepgram API key <span class="label-optional">if using Deepgram</span></label>
+              <input id="cfgDeepgramApiKey" class="input" type="password" placeholder="deepgram_api_key_...">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-card">
           <h3>Auto-Summary</h3>
           <div class="form-group">
             <label class="toggle-label">

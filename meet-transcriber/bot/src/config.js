@@ -40,6 +40,15 @@ const DEFAULTS = {
   geminiApiKey: '',
   ktModel: 'gemini-3.1-pro-preview',
   meetingObjective: '',
+  // Capture mode: 'puppeteer' (default, existing behaviour) | 'media-api' (Google Meet Media API)
+  captureMode: 'puppeteer',
+  // Meet Media API credentials
+  mediaApiCredentialsPath: '',
+  mediaApiRefreshToken: '',
+  mediaApiVideoStreams: 1,
+  // Transcription backend for Media API mode: 'none' | 'whisper' | 'deepgram'
+  transcriptionMode: 'none',
+  deepgramApiKey: '',
   customSummarizers: [
     {
       id: 'meeting-notes',
@@ -200,6 +209,12 @@ export function loadConfig(cliArgs = {}, options = {}) {
     ktModel: cliArgs['kt-model'] || process.env.KT_MODEL || DEFAULTS.ktModel,
     meetingObjective: cliArgs['meeting-objective'] || process.env.MEETING_OBJECTIVE || DEFAULTS.meetingObjective,
     customSummarizers: parseJsonArray(process.env.CUSTOM_SUMMARIZERS, DEFAULTS.customSummarizers),
+    captureMode: cliArgs['capture-mode'] || process.env.CAPTURE_MODE || DEFAULTS.captureMode,
+    mediaApiCredentialsPath: cliArgs['media-api-credentials-path'] || process.env.MEDIA_API_CREDENTIALS_PATH || DEFAULTS.mediaApiCredentialsPath,
+    mediaApiRefreshToken: cliArgs['media-api-refresh-token'] || process.env.MEDIA_API_REFRESH_TOKEN || DEFAULTS.mediaApiRefreshToken,
+    mediaApiVideoStreams: parseNumber(process.env.MEDIA_API_VIDEO_STREAMS, DEFAULTS.mediaApiVideoStreams),
+    transcriptionMode: cliArgs['transcription-mode'] || process.env.TRANSCRIPTION_MODE || DEFAULTS.transcriptionMode,
+    deepgramApiKey: cliArgs['deepgram-api-key'] || process.env.DEEPGRAM_API_KEY || DEFAULTS.deepgramApiKey,
     strictPromptParity: parseBoolean(
       cliArgs['strict-prompt-parity'] || process.env.STRICT_PROMPT_PARITY,
       DEFAULTS.strictPromptParity

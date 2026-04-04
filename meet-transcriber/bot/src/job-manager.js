@@ -1,4 +1,5 @@
 import { runMeetingBot } from './runner.js';
+import { runMeetingBotMediaApi } from './media-api/media-runner.js';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -740,7 +741,10 @@ export class JobManager {
     job.lastEvent = 'starting';
     this.#pushEvent(job, 'starting');
 
-    job.runnerPromise = runMeetingBot(config, {
+    const runner = config.captureMode === 'media-api' ? runMeetingBotMediaApi : runMeetingBot;
+    console.log(`[startRun] Using capture mode: ${config.captureMode || 'puppeteer'}`);
+
+    job.runnerPromise = runner(config, {
       runId: id,
       checkpointPrefix: `jobs/${id}/checkpoints`,
       finalPrefix: `jobs/${id}/final`,

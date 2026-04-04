@@ -149,12 +149,21 @@ async function maybeSignIn(page, config, emitStatus) {
       break;
     }
     // Detect 2FA prompt and keep waiting — user needs to approve on their phone.
+    // Dismiss "Sign in to Chrome?" / work profile modal if it appears mid-flow.
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) =>
+        b.textContent.toLowerCase().includes('without an account') ||
+        b.textContent.toLowerCase().includes('use chrome without')
+      );
+      if (btn) { btn.click(); return true; }
+      return false;
+    }).catch(() => false);
+
     const bodyText = await page.evaluate(() => (document.body?.innerText || '').toLowerCase()).catch(() => '');
     if (bodyText.includes('2-step') || bodyText.includes('verification') || bodyText.includes('verify it')) {
       if (!twoFaLogged) {
         console.log(`[signIn] 2FA prompt detected — waiting for approval on phone...`);
         if (emitStatus) emitStatus('signin_waiting_2fa', { message: 'Waiting for 2FA approval on phone' });
-        twoFaLogged = false; // keep logging every 10s
       }
       twoFaLogged = true;
       // Don't break — keep polling until the user taps Yes on their phone.
