@@ -2254,7 +2254,22 @@ What investigation did CS carry out:`,
       }
 
       const formatting = 'Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>. Keep [LINK#] and [IMG#] placeholders intact. No headings, tables, images, or Markdown. Return only the HTML.';
-      const honePrompt = `Refine the following customer-facing response according to these instructions: "${instructions}". Preserve the meaning and keep the message customer-appropriate. Do not remove placeholders or content. ${formatting}`;
+      const honePrompt = `You are refining an existing customer-facing response. The agent has provided specific instructions about what to change.
+
+AGENT'S INSTRUCTIONS: "${instructions}"
+
+CURRENT RESPONSE TO REFINE:
+---
+(provided in the Details section below)
+---
+
+RULES:
+- Apply the agent's instructions fully — if they say to change the message's substance (e.g., "say we escalated instead of closing"), DO change it accordingly.
+- Keep [LINK#] and [IMG#] placeholders exactly as-is.
+- Maintain a professional, customer-appropriate tone.
+- Keep the same greeting/salutation structure (e.g., "Dear [Name],").
+- Do NOT add a signature or closing — the template already has one.
+${formatting}`;
 
       let enhancedText = await this.callAI(honePrompt, textData.extractedText, ticketContext);
       if (!enhancedText || enhancedText.trim().length === 0) {
