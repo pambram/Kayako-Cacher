@@ -27,14 +27,55 @@ export class AudioCaptureLoop {
   }
 
   /**
-   * Receives a base64-encoded WAV chunk captured inside the browser via ScriptProcessorNode.
-   * Used in Media API mode. The WAV is decoded to a Buffer and fed into the
-   * same transcription pipeline (Whisper / Deepgram) as the werift path.
+   * Receives a base64-encoded WAV chunk (10s, 16kHz mono PCM) from browser ScriptProcessorNode.
+   * Each chunk is a complete, self-contained WAV file — sent directly to Whisper
+   * rather than accumulated (concatenating WAV files produces a malformed blob).
    */
   addBrowserAudioChunk(base64wav) {
     if (!this._running || !base64wav) return;
     const buf = Buffer.from(base64wav, 'base64');
-    this._audioBuffers.push(buf);
+    if (this.transcriptionMode === 'whisper' && this.openaiApiKey) {
+      this._sendWavToWhisper(buf).catch(err => {
+        console.warn('[audioCapture] Browser WAV → Whisper failed:', err.message);
+      });
+    } else if (this.transcriptionMode === 'deepgram' && this._deepgramSocket) {
+      // Deepgram expects raw audio, strip WAV header (44 bytes)
+      const pcm = buf.length > 44 ? buf.subarray(44) : buf;
+      try { if (this._deepgramSocket.getReadyState() === 1) this._deepgramSocket.send(pcm); } catch (_e) {}
+    }
+  }
+
+  /** Send a complete WAV buffer to OpenAI Whisper. */
+  async _sendWavToWhisper(wavBuffer) {
+    if (wavBuffer.length < 1000) return;
+    try {
+      const FormData = (await import('form-data')).default;
+      const form = new FormData();
+      form.append('file', wavBuffer, { filename: 'audio.wav', contentType: 'audio/wav' });
+      form.append('model', 'whisper-1');
+      form.append('language', 'en');
+
+      const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.openaiApiKey}`, ...form.getHeaders() },
+        body: form
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.warn(`[audioCapture] Whisper error ${res.status}: ${errText.slice(0, 200)}`);
+        return;
+      }
+
+      const data = await res.json();
+      const transcript = data.text?.trim();
+      if (transcript) {
+        console.log(`[audioCapture] Whisper: "${transcript.slice(0, 120)}"`);
+        if (this.onCaption) this.onCaption(transcript);
+      }
+    } catch (err) {
+      console.warn('[audioCapture] Whisper transcription failed:', err.message);
+    }
   }
 
   /**
@@ -60,9 +101,11 @@ export class AudioCaptureLoop {
     if (this.transcriptionMode === 'deepgram' && this.deepgramApiKey) {
       await this._startDeepgramStream();
     } else if (this.transcriptionMode === 'whisper' && this.openaiApiKey) {
+      // For werift RTP path only — browser WAV chunks go through addBrowserAudioChunk → _sendWavToWhisper directly
       this._flushTimer = setInterval(() => this._flushToWhisper(), BUFFER_FLUSH_MS);
+      console.log(`[audioCapture] Whisper transcription enabled (key: ${this.openaiApiKey.slice(0, 12)}...)`);
     } else {
-      console.log('[audioCapture] No transcription configured — audio received but not transcribed');
+      console.log(`[audioCapture] No transcription configured (mode=${this.transcriptionMode}, hasKey=${!!this.openaiApiKey})`);
     }
     console.log(`[audioCapture] Audio capture started (mode: ${this.transcriptionMode})`);
   }

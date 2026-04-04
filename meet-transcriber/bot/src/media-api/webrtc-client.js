@@ -331,11 +331,67 @@ export class MediaApiSession {
         } catch (_e) {}
       };
 
-      // Media-stats data channel
+      // Media-stats data channel — MUST upload stats periodically or Meet disconnects
+      // with REASON_PROTOCOL_VIOLATION
       const mediaStatsDC = pc.createDataChannel('media-stats', dcConfig);
+      const statsAllowlist = new Map();
+      let statsRequestId = 1;
+      let statsIntervalId = 0;
+      const STATS_TYPE_MAP = {
+        'codec': 'codec', 'candidate-pair': 'candidate_pair',
+        'media-playout': 'media_playout', 'transport': 'transport',
+        'local-candidate': 'local_candidate', 'remote-candidate': 'remote_candidate',
+        'inbound-rtp': 'inbound_rtp'
+      };
+      const camelToUnderscore = (s) => s.replace(/([A-Z])/g, '_$1').toLowerCase();
+
+      const sendMediaStats = async () => {
+        try {
+          const stats = await pc.getStats();
+          const sections = [];
+          stats.forEach((report) => {
+            if (statsAllowlist.has(report.type)) {
+              const allowedKeys = statsAllowlist.get(report.type);
+              const filtered = {};
+              for (const [key, val] of Object.entries(report)) {
+                if (key !== 'id' && allowedKeys.includes(key)) {
+                  filtered[camelToUnderscore(key)] = val;
+                }
+              }
+              const typeKey = STATS_TYPE_MAP[report.type] || report.type;
+              sections.push({ id: report.id, [typeKey]: filtered });
+            }
+          });
+          if (sections.length > 0 && mediaStatsDC.readyState === 'open') {
+            const req = { request: { requestId: statsRequestId++, uploadMediaStats: { sections } } };
+            mediaStatsDC.send(JSON.stringify(req));
+          }
+        } catch (err) {
+          window.__onLog(`Stats upload error: ${err.message}`);
+        }
+      };
+
       mediaStatsDC.onopen = () => window.__onLog('DC media-stats opened');
+      mediaStatsDC.onclose = () => { clearInterval(statsIntervalId); statsIntervalId = 0; };
       mediaStatsDC.onmessage = (ev) => {
-        window.__onLog(`DC media-stats msg: ${ev.data.slice(0, 200)}`);
+        try {
+          const data = JSON.parse(ev.data);
+          if (data?.resources?.[0]?.configuration) {
+            const cfg = data.resources[0].configuration;
+            // Parse allowlist: { "inbound-rtp": { "keys": ["id","bytesReceived",...] }, ... }
+            if (cfg.allowlist) {
+              for (const [type, val] of Object.entries(cfg.allowlist)) {
+                statsAllowlist.set(type, val.keys || []);
+              }
+            }
+            // Start periodic upload at the requested interval
+            if (cfg.uploadIntervalSeconds && cfg.uploadIntervalSeconds > 0) {
+              if (statsIntervalId) clearInterval(statsIntervalId);
+              statsIntervalId = setInterval(sendMediaStats, cfg.uploadIntervalSeconds * 1000);
+              window.__onLog(`Media stats: uploading every ${cfg.uploadIntervalSeconds}s (${statsAllowlist.size} stat types)`);
+            }
+          }
+        } catch (_e) {}
       };
 
       // Conditional channels for video
