@@ -2975,7 +2975,7 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
       return;
     }
 
-    if (action === 'insert' || !originalTextData.extractedText.trim()) {
+    if (action === 'insert' || (action !== 'append' && !originalTextData.extractedText.trim())) {
       // Insert new content (for empty editor or explicit insert)
       if (originalTextData.hasTemplate) {
         const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
@@ -3034,56 +3034,71 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
         editorElement.innerHTML = htmlContent;
       }
     } else if (action === 'append') {
-      // Append at cursor position, not at the end
-      console.log('🔧 Help me write APPEND: Inserting at cursor position');
+      console.log('🔧 Help me write APPEND: isEscalation=', isEscalation);
       
-      // Try to insert at cursor position
-      const selection = window.getSelection();
-      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-      
-      if (range && editorElement.contains(range.commonAncestorContainer)) {
-        // Insert at cursor position
-        console.log('📍 Inserting at cursor position');
-        const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
-        const textWithRestoredLinks = this.restoreImagesInText(
-          this.restoreLinksInText(normalized, originalTextData.linkMap),
-          originalTextData.imgMap
-        );
+      const normalized = this.normalizePlaceholders(generatedText, originalTextData.linkMap, originalTextData.imgMap);
+      const textWithRestored = this.restoreImagesInText(
+        this.restoreLinksInText(normalized, originalTextData.linkMap),
+        originalTextData.imgMap
+      );
+      const htmlContent = this.normalizeHTMLForInsert(textWithRestored);
+
+      if (isEscalation) {
+        // Append to the END of the existing escalation section content.
+        // Extract the current escalation content and concatenate the new content after it.
+        const existingEscContent = this.extractEscalationSectionContent(editorElement.textContent || '');
+        const existingHTML = existingEscContent
+          ? (() => {
+              // Get the current escalation section's HTML from the editor
+              const fullHTML = editorElement.innerHTML;
+              const marker = /Also\s+fill\s+the\s+following\s+if\s+you\s+are\s+proposing\s+an\s+escalation:?/i;
+              const markerMatch = fullHTML.match(marker);
+              if (!markerMatch) return '';
+              const afterMarker = fullHTML.slice(markerMatch.index + markerMatch[0].length);
+              // Find the next === delimiter or "Additional Context"
+              const endMatch = afterMarker.match(/(?:<[^>]*>)*\s*={3,}\s*(?:<[^>]*>)*/);
+              const addCtxMatch = afterMarker.match(/Additional\s*Context/i);
+              const endIdx = Math.min(
+                endMatch ? endMatch.index : afterMarker.length,
+                addCtxMatch ? addCtxMatch.index : afterMarker.length
+              );
+              return afterMarker.slice(0, endIdx);
+            })()
+          : '';
         
-        // Create a document fragment with the new content
-        const fragment = document.createDocumentFragment();
-        const wrapper = document.createElement('span');
-        // Do not force line breaks; let the normalized HTML define structure
-        wrapper.innerHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
-        
-        // Move all child nodes to the fragment
-        while (wrapper.firstChild) {
-          fragment.appendChild(wrapper.firstChild);
-        }
-        
-        // Insert at cursor
-        range.deleteContents();
-        range.insertNode(fragment);
-        
-        // Move cursor to end of inserted content
-        range.collapse(false);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        
+        const combinedContent = existingHTML + '<br><br>' + htmlContent;
+        console.log(`📋 Appending to ESCALATION section (existing: ${existingHTML.length} chars + new: ${htmlContent.length} chars)`);
+        this.replaceEscalationSection(editorElement, combinedContent);
       } else {
-        // Fallback: append at end if no cursor position detected
-        console.log('📍 No cursor detected, appending at end');
-        if (originalTextData.hasTemplate) {
-          const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
-          const newTextData = { ...originalTextData, extractedText: appendedContent };
-          this.setEditorText(editorElement, newTextData, appendedContent);
+        // Non-escalation: try cursor position, fall back to end of section
+        const selection = window.getSelection();
+        const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        
+        if (range && editorElement.contains(range.commonAncestorContainer)) {
+          console.log('📍 Inserting at cursor position');
+          const fragment = document.createDocumentFragment();
+          const wrapper = document.createElement('span');
+          wrapper.innerHTML = htmlContent;
+          while (wrapper.firstChild) {
+            fragment.appendChild(wrapper.firstChild);
+          }
+          range.deleteContents();
+          range.insertNode(fragment);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
         } else {
-          const currentHTML = editorElement.innerHTML;
-          const textWithRestoredLinks = this.restoreLinksInText(generatedText, originalTextData.linkMap);
-          const newContentHTML = this.normalizeHTMLForInsert(textWithRestoredLinks);
-          // Append without forcing extra <br>, to avoid Froala expanding blanks
-          const combined = this.stabilizeHTMLForEditor(currentHTML + newContentHTML);
-          editorElement.innerHTML = combined;
+          console.log('📍 No cursor detected, appending at end');
+          if (originalTextData.hasTemplate) {
+            const appendedContent = originalTextData.extractedText + '\n\n' + generatedText;
+            const newTextData = { ...originalTextData, extractedText: appendedContent };
+            this.setEditorText(editorElement, newTextData, appendedContent);
+          } else {
+            const currentHTML = editorElement.innerHTML;
+            const newContentHTML = this.normalizeHTMLForInsert(textWithRestored);
+            const combined = this.stabilizeHTMLForEditor(currentHTML + newContentHTML);
+            editorElement.innerHTML = combined;
+          }
         }
       }
     }
