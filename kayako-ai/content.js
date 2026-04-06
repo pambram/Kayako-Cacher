@@ -1039,12 +1039,13 @@ class KayakoAIEnhancer {
     Object.keys(linkMap || {}).forEach((ph) => toNormalize.push(ph));
     Object.keys(imgMap || {}).forEach((ph) => toNormalize.push(ph));
     toNormalize.forEach((placeholder) => {
-      const m = placeholder.match(/^\[(LINK|IMG)(\d+)\]$/i);
+      const m = placeholder.match(/^\[(LINK|IMG|TIMELINE_IMG)(\d+)\]$/i);
       if (!m) return;
       const kind = m[1];
       const num = m[2];
       // Match variants with optional brackets/spaces/case-insensitive
-      const variantRe = new RegExp(`\\[?\\s*${kind}\\s*${num}\\s*\\]?`, 'gi');
+      const escaped = kind.replace(/_/g, '[_ ]?');
+      const variantRe = new RegExp(`\\[?\\s*${escaped}\\s*${num}\\s*\\]?`, 'gi');
       out = out.replace(variantRe, `[${kind.toUpperCase()}${num}]`);
     });
     return out;
@@ -2480,20 +2481,33 @@ INTERPRETATION GUIDE (common patterns):
       
       // Collect timeline images (from previous messages) - keep separate from editor images
       const timelineImageResults = await this.collectTimelineImagesAsDataUrls(timelineImages, 5);
+
+      // Build a timeline image map so the AI can reference them with placeholders like [TIMELINE_IMG1]
+      // and the restoration step will replace them with the actual <img> tags.
+      const timelineImgMap = {};
+      timelineImageResults.forEach((img, i) => {
+        const placeholder = `[TIMELINE_IMG${i + 1}]`;
+        timelineImgMap[placeholder] = `<img src="${img.originalSrc}" alt="Timeline image from ${img.author}" />`;
+      });
+      // Merge timeline image map into textData so restoreImagesInText can handle them
+      if (Object.keys(timelineImgMap).length > 0) {
+        textData.imgMap = { ...(textData.imgMap || {}), ...timelineImgMap };
+      }
+
       // Pass images as labeled objects so AI knows which are agent's vs timeline's
       const labeledImages = [
-        ...contextImages.map((url, i) => ({ url, label: `🚨 AGENT'S SCREENSHOT ${i + 1} - PRIMARY SOURCE OF TRUTH - READ CAREFULLY for current status, ETAs, and temporal info` })),
+        ...contextImages.map((url, i) => ({ url, label: `🚨 AGENT'S SCREENSHOT ${i + 1} - PRIMARY SOURCE OF TRUTH - READ CAREFULLY for current status, ETAs, and temporal info. To include this image in your response, write [IMG${i + 1}] where it should appear.` })),
         ...timelineImageResults.map((img, i) => {
           const typeLabel = img.isNote ? 'agent note' : 'public message';
           const timeLabel = img.time ? ` at ${img.time}` : '';
-          return { url: img.url, label: `TIMELINE IMAGE ${i + 1} from ${img.author}${timeLabel} (${typeLabel})` };
+          return { url: img.url, label: `TIMELINE IMAGE ${i + 1} from ${img.author}${timeLabel} (${typeLabel}). To include this image in your response, write [TIMELINE_IMG${i + 1}] where it should appear.` };
         })
       ];
       console.log(`🖼️ Total images for AI: ${labeledImages.length} (${contextImages.length} from editor, ${timelineImageResults.length} from timeline)`);
 
       // Append formatting guidance for limited HTML output and placeholders
       fullPrompt += '\n\nWeigh the most recent customer message heavily when deciding tone and closure. If the latest customer response expresses thanks or confirms resolution, include a warm, succinct closure and next steps (if any). If not, propose a helpful next action.';
-      fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, images, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. Return only the HTML.';
+      fullPrompt += '\n\nFormatting requirements: Use only simple HTML: <p>, <br>, <strong>, <em>, <ul>, <ol>, <li>; organize into short paragraphs and bullet lists where helpful; no headings, tables, or Markdown. Keep [LINK#] and [IMG#] placeholders exactly as-is. If the agent asks to include a screenshot/image, use [IMG#] for editor images or [TIMELINE_IMG#] for timeline images — these will be replaced with the actual images when inserted. Return only the HTML.';
       
       // Final reminder: calibrate weight of agent notes based on whether the prompt references them.
       // If the agent says "based on my notes", "from notes", "use my notes" etc., treat notes as PRIMARY.
@@ -3332,9 +3346,9 @@ ${fullHistoryLines.join('\n\n')}
         
         if (typeof dataUrl === 'string') {
           const compressed = await this.compressImageDataUrl(dataUrl);
-          // Return object with URL and metadata for labeling
           results.push({
             url: compressed,
+            originalSrc: imgInfo.src,
             author: imgInfo.author,
             time: imgInfo.time || '',
             isNote: imgInfo.isNote || false
