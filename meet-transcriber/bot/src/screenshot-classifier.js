@@ -119,8 +119,8 @@ async function anthropicRequest(apiKey, payload) {
 
 async function uploadViaArtifactEndpoint(imageBuffer, meetCode, batchNumber, endpoint) {
   const tryPayloads = [
-    { action: 'getImageUploadUrl', meetCode, batchNumber },
-    { action: 'getUploadUrl', meetCode, batchNumber, fileType: 'image' }
+    { action: 'getUploadUrl', meetCode, batchNumber, fileType: 'image' },
+    { action: 'getImageUploadUrl', meetCode, batchNumber }
   ];
   let uploadUrl = '';
   let downloadUrl = '';

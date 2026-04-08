@@ -123,7 +123,6 @@ export class MediaApiSession {
         '--disable-gpu',
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
-        '--mute-audio',
         '--autoplay-policy=no-user-gesture-required',
         '--window-size=640,480'
       ]
@@ -230,50 +229,64 @@ export class MediaApiSession {
 
         } else if (track.kind === 'audio') {
           audioTrackCount++;
-          try {
-            const audioCtx = new AudioContext({ sampleRate: 16000 });
-            const source = audioCtx.createMediaStreamSource(stream);
-            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-            const FLUSH_SAMPLES = 16000 * 10; // 10s at 16kHz
-            let pcmAccum = [];
 
-            processor.onaudioprocess = (ev) => {
-              const input = ev.inputBuffer.getChannelData(0);
-              for (let i = 0; i < input.length; i++) pcmAccum.push(input[i]);
+          // Force Chrome to activate its audio decode pipeline by attaching
+          // each track to an <audio> element with autoplay — same principle
+          // as <video> for video tracks. Without this, headless Chrome
+          // never decodes the incoming Opus frames.
+          const audioEl = document.createElement('audio');
+          audioEl.autoplay = true;
+          audioEl.srcObject = stream;
+          document.body.appendChild(audioEl);
 
-              if (pcmAccum.length >= FLUSH_SAMPLES) {
-                const samples = pcmAccum.splice(0, FLUSH_SAMPLES);
-                // Build WAV header
-                const wavBuf = new ArrayBuffer(44 + samples.length * 2);
-                const dv = new DataView(wavBuf);
-                const ws = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
-                ws(0, 'RIFF');
-                dv.setUint32(4, 36 + samples.length * 2, true);
-                ws(8, 'WAVE'); ws(12, 'fmt ');
-                dv.setUint32(16, 16, true);
-                dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-                dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true);
-                dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-                ws(36, 'data');
-                dv.setUint32(40, samples.length * 2, true);
-                for (let i = 0; i < samples.length; i++) {
-                  const s = Math.max(-1, Math.min(1, samples[i]));
-                  dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+          if (!window.__audioRecorderStream) {
+            window.__audioRecorderStream = new MediaStream();
+            window.__audioRecorderChunkCount = 0;
+            window.__audioSilenceCount = 0;
+          }
+          window.__audioRecorderStream.addTrack(track);
+          window.__onLog(`Audio track ${audioTrackCount} added to recorder stream (+ <audio> element)`);
+
+          // Start MediaRecorder once all 3 tracks are added
+          if (audioTrackCount === 3 && !window.__audioRecorder) {
+            try {
+              const SLICE_MS = 10000;
+              const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                ? 'audio/webm;codecs=opus' : 'audio/webm';
+              const recorder = new MediaRecorder(window.__audioRecorderStream, { mimeType });
+
+              recorder.ondataavailable = async (ev) => {
+                if (!ev.data || ev.data.size < 500) {
+                  window.__audioSilenceCount++;
+                  if (window.__audioSilenceCount % 6 === 1) {
+                    window.__onLog(`Audio: tiny/empty chunk (${ev.data?.size || 0}B), likely silence (${window.__audioSilenceCount} so far)`);
+                  }
+                  return;
                 }
-                const bytes = new Uint8Array(wavBuf);
+                window.__audioSilenceCount = 0;
+                window.__audioRecorderChunkCount++;
+                const buf = await ev.data.arrayBuffer();
+                const bytes = new Uint8Array(buf);
                 let binary = '';
                 const CHUNK = 8192;
                 for (let i = 0; i < bytes.length; i += CHUNK) {
                   binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
                 }
-                window.__onAudioChunk(btoa(binary));
-                window.__onLog(`Audio chunk flushed: ${samples.length} samples`);
-              }
-            };
-            source.connect(processor);
-            processor.connect(audioCtx.destination);
-          } catch (err) {
-            window.__onLog(`Audio capture error: ${err.message}`);
+                const b64 = btoa(binary);
+                window.__onAudioChunk(b64);
+                window.__onLog(`Audio chunk #${window.__audioRecorderChunkCount}: ${ev.data.size}B (${mimeType})`);
+              };
+
+              recorder.onerror = (ev) => {
+                window.__onLog(`MediaRecorder error: ${ev.error?.message || 'unknown'}`);
+              };
+
+              recorder.start(SLICE_MS);
+              window.__audioRecorder = recorder;
+              window.__onLog(`MediaRecorder started (${mimeType}, slice=${SLICE_MS}ms)`);
+            } catch (err) {
+              window.__onLog(`MediaRecorder init error: ${err.message}`);
+            }
           }
         }
       };

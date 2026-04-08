@@ -27,31 +27,28 @@ export class AudioCaptureLoop {
   }
 
   /**
-   * Receives a base64-encoded WAV chunk (10s, 16kHz mono PCM) from browser ScriptProcessorNode.
-   * Each chunk is a complete, self-contained WAV file — sent directly to Whisper
-   * rather than accumulated (concatenating WAV files produces a malformed blob).
+   * Receives a base64-encoded audio chunk from the browser MediaRecorder.
+   * Format is webm/opus (not WAV). Sent directly to Whisper which accepts webm.
    */
-  addBrowserAudioChunk(base64wav) {
-    if (!this._running || !base64wav) return;
-    const buf = Buffer.from(base64wav, 'base64');
+  addBrowserAudioChunk(base64audio) {
+    if (!this._running || !base64audio) return;
+    const buf = Buffer.from(base64audio, 'base64');
+    if (buf.length < 500) return; // skip tiny/empty chunks
     if (this.transcriptionMode === 'whisper' && this.openaiApiKey) {
-      this._sendWavToWhisper(buf).catch(err => {
-        console.warn('[audioCapture] Browser WAV → Whisper failed:', err.message);
+      this._sendToWhisper(buf).catch(err => {
+        console.warn('[audioCapture] Whisper failed:', err.message);
       });
     } else if (this.transcriptionMode === 'deepgram' && this._deepgramSocket) {
-      // Deepgram expects raw audio, strip WAV header (44 bytes)
-      const pcm = buf.length > 44 ? buf.subarray(44) : buf;
-      try { if (this._deepgramSocket.getReadyState() === 1) this._deepgramSocket.send(pcm); } catch (_e) {}
+      try { if (this._deepgramSocket.getReadyState() === 1) this._deepgramSocket.send(buf); } catch (_e) {}
     }
   }
 
-  /** Send a complete WAV buffer to OpenAI Whisper using native fetch + FormData. */
-  async _sendWavToWhisper(wavBuffer) {
-    if (wavBuffer.length < 1000) return;
+  /** Send an audio buffer (webm/opus or wav) to OpenAI Whisper. */
+  async _sendToWhisper(audioBuffer) {
     try {
-      const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+      const blob = new Blob([audioBuffer], { type: 'audio/webm' });
       const form = new FormData();
-      form.append('file', blob, 'audio.wav');
+      form.append('file', blob, 'audio.webm');
       form.append('model', 'whisper-1');
       form.append('language', 'en');
 
