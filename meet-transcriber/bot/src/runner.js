@@ -350,11 +350,23 @@ export async function runMeetingBot(config, hooks = {}) {
           if (isHardQuota) {
             console.error('Anthropic hard quota limit reached; analysis disabled for this run:', error.message);
             emit(hooks, 'analysis_quota_exceeded', { error: error.message });
-            // Disable analysis for remaining batches by replacing onBatch with a no-op.
             capture?.disableAnalysis?.();
             return;
           }
-          emit(hooks, 'analysis_error', { error: error.message });
+          // Fallback: save raw captions so no meeting content is lost
+          const fallbackContent = batch.captions?.trim()
+            ? `[LLM analysis failed: ${error.message}]\n\n${batch.captions}`
+            : `[LLM analysis failed: ${error.message} — no captions captured for this window]`;
+          const entry = {
+            timestamp: batch.endedAtIso,
+            timestampLabel: formatTimeLabel(batch.endedAtIso),
+            content: fallbackContent
+          };
+          entries.push(entry);
+          batchCounter += 1;
+          await appendLiveTranscriptEntry(checkpoint.liveTranscriptPath, entry).catch(() => {});
+          await writeLiveState(checkpoint.statePath, entries, config.meetUrl).catch(() => {});
+          emit(hooks, 'analysis_error', { error: error.message, fallback: true });
         }
       }
     });

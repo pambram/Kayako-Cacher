@@ -171,7 +171,20 @@ export async function runMeetingBotMediaApi(config, hooks = {}) {
         videoCapture?.stop();
         return;
       }
-      emit(hooks, 'analysis_error', { error: err.message });
+      // Fallback: save raw captions so no meeting content is lost
+      const fallbackContent = batch.captions?.trim()
+        ? `[LLM analysis failed: ${err.message}]\n\n${batch.captions}`
+        : `[LLM analysis failed: ${err.message} — no captions captured for this window]`;
+      const entry = {
+        timestamp: batch.endedAtIso,
+        timestampLabel: formatTimeLabel(batch.endedAtIso),
+        content: fallbackContent
+      };
+      entries.push(entry);
+      batchCounter += 1;
+      await appendEntry(checkpoint.liveTranscriptPath, entry).catch(() => {});
+      await writeState(checkpoint.statePath, entries, config.meetUrl).catch(() => {});
+      emit(hooks, 'analysis_error', { error: err.message, fallback: true });
     }
   };
 
