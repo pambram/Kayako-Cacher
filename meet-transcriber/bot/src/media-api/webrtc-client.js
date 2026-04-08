@@ -156,30 +156,51 @@ export class MediaApiSession {
         }
       }
       if (this.onSessionState) this.onSessionState(state);
-      if (state === 'disconnected' && !this._disconnected) {
-        // WebRTC 'disconnected' can be transient — wait 15s before treating as fatal
-        console.log('[mediaApi] Connection disconnected — waiting 15s for ICE recovery...');
+      if ((state === 'disconnected' || state === 'failed') && !this._disconnected) {
+        // Both 'disconnected' and 'failed' can be transient network issues.
+        // Wait 30s for ICE to recover before tearing down the session.
+        const label = state === 'failed' ? 'ICE failed' : 'ICE disconnected';
+        console.log(`[mediaApi] ${label} — waiting 30s for recovery...`);
         if (!this._disconnectTimer) {
           this._disconnectTimer = setTimeout(() => {
             if (!this._disconnected) {
-              console.log('[mediaApi] ICE did not recover after 15s — treating as fatal disconnect');
+              console.log(`[mediaApi] ${label}: did not recover after 30s — treating as fatal`);
               this._disconnected = true;
               if (this.onDisconnect) this.onDisconnect(state);
             }
-          }, 15000);
+          }, 30000);
         }
-      } else if ((state === 'failed' || state === 'closed') && !this._disconnected) {
+      } else if (state === 'closed' && !this._disconnected) {
         if (this._disconnectTimer) { clearTimeout(this._disconnectTimer); this._disconnectTimer = null; }
         this._disconnected = true;
         if (this.onDisconnect) this.onDisconnect(state);
       }
     });
-    await page.exposeFunction('__onMeetSessionState', (stateStr) => {
-      console.log(`[mediaApi] Meet session state: ${stateStr}`);
+    await page.exposeFunction('__onMeetSessionState', (stateStr, reasonStr) => {
+      console.log(`[mediaApi] Meet session state: ${stateStr}${reasonStr ? ` (reason: ${reasonStr})` : ''}`);
       if (this.onSessionState) this.onSessionState(stateStr);
       if (stateStr === 'STATE_DISCONNECTED' && !this._disconnected) {
-        this._disconnected = true;
-        if (this.onDisconnect) this.onDisconnect(stateStr);
+        // Meet-initiated disconnects (conference ended, user stopped, protocol violation)
+        // are fatal — the meeting is genuinely over or Meet kicked us.
+        const meetInitiatedReasons = ['REASON_CONFERENCE_ENDED', 'REASON_USER_STOPPED', 'REASON_CLIENT_LEFT', 'REASON_PROTOCOL_VIOLATION'];
+        if (meetInitiatedReasons.includes(reasonStr)) {
+          console.log(`[mediaApi] Meet ended the session: ${reasonStr}`);
+          if (this._disconnectTimer) { clearTimeout(this._disconnectTimer); this._disconnectTimer = null; }
+          this._disconnected = true;
+          if (this.onDisconnect) this.onDisconnect(`${stateStr}:${reasonStr}`);
+        } else {
+          // Network-related or unknown disconnect — give it time to recover
+          console.log(`[mediaApi] Meet session disconnected (${reasonStr || 'unknown reason'}) — waiting 30s for recovery...`);
+          if (!this._disconnectTimer) {
+            this._disconnectTimer = setTimeout(() => {
+              if (!this._disconnected) {
+                console.log(`[mediaApi] Meet session did not recover after 30s — treating as fatal`);
+                this._disconnected = true;
+                if (this.onDisconnect) this.onDisconnect(stateStr);
+              }
+            }, 30000);
+          }
+        }
       }
     });
     await page.exposeFunction('__onParticipants', (jsonStr) => {
@@ -370,7 +391,8 @@ export class MediaApiSession {
           window.__onLog(`DC session-control msg: ${ev.data.slice(0, 200)}`);
           if (msg?.resources?.[0]?.sessionStatus?.connectionState) {
             const cs = msg.resources[0].sessionStatus.connectionState;
-            window.__onMeetSessionState(cs);
+            const reason = msg.resources[0].sessionStatus.disconnectReason || '';
+            window.__onMeetSessionState(cs, reason);
             // After STATE_JOINED, request video assignment layout
             if (cs === 'STATE_JOINED' && window.__videoAssignmentDC && numVideo > 0) {
               window.__onLog('STATE_JOINED — sending video assignment request');
