@@ -12,6 +12,17 @@
 
 const BUFFER_FLUSH_MS = 10000; // flush audio buffer for transcription every 10s
 
+// Common Whisper hallucinations on silence/near-silence audio
+const WHISPER_HALLUCINATIONS = new Set([
+  'you', 'thank you', 'thanks', 'thanks for watching',
+  'thank you for watching', 'bye', 'goodbye', 'the end',
+  'thanks for listening', 'thank you for listening',
+  'subtitles by the amara.org community', 'amara.org',
+  'subscribe', 'like and subscribe', 'see you next time',
+  'so', 'um', 'uh', 'hmm', 'ah', 'oh',
+  '...', '.', 'you.', 'thank you.',
+]);
+
 export class AudioCaptureLoop {
   constructor({ onCaption, transcriptionMode, openaiApiKey, deepgramApiKey }) {
     this.onCaption = onCaption;          // called with each transcribed line
@@ -66,8 +77,8 @@ export class AudioCaptureLoop {
 
       const data = await res.json();
       const transcript = data.text?.trim();
-      if (transcript) {
-        console.log(`[audioCapture] Whisper: "${transcript.slice(0, 120)}"`);
+      if (transcript && !WHISPER_HALLUCINATIONS.has(transcript.toLowerCase())) {
+        console.log(`[audioCapture] Whisper: "${transcript.slice(0, 200)}"`);
         if (this.onCaption) this.onCaption(transcript);
       }
     } catch (err) {

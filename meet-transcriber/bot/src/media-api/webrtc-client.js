@@ -198,13 +198,20 @@ export class MediaApiSession {
           video.autoplay = true;
           video.muted = true;
           video.playsInline = true;
+          video.width = 1280;
+          video.height = 720;
           document.body.appendChild(video);
           video.srcObject = stream;
+          // Explicit play() — some headless Chrome builds need it even with autoplay
+          video.play().catch(e => window.__onLog(`Video play() rejected: ${e.message}`));
 
           const canvas = document.createElement('canvas');
           canvas.width = 1280;
           canvas.height = 720;
           const ctx = canvas.getContext('2d');
+
+          let videoFrameCount = 0;
+          let videoNotReadyCount = 0;
 
           const captureId = setInterval(() => {
             try {
@@ -215,16 +222,24 @@ export class MediaApiSession {
                 const dataUrl = canvas.toDataURL('image/jpeg', jpgQuality);
                 const b64 = dataUrl.split(',')[1];
                 if (b64 && b64.length > 100) {
+                  videoFrameCount++;
                   window.__onVideoFrame(b64);
                 }
+              } else {
+                videoNotReadyCount++;
+                // Log diagnostics periodically (every 12th miss = ~1 min at 5s interval)
+                if (videoNotReadyCount % 12 === 1) {
+                  window.__onLog(`Video not ready: readyState=${video.readyState}, videoWidth=${video.videoWidth}, networkState=${video.networkState}, track.readyState=${track.readyState}, track.muted=${track.muted} (${videoNotReadyCount} misses, ${videoFrameCount} frames captured)`);
+                }
               }
-            } catch (_e) {}
+            } catch (err) {
+              window.__onLog(`Video capture error: ${err.message}`);
+            }
           }, capIntervalMs);
 
-          // Stop capturing when track ends
           track.onended = () => {
             clearInterval(captureId);
-            window.__onLog(`Video track ${track.id} ended`);
+            window.__onLog(`Video track ended (captured ${videoFrameCount} frames)`);
           };
 
         } else if (track.kind === 'audio') {
@@ -247,43 +262,65 @@ export class MediaApiSession {
           window.__audioRecorderStream.addTrack(track);
           window.__onLog(`Audio track ${audioTrackCount} added to recorder stream (+ <audio> element)`);
 
-          // Start MediaRecorder once all 3 tracks are added
+          // Start a stop/start recording cycle once all 3 tracks are added.
+          // Each cycle produces a complete, self-contained webm file that
+          // Whisper can parse (unlike timeslice chunks which lack headers after the first).
           if (audioTrackCount === 3 && !window.__audioRecorder) {
             try {
-              const SLICE_MS = 10000;
+              const CYCLE_MS = 10000;
               const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
                 ? 'audio/webm;codecs=opus' : 'audio/webm';
-              const recorder = new MediaRecorder(window.__audioRecorderStream, { mimeType });
+              window.__audioRecorderChunkCount = 0;
+              window.__audioSilenceCount = 0;
 
-              recorder.ondataavailable = async (ev) => {
-                if (!ev.data || ev.data.size < 500) {
-                  window.__audioSilenceCount++;
-                  if (window.__audioSilenceCount % 6 === 1) {
-                    window.__onLog(`Audio: tiny/empty chunk (${ev.data?.size || 0}B), likely silence (${window.__audioSilenceCount} so far)`);
+              // Silence chunks are ~2.6KB (webm header + empty opus frames).
+              // Real 10s speech is 50KB–150KB+. Threshold filters silence cheaply.
+              const SILENCE_THRESHOLD_BYTES = 5000;
+
+              function startRecordingCycle() {
+                const chunks = [];
+                const recorder = new MediaRecorder(window.__audioRecorderStream, { mimeType });
+
+                recorder.ondataavailable = (ev) => {
+                  if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+                };
+
+                recorder.onstop = async () => {
+                  if (chunks.length === 0) return;
+                  const blob = new Blob(chunks, { type: mimeType });
+                  if (blob.size < SILENCE_THRESHOLD_BYTES) {
+                    window.__audioSilenceCount++;
+                    return;
                   }
-                  return;
-                }
-                window.__audioSilenceCount = 0;
-                window.__audioRecorderChunkCount++;
-                const buf = await ev.data.arrayBuffer();
-                const bytes = new Uint8Array(buf);
-                let binary = '';
-                const CHUNK = 8192;
-                for (let i = 0; i < bytes.length; i += CHUNK) {
-                  binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
-                }
-                const b64 = btoa(binary);
-                window.__onAudioChunk(b64);
-                window.__onLog(`Audio chunk #${window.__audioRecorderChunkCount}: ${ev.data.size}B (${mimeType})`);
-              };
+                  window.__audioSilenceCount = 0;
+                  window.__audioRecorderChunkCount++;
+                  const buf = await blob.arrayBuffer();
+                  const bytes = new Uint8Array(buf);
+                  let binary = '';
+                  const CHUNK = 8192;
+                  for (let i = 0; i < bytes.length; i += CHUNK) {
+                    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+                  }
+                  window.__onAudioChunk(btoa(binary));
+                  window.__onLog(`Audio: speech detected, chunk #${window.__audioRecorderChunkCount} (${(blob.size / 1024).toFixed(1)}KB)`);
+                };
 
-              recorder.onerror = (ev) => {
-                window.__onLog(`MediaRecorder error: ${ev.error?.message || 'unknown'}`);
-              };
+                recorder.onerror = (ev) => {
+                  window.__onLog(`MediaRecorder error: ${ev.error?.message || 'unknown'}`);
+                };
 
-              recorder.start(SLICE_MS);
-              window.__audioRecorder = recorder;
-              window.__onLog(`MediaRecorder started (${mimeType}, slice=${SLICE_MS}ms)`);
+                recorder.start();
+                setTimeout(() => {
+                  startRecordingCycle();
+                  if (recorder.state === 'recording') {
+                    recorder.stop();
+                  }
+                }, CYCLE_MS);
+              }
+
+              startRecordingCycle();
+              window.__audioRecorder = true;
+              window.__onLog(`Audio recording cycles started (${mimeType}, ${CYCLE_MS}ms per cycle)`);
             } catch (err) {
               window.__onLog(`MediaRecorder init error: ${err.message}`);
             }

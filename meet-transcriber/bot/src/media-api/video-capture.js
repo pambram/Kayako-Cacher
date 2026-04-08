@@ -94,7 +94,9 @@ export class VideoCaptureLoop {
     const frame = await this._captureFrame();
     if (frame) this._screenshots.push(frame);
 
-    if (this.onTick) {
+    // Only emit tick when there are screenshots accumulating (avoid log spam
+    // in Media API mode where frames arrive via addBrowserFrame, not _captureFrame)
+    if (this.onTick && this._screenshots.length > 0) {
       this.onTick({ timestamp: new Date().toISOString(), screenshotCount: this._screenshots.length, consecutiveScreenshotFailures: 0 });
     }
     if (this._screenshots.length >= this.batchSize) await this._flush();
