@@ -62,9 +62,6 @@ export class VideoCaptureLoop {
   addBrowserFrame(base64jpeg) {
     if (!this._running || !base64jpeg) return;
     this._screenshots.push(base64jpeg);
-    if (this.onTick) {
-      this.onTick({ timestamp: new Date().toISOString(), screenshotCount: this._screenshots.length, consecutiveScreenshotFailures: 0 });
-    }
     if (this._screenshots.length >= this.batchSize) {
       this._flush().catch(err => console.warn('[videoCapture] Browser frame flush error:', err.message));
     }

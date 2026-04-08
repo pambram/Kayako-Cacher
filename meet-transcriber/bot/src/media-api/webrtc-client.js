@@ -142,14 +142,34 @@ export class MediaApiSession {
     await page.exposeFunction('__onLog', (msg) => {
       console.log(`[mediaApi:browser] ${msg}`);
     });
+    this._disconnectTimer = null;
     await page.exposeFunction('__onConnectionState', (state) => {
       console.log(`[mediaApi] Connection state: ${state}`);
       if (state === 'connected') {
         console.log('[mediaApi] WebRTC session established with Meet Media API');
         this.connected = true;
+        // Cancel any pending disconnect timer (ICE recovered)
+        if (this._disconnectTimer) {
+          clearTimeout(this._disconnectTimer);
+          this._disconnectTimer = null;
+          console.log('[mediaApi] ICE recovered from transient disconnect');
+        }
       }
       if (this.onSessionState) this.onSessionState(state);
-      if ((state === 'disconnected' || state === 'failed' || state === 'closed') && !this._disconnected) {
+      if (state === 'disconnected' && !this._disconnected) {
+        // WebRTC 'disconnected' can be transient — wait 15s before treating as fatal
+        console.log('[mediaApi] Connection disconnected — waiting 15s for ICE recovery...');
+        if (!this._disconnectTimer) {
+          this._disconnectTimer = setTimeout(() => {
+            if (!this._disconnected) {
+              console.log('[mediaApi] ICE did not recover after 15s — treating as fatal disconnect');
+              this._disconnected = true;
+              if (this.onDisconnect) this.onDisconnect(state);
+            }
+          }, 15000);
+        }
+      } else if ((state === 'failed' || state === 'closed') && !this._disconnected) {
+        if (this._disconnectTimer) { clearTimeout(this._disconnectTimer); this._disconnectTimer = null; }
         this._disconnected = true;
         if (this.onDisconnect) this.onDisconnect(state);
       }
