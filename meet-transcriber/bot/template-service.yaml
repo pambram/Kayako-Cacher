@@ -38,6 +38,33 @@ Parameters:
     NoEcho: true
     Default: ''
 
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+
+  CaptureMode:
+    Type: String
+    Default: media-api
+    Description: "Capture mode: 'media-api' or 'puppeteer'"
+
+  MediaApiCredentialsJson:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Full JSON content of the Google OAuth credentials file (web client)
+
+  MediaApiRefreshToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: OAuth refresh token for the Meet Media API (obtained via the one-time connect flow)
+
+  TranscriptionMode:
+    Type: String
+    Default: whisper
+    Description: "Audio transcription backend: 'whisper', 'deepgram', or 'none'"
+
   # ─── Existing infrastructure (all have sane defaults) ─────────
 
   VpcId:
@@ -131,8 +158,10 @@ Resources:
         - Google
       CallbackURLs:
         - "https://meet-fleet.csaiautomations.com/oauth2/idpresponse"
+        - "https://witness.csaiautomations.com/oauth2/idpresponse"
       LogoutURLs:
         - "https://meet-fleet.csaiautomations.com/"
+        - "https://witness.csaiautomations.com/"
       ExplicitAuthFlows:
         - ALLOW_REFRESH_TOKEN_AUTH
 
@@ -259,6 +288,19 @@ Resources:
               Value: "true"
             - Name: CHECKPOINT_UPLOAD_MINUTES
               Value: "5"
+            - Name: GEMINI_API_KEY
+              Value: !Ref GeminiApiKey
+            - Name: CAPTURE_MODE
+              Value: !Ref CaptureMode
+            - Name: MEDIA_API_CREDENTIALS_JSON
+              Value: !Ref MediaApiCredentialsJson
+            - Name: MEDIA_API_REFRESH_TOKEN
+              Value: !Ref MediaApiRefreshToken
+            # Public redirect URI for re-authorizing Media API from the hosted UI
+            - Name: MEDIA_API_REDIRECT_URI
+              Value: https://witness.csaiautomations.com/api/media-api/callback
+            - Name: TRANSCRIPTION_MODE
+              Value: !Ref TranscriptionMode
           # Note: Fargate does not support linuxParameters.sharedMemorySize.
           # Chrome uses --disable-dev-shm-usage (already set in meet-session.js) to work around /dev/shm limits.
           LogConfiguration:
@@ -323,6 +365,7 @@ Resources:
         - Field: host-header
           Values:
             - meet-fleet.csaiautomations.com
+            - witness.csaiautomations.com
         - Field: path-pattern
           Values:
             - /
@@ -339,6 +382,7 @@ Resources:
         - Field: host-header
           Values:
             - meet-fleet.csaiautomations.com
+            - witness.csaiautomations.com
       Actions:
         - Type: authenticate-cognito
           Order: 1

@@ -25,16 +25,25 @@ const MEET_API_BASE = 'https://meet.googleapis.com/v2beta';
 // ── OAuth2 helpers ──────────────────────────────────────────────────────────
 
 async function getAccessToken(config) {
-  const credPath = config.mediaApiCredentialsPath;
-  if (!credPath) throw new Error('MEDIA_API_CREDENTIALS_PATH not set');
-  const raw = JSON.parse(await fsPromises.readFile(credPath, 'utf8'));
-  const creds = raw.web || raw.installed;
-  if (!creds) throw new Error('Invalid credentials file');
-  const oauth2 = new OAuth2Client(
-    creds.client_id,
-    creds.client_secret,
-    'http://localhost:3030/api/media-api/callback'
-  );
+  let creds;
+  // In cloud deployments, the full JSON is injected as MEDIA_API_CREDENTIALS_JSON.
+  // Locally, fall back to reading the file at MEDIA_API_CREDENTIALS_PATH.
+  if (process.env.MEDIA_API_CREDENTIALS_JSON) {
+    // Value may be base64-encoded (Fargate deployments) or plain JSON (local).
+    // Detect by checking if it starts with '{'.
+    let jsonStr = process.env.MEDIA_API_CREDENTIALS_JSON.trim();
+    if (!jsonStr.startsWith('{')) jsonStr = Buffer.from(jsonStr, 'base64').toString('utf8');
+    const raw = JSON.parse(jsonStr);
+    creds = raw.web || raw.installed;
+  } else {
+    const credPath = config.mediaApiCredentialsPath;
+    if (!credPath) throw new Error('MEDIA_API_CREDENTIALS_PATH or MEDIA_API_CREDENTIALS_JSON not set');
+    const raw = JSON.parse(await fsPromises.readFile(credPath, 'utf8'));
+    creds = raw.web || raw.installed;
+  }
+  if (!creds) throw new Error('Invalid credentials: missing web or installed key');
+  const redirectUri = process.env.MEDIA_API_REDIRECT_URI || 'http://localhost:3030/api/media-api/callback';
+  const oauth2 = new OAuth2Client(creds.client_id, creds.client_secret, redirectUri);
   const refreshToken = config.mediaApiRefreshToken;
   if (!refreshToken) throw new Error('MEDIA_API_REFRESH_TOKEN not set — connect your Google account in Configuration');
   oauth2.setCredentials({ refresh_token: refreshToken });

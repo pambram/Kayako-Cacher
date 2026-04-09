@@ -356,7 +356,7 @@ let _oauthPending = null; // { oauth2Client, resolve, reject, timer }
 
 app.get('/api/media-api/status', (_req, res) => {
   const hasToken = Boolean(process.env.MEDIA_API_REFRESH_TOKEN);
-  const hasCredentials = Boolean(process.env.MEDIA_API_CREDENTIALS_PATH);
+  const hasCredentials = Boolean(process.env.MEDIA_API_CREDENTIALS_JSON || process.env.MEDIA_API_CREDENTIALS_PATH);
   res.json({ connected: hasToken && hasCredentials, hasToken, hasCredentials });
 });
 
@@ -365,16 +365,24 @@ app.post('/api/media-api/connect', async (req, res) => {
     const { OAuth2Client } = await import('google-auth-library');
     const fsSync = await import('node:fs/promises');
 
-    const credPath = process.env.MEDIA_API_CREDENTIALS_PATH;
-    if (!credPath) {
-      res.status(503).json({ error: 'MEDIA_API_CREDENTIALS_PATH not set in .env' });
-      return;
+    let creds;
+    if (process.env.MEDIA_API_CREDENTIALS_JSON) {
+      let jsonStr = process.env.MEDIA_API_CREDENTIALS_JSON.trim();
+      if (!jsonStr.startsWith('{')) jsonStr = Buffer.from(jsonStr, 'base64').toString('utf8');
+      const raw = JSON.parse(jsonStr);
+      creds = raw.web || raw.installed;
+    } else {
+      const credPath = process.env.MEDIA_API_CREDENTIALS_PATH;
+      if (!credPath) {
+        res.status(503).json({ error: 'MEDIA_API_CREDENTIALS_PATH or MEDIA_API_CREDENTIALS_JSON not set' });
+        return;
+      }
+      const raw = JSON.parse(await fsSync.readFile(credPath, 'utf8'));
+      creds = raw.web || raw.installed;
     }
-    const raw = JSON.parse(await fsSync.readFile(credPath, 'utf8'));
-    const creds = raw.web || raw.installed;
-    if (!creds) { res.status(500).json({ error: 'Invalid credentials file' }); return; }
+    if (!creds) { res.status(500).json({ error: 'Invalid credentials: missing web or installed key' }); return; }
 
-    const REDIRECT = 'http://localhost:3030/api/media-api/callback';
+    const REDIRECT = process.env.MEDIA_API_REDIRECT_URI || 'http://localhost:3030/api/media-api/callback';
     const SCOPES = [
       'https://www.googleapis.com/auth/meetings.conference.media.readonly',
       'https://www.googleapis.com/auth/meetings.space.readonly'

@@ -71,6 +71,17 @@ if [[ -f "$ENV_FILE" ]]; then
   [[ -z "${GOOGLE_PASSWORD:-}" ]]           && GOOGLE_PASSWORD=$(_env_val GOOGLE_PASSWORD)
   [[ -z "${ANTHROPIC_API_KEY:-}" ]]         && ANTHROPIC_API_KEY=$(_env_val ANTHROPIC_API_KEY)
   [[ -z "${OPENAI_API_KEY:-}" ]]            && OPENAI_API_KEY=$(_env_val OPENAI_API_KEY)
+  [[ -z "${GEMINI_API_KEY:-}" ]]            && GEMINI_API_KEY=$(_env_val GEMINI_API_KEY)
+  [[ -z "${MEDIA_API_REFRESH_TOKEN:-}" ]]   && MEDIA_API_REFRESH_TOKEN=$(_env_val MEDIA_API_REFRESH_TOKEN)
+  # Read the credentials JSON content from the file referenced by MEDIA_API_CREDENTIALS_PATH
+  if [[ -z "${MEDIA_API_CREDENTIALS_JSON:-}" ]]; then
+    _creds_path=$(_env_val MEDIA_API_CREDENTIALS_PATH)
+    if [[ -n "$_creds_path" && -f "$_creds_path" ]]; then
+      MEDIA_API_CREDENTIALS_JSON=$(cat "$_creds_path")
+    fi
+  fi
+  [[ -z "${CAPTURE_MODE:-}" ]]              && CAPTURE_MODE=$(_env_val CAPTURE_MODE)
+  [[ -z "${TRANSCRIPTION_MODE:-}" ]]        && TRANSCRIPTION_MODE=$(_env_val TRANSCRIPTION_MODE)
 fi
 
 GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}"
@@ -79,6 +90,11 @@ GOOGLE_EMAIL="${GOOGLE_EMAIL:-}"
 GOOGLE_PASSWORD="${GOOGLE_PASSWORD:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+MEDIA_API_REFRESH_TOKEN="${MEDIA_API_REFRESH_TOKEN:-}"
+MEDIA_API_CREDENTIALS_JSON="${MEDIA_API_CREDENTIALS_JSON:-}"
+CAPTURE_MODE="${CAPTURE_MODE:-media-api}"
+TRANSCRIPTION_MODE="${TRANSCRIPTION_MODE:-whisper}"
 
 # Validate that the minimum required secrets are present for modes that need them.
 if [[ "$PUSH_ONLY" != "--push-only" ]]; then
@@ -174,7 +190,12 @@ sam deploy \
     "GoogleEmail=${GOOGLE_EMAIL}" \
     "GooglePassword=${GOOGLE_PASSWORD}" \
     "AnthropicApiKey=${ANTHROPIC_API_KEY}" \
-    "OpenAIApiKey=${OPENAI_API_KEY}"
+    "OpenAIApiKey=${OPENAI_API_KEY}" \
+    "GeminiApiKey=${GEMINI_API_KEY}" \
+    "CaptureMode=${CAPTURE_MODE}" \
+    "MediaApiCredentialsJson=$(echo -n "${MEDIA_API_CREDENTIALS_JSON}" | base64)" \
+    "MediaApiRefreshToken=${MEDIA_API_REFRESH_TOKEN}" \
+    "TranscriptionMode=${TRANSCRIPTION_MODE}"
 
 # ─── Step 5: DNS + TLS wiring (idempotent) ────────────────────
 echo ""
@@ -221,12 +242,38 @@ else
   echo "    Created CNAME: meet-fleet.csaiautomations.com → ${ALB_DNS}"
 fi
 
+# Upsert Route53 CNAME for witness.csaiautomations.com
+WITNESS_RECORD=$(aws route53 list-resource-record-sets \
+  --hosted-zone-id "$HOSTED_ZONE_ID" \
+  --query "ResourceRecordSets[?Name=='witness.csaiautomations.com.'].Name" \
+  --output text 2>/dev/null || true)
+
+if [[ -n "$WITNESS_RECORD" ]]; then
+  echo "    Route53 CNAME witness.csaiautomations.com already exists — skipping"
+else
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --change-batch "{
+      \"Changes\": [{
+        \"Action\": \"CREATE\",
+        \"ResourceRecordSet\": {
+          \"Name\": \"witness.csaiautomations.com.\",
+          \"Type\": \"CNAME\",
+          \"TTL\": 300,
+          \"ResourceRecords\": [{\"Value\": \"${ALB_DNS}\"}]
+        }
+      }]
+    }"
+  echo "    Created CNAME: witness.csaiautomations.com → ${ALB_DNS}"
+fi
+
 # ─── Done ─────────────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  Meet Fleet deployed successfully                            ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  Dashboard : https://meet-fleet.csaiautomations.com         ║"
+echo "║  Dashboard : https://witness.csaiautomations.com            ║"
+echo "║  Alias     : https://meet-fleet.csaiautomations.com         ║"
 echo "║  Auth      : Google OAuth (trilogy.com accounts)            ║"
 echo "║  Logs      : aws logs tail /ecs/meet-fleet --follow         ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
