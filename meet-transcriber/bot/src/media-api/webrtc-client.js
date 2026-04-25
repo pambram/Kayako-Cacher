@@ -68,6 +68,44 @@ function detectChrome() {
 
 // ── connectActiveConference via raw HTTP ─────────────────────────────────────
 
+/**
+ * Map Meet Media API error reasons to actionable, human-readable messages.
+ * See https://developers.google.com/workspace/meet/media-api/guides/troubleshoot
+ */
+function explainMeetApiError(reason, rawMessage) {
+  switch (reason) {
+    case 'INCOMPATIBLE_DEVICE':
+      return 'Meet Media API rejected the connection: an incompatible device or participant is in the meeting. ' +
+        'Common causes: (1) a participant\'s Google account is registered to a minor (under 18), ' +
+        '(2) a third-party hardware system (Cisco/Polycom room device) is connected, ' +
+        '(3) a participant or the host is not enrolled in the Google Workspace Developer Preview Program required for Media API access. ' +
+        'Workaround: switch CAPTURE_MODE to "puppeteer" for this meeting, or ask the affected participant to leave. ' +
+        'Docs: https://developers.google.com/workspace/meet/media-api/guides/troubleshoot#incompatible-device';
+    case 'UNSUPPORTED_PLATFORM_PRESENT':
+      return 'Meet Media API rejected the connection: a participant is using an unsupported platform (outdated mobile app, third-party hardware). ' +
+        'Ask them to update their Meet app or join from a supported platform. Workaround: use puppeteer mode.';
+    case 'NO_ACTIVE_CONFERENCE':
+      return 'Meet Media API: the meeting has not started yet. Wait until the host begins the conference and retry.';
+    case 'CONNECTIONS_EXHAUSTED':
+      return 'Meet Media API: another Media API client is already connected to this meeting (only one is allowed). ' +
+        'Wait ~30 seconds for Meet to time out the previous connection, then retry.';
+    case 'CONSENTER_ABSENT':
+      return 'Meet Media API: no eligible consenter is in the meeting. The meeting initiator (or a Workspace member who owns the meeting) must be present.';
+    case 'DISABLED_BY_ADMIN':
+      return 'Meet Media API has been disabled by the Google Workspace admin for this organization. Cannot be changed during a meeting.';
+    case 'DISABLED_BY_HOST_CONTROL':
+      return 'Meet Media API has been disabled by the meeting host for this specific meeting.';
+    case 'DISABLED_DUE_TO_WATERMARKING':
+      return 'Meet Media API is disabled because the meeting has watermarking enabled.';
+    case 'DISABLED_DUE_TO_ENCRYPTION':
+      return 'Meet Media API is disabled because the meeting has end-to-end encryption enabled.';
+    case 'INVALID_OFFER':
+      return `Meet Media API rejected the SDP offer (INVALID_OFFER): ${rawMessage || 'malformed offer'}. This is a code bug — please report it.`;
+    default:
+      return `Meet Media API error${reason ? ` (${reason})` : ''}: ${rawMessage || 'connection rejected'}`;
+  }
+}
+
 async function connectActiveConference(meetingCode, sdpOffer, accessToken) {
   const spaceName = `spaces/${meetingCode}`;
   const url = `${MEET_API_BASE}/${spaceName}:connectActiveConference`;
@@ -84,9 +122,15 @@ async function connectActiveConference(meetingCode, sdpOffer, accessToken) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    let detail = body;
-    try { detail = JSON.stringify(JSON.parse(body), null, 2); } catch (_e) {}
-    throw new Error(`connectActiveConference HTTP ${response.status}: ${detail}`);
+    let parsedBody = null;
+    try { parsedBody = JSON.parse(body); } catch (_e) {}
+    const reason = parsedBody?.error?.details?.find(d => d.reason)?.reason;
+    const friendlyMessage = explainMeetApiError(reason, parsedBody?.error?.message);
+    const err = new Error(friendlyMessage);
+    err.code = response.status;
+    err.reason = reason;
+    err.rawBody = body;
+    throw err;
   }
 
   const payload = await response.json();

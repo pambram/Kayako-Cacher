@@ -223,7 +223,20 @@ export async function runMeetingBotMediaApi(config, hooks = {}) {
 
   try {
     emit(hooks, 'joining', { meetUrl: config.meetUrl, mode: 'media-api' });
-    await session.connect(config.meetUrl, config);
+    try {
+      await session.connect(config.meetUrl, config);
+    } catch (connectErr) {
+      // Surface the friendly Meet Media API error reason to the UI/event stream
+      // so users can see exactly why the join failed (incompatible device, etc.)
+      emit(hooks, 'media_api_connect_failed', {
+        reason: connectErr.reason || 'UNKNOWN',
+        message: connectErr.message,
+        suggestion: connectErr.reason === 'INCOMPATIBLE_DEVICE' || connectErr.reason === 'UNSUPPORTED_PLATFORM_PRESENT'
+          ? 'Switch CAPTURE_MODE to "puppeteer" for this meeting'
+          : null
+      });
+      throw connectErr;
+    }
     emit(hooks, 'joined', { meetUrl: config.meetUrl, mode: 'media-api' });
 
     await sendLifecycleEmail(config, `Meet Bot joined (Media API): ${config.meetUrl}`, `Meet bot joined via Media API.\n\nRun ID: ${runId}\nMeet URL: ${config.meetUrl}\nTime: ${new Date().toISOString()}`).catch(() => {});

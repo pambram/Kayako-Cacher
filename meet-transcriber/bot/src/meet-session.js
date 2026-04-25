@@ -510,27 +510,83 @@ async function countNonBotParticipants(page, botName) {
     return await page.evaluate((ownName) => {
       const botLower = (ownName || 'meet bot').toLowerCase();
 
-      // Try the participant count badge first — fast path.
-      const countBadge = document.querySelector('[data-participant-count], .uGOf1d, [jsname="r4nke"]');
-      if (countBadge) {
-        const n = parseInt(countBadge.textContent, 10);
-        if (!isNaN(n)) return Math.max(0, n - 1); // subtract ourselves
+      // ─── Strategy 1: aria-label on the "people" toolbar button ──────
+      // This is the most stable — Meet uses aria-labels like
+      // "People (3)" or "1 participant" that survive UI redesigns.
+      const allButtons = Array.from(document.querySelectorAll(
+        'button[aria-label], div[role="button"][aria-label]'
+      ));
+      for (const btn of allButtons) {
+        const aria = btn.getAttribute('aria-label') || '';
+        // Match patterns: "People (3)", "Show everyone (3)", "3 people in this call",
+        // "Participants (3)", "1 participant", etc.
+        const m = aria.match(/(?:people|participant|everyone|in this call)[^\d]*(\d+)|(\d+)[^\d]*(?:people|participant)/i);
+        if (m) {
+          const total = parseInt(m[1] || m[2], 10);
+          if (!isNaN(total)) return Math.max(0, total - 1); // subtract ourselves (the bot)
+        }
       }
 
-      // Fall back to walking visible participant name elements.
-      const nameEls = Array.from(document.querySelectorAll(
-        '[jsname="A4nspb"], [jsname="GvcuGe"], .zWGUib'
+      // ─── Strategy 2: numeric text node next to the people icon ──────
+      // The participant-count chip in the top toolbar typically shows just "3".
+      // Find any small numeric element adjacent to a "people" icon or i18n attribute.
+      const peopleIcons = Array.from(document.querySelectorAll(
+        'i[data-tooltip*="people" i], i[aria-label*="people" i], svg[aria-label*="people" i]'
       ));
-      if (nameEls.length === 0) return null; // can't determine
+      for (const icon of peopleIcons) {
+        const container = icon.closest('button, div[role="button"], li, div');
+        if (!container) continue;
+        const text = (container.textContent || '').trim();
+        const m = text.match(/^\s*(\d+)\s*$/);
+        if (m) {
+          const total = parseInt(m[1], 10);
+          if (!isNaN(total)) return Math.max(0, total - 1);
+        }
+      }
 
-      const others = nameEls.filter((el) => {
-        const text = (el.textContent || '').toLowerCase().trim();
-        return text && !text.includes(botLower) && text !== 'you';
-      });
-      return others.length;
+      // ─── Strategy 3: count distinct video/avatar tiles on stage ─────
+      // Each participant has a tile container with role="region" or known classes.
+      // We count tiles whose visible name is NOT our bot name.
+      const tileSelectors = [
+        '[data-self-name]',                       // when self-view is rendered
+        '[data-participant-id]',                  // participant tile attribute
+        'div[data-allocation-index]',             // grid tile (older)
+        'div[role="region"][aria-label]',         // accessible tile region
+        'div[jscontroller][data-participant-id]'  // newer tile
+      ];
+      const tiles = new Set();
+      for (const sel of tileSelectors) {
+        document.querySelectorAll(sel).forEach((el) => tiles.add(el));
+      }
+      if (tiles.size > 0) {
+        let others = 0;
+        for (const tile of tiles) {
+          const label = (tile.getAttribute('aria-label') || tile.textContent || '').toLowerCase();
+          if (!label) continue;
+          if (label.includes(botLower)) continue;
+          if (label.trim() === 'you' || label.trim() === 'self') continue;
+          others++;
+        }
+        return others;
+      }
+
+      // ─── Strategy 4: visible name elements in the stage area ───────
+      // Walk all elements that look like a participant name footer (small text near the bottom of a tile).
+      const nameEls = Array.from(document.querySelectorAll(
+        '[jsname="A4nspb"], [jsname="GvcuGe"], [jsname="m6lDLb"], .zWGUib, .ZjFb7c, .NnTWjc'
+      ));
+      if (nameEls.length > 0) {
+        const others = nameEls.filter((el) => {
+          const text = (el.textContent || '').toLowerCase().trim();
+          return text && !text.includes(botLower) && text !== 'you';
+        });
+        return others.length;
+      }
+
+      return null; // none of the strategies worked
     }, botName);
   } catch (_error) {
-    return null; // page may be detached; caller should handle gracefully
+    return null;
   }
 }
 
@@ -735,14 +791,25 @@ export async function startMeetSession(config, hooks = {}) {
     puppeteer.use(StealthPlugin());
   }
 
+  // Persistent user data dir gives Chrome realistic state (history, prefs)
+  // across runs — fresh profiles are a major bot-detection signal.
+  const userDataDir = config.userDataDir || `${config.outputDir}/chrome-profile`;
+
   const browser = await puppeteer.launch({
     executablePath: config.chromePath,
     headless: config.headless,
-    ignoreDefaultArgs: ['--enable-automation'],
+    userDataDir,
+    // Strip --enable-automation flag AND its companion DevTools-protocol switch.
+    // Both are needed; the lone --enable-automation removal is no longer enough
+    // because Puppeteer also sets useAutomationExtension which trips Meet detection.
+    ignoreDefaultArgs: [
+      '--enable-automation',
+      '--disable-component-update',
+      '--disable-default-apps'
+    ],
     args: [
       ...(process.platform !== 'darwin' ? ['--no-sandbox'] : []),
       '--disable-dev-shm-usage',
-      '--disable-gpu',
       '--disable-blink-features=AutomationControlled',
       '--window-size=1920,1080',
       '--use-fake-ui-for-media-stream',
@@ -750,12 +817,15 @@ export async function startMeetSession(config, hooks = {}) {
       '--mute-audio',
       '--autoplay-policy=no-user-gesture-required',
       '--lang=en-US',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       '--disable-sync',
       '--no-first-run',
-      '--disable-features=SyncToSignin,IdentityConsistencyAccountConsistency'
+      '--no-default-browser-check',
+      '--disable-features=SyncToSignin,IdentityConsistencyAccountConsistency,Translate'
+      // NOTE: do NOT override --user-agent. Letting Chrome use its real UA
+      // matches the rest of the browser fingerprint (canvas, WebGL, fonts, etc.)
+      // A mismatched UA is the #1 anti-bot detection signal.
     ],
-    defaultViewport: { width: 1920, height: 1080 }
+    defaultViewport: null  // use the real window size, not a forced viewport
   });
 
   const [page] = await browser.pages();
@@ -763,11 +833,65 @@ export async function startMeetSession(config, hooks = {}) {
   await page.browserContext().overridePermissions('https://meet.google.com', ['notifications', 'camera', 'microphone']);
 
   // Additional stealth: remove automation fingerprints that the stealth plugin may not fully cover.
+  // Note: the stealth plugin already handles most of these, but Meet's detection is aggressive,
+  // so we redo them defensively.
   await page.evaluateOnNewDocument(() => {
+    // navigator.webdriver — the canonical bot signal
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // Remove the automation flag from the prototype chain too
+    delete navigator.__proto__.webdriver;
+
+    // Realistic languages, hardware concurrency, deviceMemory
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    window.chrome = { runtime: {} };
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+    // Plugins — browsers normally have a non-empty plugins array
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => {
+        const arr = [
+          { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+        ];
+        arr.item = (i) => arr[i];
+        arr.namedItem = (name) => arr.find((p) => p.name === name);
+        return arr;
+      }
+    });
+
+    // Permissions API — bots often have weird permission states.
+    // CRITICAL: must preserve `this` binding when delegating to the original
+    // method, otherwise we get "Illegal invocation" errors that crash the host page.
+    const permissions = window.navigator.permissions;
+    const originalQuery = permissions?.query;
+    if (originalQuery) {
+      permissions.query = function (parameters) {
+        if (parameters?.name === 'notifications') {
+          return Promise.resolve({ state: Notification.permission });
+        }
+        return originalQuery.call(permissions, parameters);
+      };
+    }
+
+    // window.chrome — must exist with runtime + loadTimes + csi for parity with real Chrome
+    if (!window.chrome) {
+      window.chrome = {};
+    }
+    window.chrome.runtime = window.chrome.runtime || {};
+    window.chrome.loadTimes = window.chrome.loadTimes || function () { return {}; };
+    window.chrome.csi = window.chrome.csi || function () { return {}; };
+
+    // WebGL vendor/renderer — pretend to be a real GPU
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (parameter) {
+      if (parameter === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
+      if (parameter === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+      return getParameter.call(this, parameter);
+    };
   });
 
   // When forceGoogleSignIn is set, sign in BEFORE loading Meet so Google
