@@ -597,20 +597,26 @@ function setupAutoHyperlinking() {
                     // Could be single URL string or array of URLs
                     const urls = Array.isArray(standalone) ? standalone : [standalone];
                     console.log('📎 Pasted standalone URL(s), will suggest title:', urls);
-                    // Mark all URLs as inflight so auto-link scan doesn't double-queue them
+                    // Mark all URLs with a sentinel so auto-link scan doesn't double-queue
+                    // BUT use a special "paste-reserved" timestamp that suggestReplaceURLWithTitle
+                    // knows to ignore (we use -1 as sentinel)
                     try {
                         const editor = target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element');
                         if (editor) {
                             const edKey = ensureEditorUid(editor);
                             window.__kayakoSuggestInflight = window.__kayakoSuggestInflight || Object.create(null);
-                            urls.forEach(u => { window.__kayakoSuggestInflight[edKey + '|' + u] = Date.now(); });
+                            window.__kayakoPasteReserved = window.__kayakoPasteReserved || Object.create(null);
+                            urls.forEach(u => {
+                                const k = edKey + '|' + u;
+                                window.__kayakoSuggestInflight[k] = Date.now();
+                                window.__kayakoPasteReserved[k] = true;
+                            });
                         }
                     } catch(_) {}
-                    // Queue title suggestions sequentially; use a longer delay to let
-                    // Kayako convert the raw text into an anchor first
+                    // Queue title suggestions sequentially; let Kayako convert raw text to anchor first
                     setTimeout(() => {
                         queueTitleSuggestions(target, urls);
-                    }, 300);
+                    }, 350);
                 } else {
                     // Not just a URL → do nothing now; rely on auto-link scan after paste
                     setTimeout(() => { try { scanEditorForAutoLinks(target.closest('.fr-element, [contenteditable="true"]') || document.querySelector('.fr-element')); } catch(_) {} }, 250);
@@ -768,7 +774,11 @@ function suggestReplaceURLWithTitle(editor, url) {
         const inflightKey = edKey + '|' + url;
         const nowTs = Date.now();
         const prevTs = window.__kayakoSuggestInflight[inflightKey] || 0;
-        if (nowTs - prevTs < 2500) {
+        // If this URL was reserved by the paste path, clear the reservation and proceed
+        const wasPasteReserved = !!(window.__kayakoPasteReserved && window.__kayakoPasteReserved[inflightKey]);
+        if (wasPasteReserved) {
+            try { delete window.__kayakoPasteReserved[inflightKey]; } catch(_) {}
+        } else if (nowTs - prevTs < 2500) {
             return;
         }
         // Cancel if selection-based flow has been cancelled
