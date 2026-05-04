@@ -2,3 +2,4 @@ tmp/
 bot/.env
 bot/bot-output/
 bot/*-sa.json
+.DS_Store

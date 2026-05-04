@@ -49,6 +49,9 @@ const DEFAULTS = {
   // Transcription backend for Media API mode: 'none' | 'whisper' | 'deepgram'
   transcriptionMode: 'none',
   deepgramApiKey: '',
+  // Optional residential proxy for Puppeteer to avoid datacenter IP blocks on Google Meet.
+  // Format: http://user:pass@host:port  or  socks5://host:port
+  puppeteerProxy: '',
   customSummarizers: [
     {
       id: 'meeting-notes',
@@ -215,6 +218,7 @@ export function loadConfig(cliArgs = {}, options = {}) {
     mediaApiVideoStreams: parseNumber(process.env.MEDIA_API_VIDEO_STREAMS, DEFAULTS.mediaApiVideoStreams),
     transcriptionMode: cliArgs['transcription-mode'] || process.env.TRANSCRIPTION_MODE || DEFAULTS.transcriptionMode,
     deepgramApiKey: cliArgs['deepgram-api-key'] || process.env.DEEPGRAM_API_KEY || DEFAULTS.deepgramApiKey,
+    puppeteerProxy: cliArgs['puppeteer-proxy'] || process.env.PUPPETEER_PROXY || DEFAULTS.puppeteerProxy,
     strictPromptParity: parseBoolean(
       cliArgs['strict-prompt-parity'] || process.env.STRICT_PROMPT_PARITY,
       DEFAULTS.strictPromptParity

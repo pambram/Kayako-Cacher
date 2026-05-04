@@ -65,6 +65,12 @@ Parameters:
     Default: whisper
     Description: "Audio transcription backend: 'whisper', 'deepgram', or 'none'"
 
+  PuppeteerProxy:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: "Optional residential proxy for Puppeteer. Format: http://user:pass@host:port"
+
   # ─── Existing infrastructure (all have sane defaults) ─────────
 
   VpcId:
@@ -301,6 +307,8 @@ Resources:
               Value: https://witness.csaiautomations.com/api/media-api/callback
             - Name: TRANSCRIPTION_MODE
               Value: !Ref TranscriptionMode
+            - Name: PUPPETEER_PROXY
+              Value: !Ref PuppeteerProxy
           # Note: Fargate does not support linuxParameters.sharedMemorySize.
           # Chrome uses --disable-dev-shm-usage (already set in meet-session.js) to work around /dev/shm limits.
           LogConfiguration:

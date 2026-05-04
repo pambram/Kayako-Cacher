@@ -82,6 +82,7 @@ if [[ -f "$ENV_FILE" ]]; then
   fi
   [[ -z "${CAPTURE_MODE:-}" ]]              && CAPTURE_MODE=$(_env_val CAPTURE_MODE)
   [[ -z "${TRANSCRIPTION_MODE:-}" ]]        && TRANSCRIPTION_MODE=$(_env_val TRANSCRIPTION_MODE)
+  [[ -z "${PUPPETEER_PROXY:-}" ]]           && PUPPETEER_PROXY=$(_env_val PUPPETEER_PROXY)
 fi
 
 GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}"
@@ -95,6 +96,7 @@ MEDIA_API_REFRESH_TOKEN="${MEDIA_API_REFRESH_TOKEN:-}"
 MEDIA_API_CREDENTIALS_JSON="${MEDIA_API_CREDENTIALS_JSON:-}"
 CAPTURE_MODE="${CAPTURE_MODE:-media-api}"
 TRANSCRIPTION_MODE="${TRANSCRIPTION_MODE:-whisper}"
+PUPPETEER_PROXY="${PUPPETEER_PROXY:-}"
 
 # Validate that the minimum required secrets are present for modes that need them.
 if [[ "$PUSH_ONLY" != "--push-only" ]]; then
@@ -195,7 +197,8 @@ sam deploy \
     "CaptureMode=${CAPTURE_MODE}" \
     "MediaApiCredentialsJson=$(echo -n "${MEDIA_API_CREDENTIALS_JSON}" | base64)" \
     "MediaApiRefreshToken=${MEDIA_API_REFRESH_TOKEN}" \
-    "TranscriptionMode=${TRANSCRIPTION_MODE}"
+    "TranscriptionMode=${TRANSCRIPTION_MODE}" \
+    ${PUPPETEER_PROXY:+"PuppeteerProxy=${PUPPETEER_PROXY}"}
 
 # ─── Step 5: DNS + TLS wiring (idempotent) ────────────────────
 echo ""

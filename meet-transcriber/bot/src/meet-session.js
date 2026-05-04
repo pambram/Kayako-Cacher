@@ -811,6 +811,9 @@ export async function startMeetSession(config, hooks = {}) {
       ...(process.platform !== 'darwin' ? ['--no-sandbox'] : []),
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
+      // Residential proxy to avoid datacenter IP blocks on Google Meet.
+      // Set PUPPETEER_PROXY=http://user:pass@host:port in .env or config.
+      ...(config.puppeteerProxy ? [`--proxy-server=${config.puppeteerProxy}`] : []),
       '--window-size=1920,1080',
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
@@ -988,6 +991,7 @@ export async function startMeetSession(config, hooks = {}) {
       const emptyGraceSec = config.emptyMeetingGraceSec ?? 60;
       const emptyGraceMs  = emptyGraceSec * 1000;
       let emptyStartedAt  = null;
+      let nullCountStreak = 0; // consecutive ticks where countNonBotParticipants returned null
 
       while (true) {
         const ended = await detectMeetingEnded(page).catch(() => false);
@@ -1001,34 +1005,70 @@ export async function startMeetSession(config, hooks = {}) {
           if (onStatus) onStatus('notification_dismissed', { text: notification.slice(0, 120) });
         }
 
-        // Detect when all humans have left — only bots remain.
+        // Strategy A: explicit "alone" signals in the Meet DOM.
+        const isAloneByDom = await page.evaluate(() => {
+          const body = (document.body?.innerText || '').toLowerCase();
+          const aloneMarkers = [
+            "no one else is in this meeting",  // confirmed from screenshot
+            "no one else is here",
+            "you're the only one here",
+            "you are the only one here",
+            "waiting for others to join",
+            "invite people to join you",
+            "no one else is in the meeting",
+            "no one else in this call",
+          ];
+          return aloneMarkers.some((m) => body.includes(m));
+        }).catch(() => false);
+
+        // Strategy B: participant count via DOM selectors.
         const humanCount = await countNonBotParticipants(page, config.guestName).catch(() => null);
-        if (humanCount !== null) {
-          if (humanCount === 0) {
-            if (!emptyStartedAt) {
-              emptyStartedAt = Date.now();
-              console.log(`No human participants detected; grace period starts (${emptyGraceSec}s).`);
-              if (onStatus) onStatus('empty_meeting_grace', { graceSec: emptyGraceSec });
-            } else {
-              const elapsed = Math.floor((Date.now() - emptyStartedAt) / 1000);
-              const remaining = emptyGraceSec - elapsed;
-              console.log(`Still no humans; leaving in ${remaining}s.`);
-              if (onStatus) onStatus('empty_meeting_grace', { graceSec: emptyGraceSec, remainingSec: remaining });
-              if (Date.now() - emptyStartedAt >= emptyGraceMs) {
-                console.log('Grace period expired — leaving empty meeting.');
-                return 'participants-left';
-              }
-            }
+
+        // Treat as zero participants if DOM explicitly says we're alone,
+        // OR if count is 0, OR if count has been null (undetectable) for
+        // a sustained streak (selector mismatch on Meet UI update).
+        const nullStreakThreshold = Math.ceil(emptyGraceSec / 2) + 3; // ~grace period worth of nulls (2s poll)
+        if (humanCount === null) {
+          nullCountStreak++;
+        } else {
+          nullCountStreak = 0;
+        }
+        const effectivelyEmpty = isAloneByDom
+          || humanCount === 0
+          || nullCountStreak >= nullStreakThreshold;
+
+        if (effectivelyEmpty) {
+          if (!emptyStartedAt) {
+            const reason = isAloneByDom ? 'alone DOM signal' : humanCount === 0 ? 'count=0' : `null for ${nullCountStreak} ticks`;
+            // DOM "alone" banner is reliable enough to use a shorter grace period (10s)
+            // since it only appears when everyone else has truly left.
+            const effectiveGraceSec = isAloneByDom ? Math.min(emptyGraceSec, 10) : emptyGraceSec;
+            const effectiveGraceMs = effectiveGraceSec * 1000;
+            emptyStartedAt = Date.now() - (emptyGraceMs - effectiveGraceMs); // fast-track if DOM signal
+            console.log(`No human participants detected (${reason}); grace period starts (${effectiveGraceSec}s).`);
+            if (onStatus) onStatus('empty_meeting_grace', { graceSec: effectiveGraceSec, reason });
           } else {
-            if (emptyStartedAt) {
-              console.log(`${humanCount} human participant(s) back — grace period cancelled.`);
-              if (onStatus) onStatus('empty_meeting_grace_cancelled', { humanCount });
+            const elapsed = Math.floor((Date.now() - emptyStartedAt) / 1000);
+            const remaining = emptyGraceSec - elapsed;
+            if (elapsed % 15 === 0) console.log(`Still no humans; leaving in ${remaining}s.`);
+            if (onStatus) onStatus('empty_meeting_grace', { graceSec: emptyGraceSec, remainingSec: remaining });
+            if (Date.now() - emptyStartedAt >= emptyGraceMs) {
+              console.log('Grace period expired — leaving empty meeting.');
+              return 'participants-left';
             }
-            emptyStartedAt = null;
           }
+        } else {
+          if (emptyStartedAt) {
+            console.log(`${humanCount} human participant(s) back — grace period cancelled.`);
+            if (onStatus) onStatus('empty_meeting_grace_cancelled', { humanCount });
+          }
+          emptyStartedAt = null;
+          nullCountStreak = 0;
         }
 
-        await sleep(5000);
+        // Poll every 2s to catch transient "No one else is in this meeting" banners
+        // that appear briefly and then disappear from the DOM.
+        await sleep(2000);
       }
     },
     async leave() {
