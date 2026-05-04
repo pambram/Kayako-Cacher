@@ -2336,35 +2336,60 @@ ${formatting}`;
       // lazy accessor and pass a sentinel here; showCustomWritePreview will override it.
       const currentResponseText = textData.hasTemplate ? (textData.extractedText || '').trim() : (textData.fullText || '').trim();
       
-      // Extract customer name for personalization.
-      // Prefer the author of the most recent PUBLIC (non-note) message over the sidebar requester,
-      // because the agent may be replying to someone other than the original ticket creator
-      // (e.g., a campus coordinator who joined the thread).
+      // Extract customer name using three-rule precedence:
+      // Rule 1: last non-agent non-bot author == requester -> use requester
+      // Rule 2: last non-agent non-bot author != requester -> use the last non-agent non-bot
+      //         (the sidebar requester might be an internal agent CCing a real customer)
+      // Rule 3: no non-agent non-bot author found -> fallback to sidebar requester
       const sidebarName = this.extractCustomerName();
-      const mostRecentPublicAuthor = (() => {
+
+      // Detect Kayako's AGENT role pill — present only on internal staff public posts,
+      // never on customer posts or private notes. Uses partial class matching to survive
+      // Kayako build hash changes (e.g. ko-role-pill__role-pill_zg8r7t -> _xxxxxx).
+      const isAgentPost = (postEl) => {
+        if (!postEl) return false;
+        const roleWrapper = postEl.querySelector('[class*="list_item__role"]');
+        if (!roleWrapper) return false;
+        const pill = roleWrapper.querySelector('[class*="role-pill"]');
+        const text = (pill?.textContent || roleWrapper.textContent || '').trim().toUpperCase();
+        return /^(AGENT|STAFF|TEAM|INTERNAL)$/.test(text);
+      };
+
+      const knownBots = ['ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis',
+        'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'Cu Chulainn AI Manager',
+        'CE Maintenance Bot', 'System', 'Automation', 'Mimir', 'Wise Old Man', 'Log Agent'];
+
+      // Walk public posts newest -> oldest, return first non-agent non-bot author
+      const lastNonAgentNonBotAuthor = (() => {
         try {
-          const publicMessages = document.querySelectorAll(
+          const posts = Array.from(document.querySelectorAll(
             '.message-or-note .ko-timeline-2_list_item__post_1oksrd'
-          );
-          if (!publicMessages.length) return null;
-          const last = publicMessages[publicMessages.length - 1];
-          const authorEl = last.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
-          const name = authorEl ? authorEl.textContent.trim() : null;
-          // Exclude known system/bot authors
-          const bots = ['ATLAS', 'Atlas', 'Hermes', 'Lachesis', 'Phronesis',
-            'centralsupport-ai-acc', 'Centralsupport-ai-acc', 'Cu Chulainn AI Manager',
-            'CE Maintenance Bot', 'System', 'Automation'];
-          return name && !bots.some(b => name.includes(b)) ? name : null;
+          ));
+          for (let i = posts.length - 1; i >= 0; i--) {
+            const post = posts[i];
+            const authorEl = post.querySelector('.ko-timeline-2_list_item__creator_1oksrd');
+            const name = authorEl ? authorEl.textContent.trim() : null;
+            if (!name) continue;
+            if (knownBots.some(b => name.includes(b))) continue;
+            if (isAgentPost(post)) continue;
+            return name;
+          }
+          return null;
         } catch (e) { return null; }
       })();
-      // Use most-recent public author if it differs from the sidebar requester,
-      // but only when the user's prompt suggests addressing someone by name/role
-      // or when the last message author is clearly different (e.g., CC, coordinator)
-      const customerName = mostRecentPublicAuthor || sidebarName;
-      console.log('👤 Customer name:', customerName || '(not found)',
-        mostRecentPublicAuthor && mostRecentPublicAuthor !== sidebarName
-          ? `(using last public author: ${mostRecentPublicAuthor}, sidebar: ${sidebarName})`
-          : '');
+
+      let customerName, customerNameSource;
+      if (lastNonAgentNonBotAuthor && sidebarName && lastNonAgentNonBotAuthor === sidebarName) {
+        customerName = sidebarName;
+        customerNameSource = 'rule 1: last non-agent non-bot matches requester';
+      } else if (lastNonAgentNonBotAuthor && lastNonAgentNonBotAuthor !== sidebarName) {
+        customerName = lastNonAgentNonBotAuthor;
+        customerNameSource = `rule 2: last non-agent non-bot (${lastNonAgentNonBotAuthor}) differs from sidebar (${sidebarName || 'none'})`;
+      } else {
+        customerName = sidebarName;
+        customerNameSource = 'rule 3: no non-agent non-bot author, fallback to sidebar';
+      }
+      console.log('👤 Customer name:', customerName || '(not found)', `[${customerNameSource}]`);
 
       // Pass the template structure (up to Additional Context) so LLM can see any existing signature
       let rawTemplate = '';
