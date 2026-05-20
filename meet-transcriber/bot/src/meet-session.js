@@ -938,19 +938,33 @@ export async function startMeetSession(config, hooks = {}) {
       throw new Error('Ask to join button stayed disabled after entering guest name.');
     }
   } else if (!config.forceGoogleSignIn) {
-    // google-signin path but didn't pre-sign-in (shouldn't normally happen, but handle gracefully)
-    if (!config.googleEmail || !config.googlePassword) {
-      throw new Error('GOOGLE_EMAIL/GOOGLE_PASSWORD not configured for authenticated join.');
+    // No guest name UI and no forceGoogleSignIn — check if the profile is already
+    // signed in (seeded via `npm run seed-profile`). If the page shows a pre-join
+    // screen with a Join button (but no name field), we're signed in already.
+    const alreadySignedIn = await page.evaluate(() => {
+      const body = (document.body?.innerText || '').toLowerCase();
+      // Meet shows "Ready to join?" or a join button without a name field when signed in.
+      return body.includes('ready to join') || body.includes('join now') ||
+        Boolean(document.querySelector('div[jsname="Qx7uuf"]')); // pre-join container
+    }).catch(() => false);
+
+    if (alreadySignedIn) {
+      console.log('Profile already signed in — proceeding as authenticated user.');
+    } else if (config.googleEmail && config.googlePassword) {
+      console.log(`Signing in as ${config.googleEmail}...`);
+      await maybeSignIn(page, config, emitStatus);
+      await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
+      await sleep(3000);
+      await dismissPreJoinMediaPromptWithStatus();
+      await dismissPreJoinMediaPromptWithStatus();
+      console.log('Join diagnostics (post-signin):', await collectJoinDiagnostics(page));
+    } else {
+      // No credentials, no guest UI, not signed in — nothing we can do.
+      console.log('Join diagnostics (no-auth-path):', await collectJoinDiagnostics(page));
+      throw new Error('Cannot join: no guest UI, not signed in, and no credentials configured. Run `npm run seed-profile` to sign in the bot account.');
     }
-    console.log(`Signing in as ${config.googleEmail}...`);
-    await maybeSignIn(page, config, emitStatus);
-    await page.goto(config.meetUrl, { waitUntil: 'networkidle2' });
-    await sleep(3000);
-    await dismissPreJoinMediaPromptWithStatus();
-    await dismissPreJoinMediaPromptWithStatus();
-    console.log('Join diagnostics (post-signin):', await collectJoinDiagnostics(page));
   } else {
-    console.log('Already signed in — proceeding to join as authenticated user.');
+    console.log('Already signed in (forceGoogleSignIn path) — proceeding to join.');
   }
 
   await dismissPreJoinMediaPromptWithStatus();

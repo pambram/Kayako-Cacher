@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "start:debug": "LOG_LEVEL=debug node src/index.js",
     "start:server": "node src/start-server.js",
-    "wire:endpoints": "node src/wire-endpoints.js"
+    "wire:endpoints": "node src/wire-endpoints.js",
+    "seed-profile": "node src/seed-chrome-profile.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.883.0",
