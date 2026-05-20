@@ -5276,11 +5276,23 @@ function setupSearchHoverPreview() {
                     setTimeout(() => { try { positionBubbleNearRow(bubble, row, true); } catch(_) {} }, 0);
                 }
 
-                if (!isRuntimeAvailable()) return;
+                if (!isRuntimeAvailable()) {
+                    console.warn('[Preview] runtime not available');
+                    contentDiv.textContent = 'Preview unavailable (no runtime)';
+                    return;
+                }
                 chrome.runtime.sendMessage({ action: 'fetchTicketPreview', domain, ticketId: id }, (resp) => {
                     const err = chrome.runtime?.lastError;
-                    if (err) { contentDiv.textContent = 'Preview unavailable'; return; }
-                    if (!resp || !resp.success) { contentDiv.textContent = 'Preview unavailable'; return; }
+                    if (err) {
+                        console.warn('[Preview] sendMessage error:', err.message);
+                        contentDiv.textContent = 'Preview unavailable (' + err.message + ')';
+                        return;
+                    }
+                    if (!resp || !resp.success) {
+                        console.warn('[Preview] bad response:', JSON.stringify(resp));
+                        contentDiv.textContent = 'Preview unavailable' + (resp?.error ? ': ' + resp.error : '');
+                        return;
+                    }
                     // Debug: log raw post sample and first mapped post in page console
                     try {
                         if (resp.preview?._debugRawSample) {
