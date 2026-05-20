@@ -1805,6 +1805,27 @@ What investigation did CS carry out:`,
     }
   }
 
+  // Copy HTML content to clipboard with rich formatting preserved.
+  // Uses ClipboardItem with text/html + text/plain so paste into rich-text editors
+  // (Kayako, Outlook, Gmail, etc.) preserves bold, bullets, links, etc.
+  async copyRichText(html) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    const plainText = (tempDiv.textContent || tempDiv.innerText || '').trim();
+
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([plainText], { type: 'text/plain' })
+        })
+      ]);
+    } else {
+      // Fallback for browsers that don't support ClipboardItem
+      await navigator.clipboard.writeText(plainText);
+    }
+  }
+
   showAIPreview(editorElement, originalTextData, enhancedText, actionTitle) {
     // Remove any existing preview
     const existingPreview = document.querySelector('.kayako-ai-preview');
@@ -1863,35 +1884,18 @@ What investigation did CS carry out:`,
       document.removeEventListener('keydown', onKeyDown);
     });
 
-    // Copy button functionality
+    // Copy button functionality — copies as rich HTML so formatting is preserved on paste
     const copyBtn = preview.querySelector('.ai-preview-copy-btn');
     if (copyBtn) {
       copyBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
-        
         try {
-          // Get clean text content (remove HTML but preserve line breaks)
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = enhancedText;
-          const cleanText = (tempDiv.textContent || tempDiv.innerText || enhancedText).trim();
-          
-          await navigator.clipboard.writeText(cleanText);
-          
-          // Visual feedback - just change to checkmark
-          const originalText = copyBtn.innerHTML;
-          copyBtn.innerHTML = `
-            <svg viewBox="0 0 16 16" fill="currentColor">
-              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
-            </svg>
-          `;
+          await this.copyRichText(enhancedText);
+          const originalHTML = copyBtn.innerHTML;
+          copyBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>`;
           copyBtn.style.color = '#28a745';
-          
-          setTimeout(() => {
-            copyBtn.innerHTML = originalText;
-            copyBtn.style.color = '';
-          }, 1000);
-          
+          setTimeout(() => { copyBtn.innerHTML = originalHTML; copyBtn.style.color = ''; }, 1000);
         } catch (error) {
           console.error('Copy failed:', error);
           this.showNotification('❌ Copy failed', 'error');
@@ -2861,35 +2865,18 @@ ${contextText ? `[AGENT WORK NOTES]\n${contextText}\n[END AGENT NOTES]\n\n` : ''
       });
     }
 
-    // Copy button functionality for custom write preview
+    // Copy button functionality for custom write preview — copies as rich HTML
     const customCopyBtn = preview.querySelector('.ai-preview-copy-btn');
     if (customCopyBtn) {
       customCopyBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
-        
         try {
-          // Get clean text content (remove HTML but preserve line breaks)
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = generatedText;
-          const cleanText = (tempDiv.textContent || tempDiv.innerText || generatedText).trim();
-          
-          await navigator.clipboard.writeText(cleanText);
-          
-          // Visual feedback - just change to checkmark
-          const originalText = customCopyBtn.innerHTML;
-          customCopyBtn.innerHTML = `
-            <svg viewBox="0 0 16 16" fill="currentColor">
-              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
-            </svg>
-          `;
+          await this.copyRichText(generatedText);
+          const originalHTML = customCopyBtn.innerHTML;
+          customCopyBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>`;
           customCopyBtn.style.color = '#28a745';
-          
-          setTimeout(() => {
-            customCopyBtn.innerHTML = originalText;
-            customCopyBtn.style.color = '';
-          }, 1000);
-          
+          setTimeout(() => { customCopyBtn.innerHTML = originalHTML; customCopyBtn.style.color = ''; }, 1000);
         } catch (error) {
           console.error('Copy failed:', error);
           this.showNotification('❌ Copy failed', 'error');
